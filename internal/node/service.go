@@ -28,6 +28,8 @@ type Repository interface {
 	RecordNodeQualityResult(context.Context, store.NodeQualityResult) (store.NodeRecord, error)
 	DueNodeIDs(context.Context, time.Time, int) ([]string, error)
 	SetNodeLifecycleState(context.Context, string, string) error
+	GetMetadata(context.Context, string) (string, error)
+	SetMetadata(context.Context, string, string) error
 }
 
 type Prober interface {
@@ -205,10 +207,14 @@ func (s *Service) Check(ctx context.Context, id string) (CheckResult, error) {
 	if err := s.prober.Apply(ctx); err != nil {
 		return CheckResult{}, fmt.Errorf("prepare Mihomo for node check: %w", err)
 	}
-	return s.checkPrepared(ctx, id)
+	settings, err := s.QualitySettings(ctx)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	return s.checkPrepared(ctx, id, settings)
 }
 
-func (s *Service) checkPrepared(ctx context.Context, id string) (CheckResult, error) {
+func (s *Service) checkPrepared(ctx context.Context, id string, settings QualitySettings) (CheckResult, error) {
 	config, err := s.repository.GetNodeConfig(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return CheckResult{}, ErrNotFound
@@ -220,12 +226,20 @@ func (s *Service) checkPrepared(ctx context.Context, id string) (CheckResult, er
 		return CheckResult{}, fmt.Errorf("%w: node is %s", ErrCheckUnavailable, config.LifecycleState)
 	}
 	checkedAt := s.now().UTC()
-	latency, probeErr := s.prober.TestProxy(ctx, config.Fingerprint, defaultTestURL, defaultTestTimeout)
+	testURL := strings.TrimSpace(settings.TestURL)
+	if testURL == "" {
+		testURL = defaultTestURL
+	}
+	timeout := time.Duration(settings.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = defaultTestTimeout
+	}
+	latency, probeErr := s.prober.TestProxy(ctx, config.Fingerprint, testURL, timeout)
 	quality := store.NodeQualityResult{
 		NodeID:    id,
 		CheckedAt: checkedAt,
 		Success:   probeErr == nil,
-		TestURL:   defaultTestURL,
+		TestURL:   testURL,
 	}
 	if probeErr == nil {
 		quality.LatencyMS = &latency
@@ -245,7 +259,7 @@ func (s *Service) checkPrepared(ctx context.Context, id string) (CheckResult, er
 		Success:   probeErr == nil,
 		LatencyMS: quality.LatencyMS,
 		CheckedAt: checkedAt,
-		TestURL:   defaultTestURL,
+		TestURL:   testURL,
 		ErrorCode: quality.ErrorCode,
 		Error:     quality.ErrorMessage,
 	}
@@ -274,6 +288,10 @@ func (s *Service) CheckMany(ctx context.Context, ids []string) ([]CheckResult, e
 	if err := s.prober.Apply(ctx); err != nil {
 		return nil, fmt.Errorf("prepare Mihomo for node checks: %w", err)
 	}
+	settings, err := s.QualitySettings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	type indexedResult struct {
 		index  int
 		result CheckResult
@@ -287,7 +305,7 @@ func (s *Service) CheckMany(ctx context.Context, ids []string) ([]CheckResult, e
 	for range workerCount {
 		go func() {
 			for index := range jobs {
-				result, err := s.checkPrepared(ctx, ids[index])
+				result, err := s.checkPrepared(ctx, ids[index], settings)
 				if err != nil {
 					result = CheckResult{Success: false, CheckedAt: s.now().UTC(), ErrorCode: classifyProbeError(err), Error: sanitizeProbeError(err)}
 				}
@@ -334,17 +352,31 @@ func deduplicateIDs(ids []string) []string {
 	return result
 }
 
-func (s *Service) CheckDue(ctx context.Context, interval time.Duration, limit int) ([]CheckResult, error) {
-	if interval <= 0 {
-		interval = 10 * time.Minute
+// CheckDue tests every node whose last check is older than the configured
+// interval. Interval, batch size, test URL, and timeout all come from the
+// administrator-editable quality settings.
+func (s *Service) CheckDue(ctx context.Context) ([]CheckResult, error) {
+	if s.prober == nil {
+		return nil, ErrCheckUnavailable
 	}
-	ids, err := s.repository.DueNodeIDs(ctx, s.now().UTC().Add(-interval), limit)
+	settings, err := s.QualitySettings(ctx)
 	if err != nil {
 		return nil, err
 	}
+	interval := time.Duration(settings.CheckIntervalSeconds) * time.Second
+	ids, err := s.repository.DueNodeIDs(ctx, s.now().UTC().Add(-interval), settings.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if err := s.prober.Apply(ctx); err != nil {
+		return nil, fmt.Errorf("prepare Mihomo for node checks: %w", err)
+	}
 	results := make([]CheckResult, 0, len(ids))
 	for _, id := range ids {
-		result, checkErr := s.Check(ctx, id)
+		result, checkErr := s.checkPrepared(ctx, id, settings)
 		if checkErr != nil {
 			if errors.Is(checkErr, context.Canceled) || errors.Is(checkErr, context.DeadlineExceeded) {
 				return results, checkErr

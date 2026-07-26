@@ -131,6 +131,13 @@ export type TerminalStatus = {
   idle_timeout_seconds: number
 }
 
+export type NodeQualitySettings = {
+  check_interval_seconds: number
+  timeout_seconds: number
+  batch_size: number
+  test_url: string
+}
+
 export type AuthStatus = {
   configured: boolean
   authenticated: boolean
@@ -262,6 +269,17 @@ export const api = {
 
   enableNode(id: string): Promise<NodeRecord> {
     return request(`/api/v1/nodes/${encodeURIComponent(id)}/enable`, { method: "POST" })
+  },
+
+  nodeQualitySettings(): Promise<NodeQualitySettings> {
+    return request("/api/v1/node-settings")
+  },
+
+  updateNodeQualitySettings(payload: NodeQualitySettings): Promise<NodeQualitySettings> {
+    return request("/api/v1/node-settings", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
   },
 
   checkNodes(nodeIds: string[]): Promise<NodeCheckList> {

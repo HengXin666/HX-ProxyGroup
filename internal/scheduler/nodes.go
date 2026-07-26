@@ -10,13 +10,14 @@ import (
 )
 
 type NodeChecker interface {
-	CheckDue(context.Context, time.Duration, int) ([]node.CheckResult, error)
+	CheckDue(context.Context) ([]node.CheckResult, error)
 }
 
+// NodeConfig only carries the scheduler poll cadence. The effective check
+// interval, batch size, test URL, and timeout live in the node service's
+// administrator-editable quality settings and are re-read on every pass.
 type NodeConfig struct {
-	PollInterval  time.Duration
-	CheckInterval time.Duration
-	BatchSize     int
+	PollInterval time.Duration
 }
 
 type NodeScheduler struct {
@@ -35,20 +36,8 @@ func NewNodeScheduler(checker NodeChecker, logger *slog.Logger, config NodeConfi
 	if config.PollInterval == 0 {
 		config.PollInterval = time.Minute
 	}
-	if config.CheckInterval == 0 {
-		config.CheckInterval = 10 * time.Minute
-	}
-	if config.BatchSize == 0 {
-		config.BatchSize = 20
-	}
 	if config.PollInterval < 10*time.Second {
 		return nil, errors.New("node quality poll interval must be at least 10 seconds")
-	}
-	if config.CheckInterval < time.Minute {
-		return nil, errors.New("node quality check interval must be at least one minute")
-	}
-	if config.BatchSize < 1 || config.BatchSize > 1000 {
-		return nil, errors.New("node quality batch size must be between 1 and 1000")
 	}
 	return &NodeScheduler{checker: checker, logger: logger, config: config}, nil
 }
@@ -72,7 +61,7 @@ func (scheduler *NodeScheduler) Run(ctx context.Context) error {
 }
 
 func (scheduler *NodeScheduler) runOnce(ctx context.Context) error {
-	results, err := scheduler.checker.CheckDue(ctx, scheduler.config.CheckInterval, scheduler.config.BatchSize)
+	results, err := scheduler.checker.CheckDue(ctx)
 	if err != nil {
 		return err
 	}

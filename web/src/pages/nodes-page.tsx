@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Activity, Ban, CircleDot, CirclePlay, Filter, Gauge, LoaderCircle, Network, RefreshCw, Search } from "lucide-react"
+import { Activity, Ban, CircleDot, CirclePlay, Filter, Gauge, LoaderCircle, Network, RefreshCw, Search, Settings2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { api } from "@/lib/api"
+import { api, type NodeQualitySettings } from "@/lib/api"
 import type { NodeRecord } from "@/lib/types"
 import { cn, compactId, formatDate } from "@/lib/utils"
 
@@ -29,6 +29,27 @@ export function NodesPage({ onNotice }: NodesPageProps) {
   const [search, setSearch] = useState("")
   const [protocol, setProtocol] = useState("")
   const [state, setState] = useState("")
+  const [settings, setSettings] = useState<NodeQualitySettings | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(false)
+
+  useEffect(() => {
+    api.nodeQualitySettings().then(setSettings).catch(() => setSettings(null))
+  }, [])
+
+  async function saveSettings(next: NodeQualitySettings) {
+    setSavingSettings(true)
+    try {
+      const saved = await api.updateNodeQualitySettings(next)
+      setSettings(saved)
+      setSettingsOpen(false)
+      onNotice("质量检测设置已保存，下一轮扫描立即生效")
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "保存检测设置失败", "error")
+    } finally {
+      setSavingSettings(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -88,10 +109,24 @@ export function NodesPage({ onNotice }: NodesPageProps) {
             节点按稳定指纹去重。质量检测由 Mihomo 经指定节点访问测试 URL，不以服务器端口可连接代替代理可用性。
           </p>
         </div>
-        <Button variant="outline" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={loading ? "animate-spin" : ""} />刷新
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setSettingsOpen((open) => !open)}>
+            <Settings2 />检测设置
+          </Button>
+          <Button variant="outline" onClick={() => void load()} disabled={loading}>
+            <RefreshCw className={loading ? "animate-spin" : ""} />刷新
+          </Button>
+        </div>
       </div>
+
+      {settingsOpen && (
+        <QualitySettingsForm
+          initial={settings}
+          saving={savingSettings}
+          onCancel={() => setSettingsOpen(false)}
+          onSave={(next) => void saveSettings(next)}
+        />
+      )}
 
       <div className="grid overflow-hidden rounded-lg border bg-white sm:grid-cols-4">
         <Metric label="健康" value={metrics.healthy} helper="最近测试成功且延迟正常" />
@@ -129,9 +164,93 @@ export function NodesPage({ onNotice }: NodesPageProps) {
       </section>
 
       <div className="rounded-md border border-[#b6d8ff] bg-[#ddf4ff] px-3 py-2 text-xs leading-5 text-[#0550ae]">
-        自动检测每分钟扫描一次，到期节点默认每 10 分钟复测；成功延迟超过 1500 ms 标记为降级，连续失败三次进入隔离，后续成功会自动恢复。
+        自动检测每分钟扫描一次，到期节点复测间隔
+        {settings ? `为 ${formatInterval(settings.check_interval_seconds)}（可在「检测设置」中调整）` : "默认 10 分钟"}
+        ；成功延迟超过 1500 ms 标记为降级，连续失败三次进入隔离，后续成功会自动恢复。
       </div>
     </div>
+  )
+}
+
+function formatInterval(seconds: number): string {
+  if (seconds % 3600 === 0) return `${seconds / 3600} 小时`
+  if (seconds % 60 === 0) return `${seconds / 60} 分钟`
+  return `${seconds} 秒`
+}
+
+const defaultSettings: NodeQualitySettings = {
+  check_interval_seconds: 600,
+  timeout_seconds: 8,
+  batch_size: 20,
+  test_url: "https://www.gstatic.com/generate_204",
+}
+
+function QualitySettingsForm({ initial, saving, onCancel, onSave }: {
+  initial: NodeQualitySettings | null
+  saving: boolean
+  onCancel: () => void
+  onSave: (next: NodeQualitySettings) => void
+}) {
+  const [form, setForm] = useState<NodeQualitySettings>(initial ?? defaultSettings)
+  useEffect(() => {
+    if (initial) setForm(initial)
+  }, [initial])
+  return (
+    <section className="rounded-lg border bg-white">
+      <div className="border-b bg-[#f6f8fa] px-4 py-2.5 text-sm font-medium">质量检测设置</div>
+      <div className="grid gap-3 px-4 py-3 sm:grid-cols-2 lg:grid-cols-4">
+        <SettingsField label="复测间隔（秒）" helper="节点上次检测超过该时长后自动复测，60–86400">
+          <Input
+            type="number"
+            min={60}
+            max={86400}
+            value={form.check_interval_seconds}
+            onChange={(event) => setForm({ ...form, check_interval_seconds: Number(event.target.value) })}
+          />
+        </SettingsField>
+        <SettingsField label="单次超时（秒）" helper="经代理访问测试 URL 的最长等待时间，1–30">
+          <Input
+            type="number"
+            min={1}
+            max={30}
+            value={form.timeout_seconds}
+            onChange={(event) => setForm({ ...form, timeout_seconds: Number(event.target.value) })}
+          />
+        </SettingsField>
+        <SettingsField label="每轮批量" helper="一次调度最多复测的节点数，1–200">
+          <Input
+            type="number"
+            min={1}
+            max={200}
+            value={form.batch_size}
+            onChange={(event) => setForm({ ...form, batch_size: Number(event.target.value) })}
+          />
+        </SettingsField>
+        <SettingsField label="测试 URL" helper="建议返回 204 的地址，如 gstatic / cloudflare">
+          <Input
+            value={form.test_url}
+            onChange={(event) => setForm({ ...form, test_url: event.target.value })}
+            placeholder="https://www.gstatic.com/generate_204"
+          />
+        </SettingsField>
+      </div>
+      <div className="flex items-center justify-end gap-2 border-t px-4 py-2.5">
+        <Button variant="ghost" onClick={onCancel} disabled={saving}>取消</Button>
+        <Button onClick={() => onSave(form)} disabled={saving}>
+          {saving && <LoaderCircle className="animate-spin" />}保存设置
+        </Button>
+      </div>
+    </section>
+  )
+}
+
+function SettingsField({ label, helper, children }: { label: string; helper: string; children: React.ReactNode }) {
+  return (
+    <label className="block text-xs">
+      <span className="font-medium text-foreground">{label}</span>
+      <div className="mt-1">{children}</div>
+      <span className="mt-1 block text-[11px] leading-4 text-muted-foreground">{helper}</span>
+    </label>
   )
 }
 

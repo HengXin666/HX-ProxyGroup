@@ -57,6 +57,32 @@ func (s *Server) handleNodes(writer http.ResponseWriter, request *http.Request) 
 	})
 }
 
+func (s *Server) handleNodeSettings(writer http.ResponseWriter, request *http.Request) {
+	switch request.Method {
+	case http.MethodGet:
+		settings, err := s.nodes.QualitySettings(request.Context())
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, settings)
+	case http.MethodPut:
+		var body node.QualitySettings
+		if err := decodeJSONBody(writer, request, &body); err != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		settings, err := s.nodes.UpdateQualitySettings(request.Context(), body)
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, settings)
+	default:
+		methodNotAllowed(writer, request, http.MethodGet, http.MethodPut)
+	}
+}
+
 func (s *Server) handleNode(writer http.ResponseWriter, request *http.Request) {
 	path := strings.TrimPrefix(request.URL.Path, "/api/v1/nodes/")
 	if path == "" || path == request.URL.Path {

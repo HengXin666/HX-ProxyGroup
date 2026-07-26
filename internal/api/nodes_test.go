@@ -19,7 +19,20 @@ import (
 )
 
 type fakeNodeService struct {
-	items []node.Node
+	items    []node.Node
+	settings node.QualitySettings
+}
+
+func (service *fakeNodeService) QualitySettings(context.Context) (node.QualitySettings, error) {
+	if service.settings == (node.QualitySettings{}) {
+		return node.DefaultQualitySettings(), nil
+	}
+	return service.settings, nil
+}
+
+func (service *fakeNodeService) UpdateQualitySettings(_ context.Context, settings node.QualitySettings) (node.QualitySettings, error) {
+	service.settings = settings
+	return settings, nil
 }
 
 func newNodeTestServer(t *testing.T, items []node.Node) *Server {

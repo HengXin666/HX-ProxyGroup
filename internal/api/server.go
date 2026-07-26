@@ -53,6 +53,8 @@ type NodeService interface {
 	CheckMany(context.Context, []string) ([]node.CheckResult, error)
 	Disable(context.Context, string) (node.Node, error)
 	Enable(context.Context, string) (node.Node, error)
+	QualitySettings(context.Context) (node.QualitySettings, error)
+	UpdateQualitySettings(context.Context, node.QualitySettings) (node.QualitySettings, error)
 }
 
 type ProxyGroupService interface {
@@ -210,6 +212,7 @@ func (s *Server) Handler() http.Handler {
 	if s.nodes != nil {
 		mux.HandleFunc("/api/v1/nodes", s.handleNodes)
 		mux.HandleFunc("/api/v1/nodes/", s.handleNode)
+		mux.HandleFunc("/api/v1/node-settings", s.handleNodeSettings)
 	}
 	if s.proxyGroups != nil {
 		mux.HandleFunc("/api/v1/proxy-groups", s.handleProxyGroups)
@@ -432,6 +435,8 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "artifact not found")
 	case errors.Is(err, bundle.ErrSecretBundleDisabled):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "secret_export_disabled", err.Error())
+	case errors.Is(err, node.ErrInvalidSettings):
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, proxygroup.ErrInvalid), errors.Is(err, listener.ErrInvalid):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, proxygroup.ErrNotFound), errors.Is(err, listener.ErrNotFound), errors.Is(err, node.ErrNotFound):

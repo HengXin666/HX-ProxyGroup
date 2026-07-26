@@ -201,6 +201,31 @@ CREATE INDEX node_quality_checks_node_time
     ON node_quality_checks(node_id, checked_at DESC);
 `,
 	},
+	{
+		version: 7,
+		name:    "admin_account_and_sessions",
+		sql: `
+CREATE TABLE admin_account (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    username TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    password_version INTEGER NOT NULL DEFAULT 1 CHECK (password_version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE admin_sessions (
+    token_hash TEXT PRIMARY KEY,
+    csrf_token TEXT NOT NULL,
+    password_version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX admin_sessions_expiry ON admin_sessions(expires_at);
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

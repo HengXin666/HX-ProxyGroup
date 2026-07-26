@@ -3,15 +3,17 @@ import {
   Archive,
   CheckCircle2,
   CircleX,
+  LogOut,
   Network,
   Radio,
   Route,
   X,
 } from "lucide-react"
 
-import { api } from "@/lib/api"
+import { api, setCsrfToken, setUnauthenticatedHandler } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { ArtifactsPage } from "@/pages/artifacts-page"
+import { AuthPage } from "@/pages/auth-page"
 import { NodesPage } from "@/pages/nodes-page"
 import { RoutingPage } from "@/pages/routing-page"
 import { SubscriptionsPage } from "@/pages/subscriptions-page"
@@ -36,10 +38,45 @@ function pageFromHash(): Page {
   return pages.some((item) => item.id === value) ? (value as Page) : "subscriptions"
 }
 
+type AuthGate =
+  | { phase: "checking" }
+  | { phase: "required"; configured: boolean }
+  | { phase: "ready"; username?: string }
+
 export default function App() {
   const [page, setPage] = useState<Page>(pageFromHash)
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [authGate, setAuthGate] = useState<AuthGate>({ phase: "checking" })
+
+  const refreshAuth = useCallback(async () => {
+    try {
+      const status = await api.authStatus()
+      if (!status.configured) {
+        setAuthGate({ phase: "required", configured: false })
+        return
+      }
+      if (!status.authenticated) {
+        setCsrfToken("")
+        setAuthGate({ phase: "required", configured: true })
+        return
+      }
+      if (status.csrf_token) setCsrfToken(status.csrf_token)
+      setAuthGate({ phase: "ready", username: status.username })
+    } catch {
+      // 后端不可达或未启用认证模块时不阻塞页面；健康横幅会提示离线。
+      setAuthGate({ phase: "ready" })
+    }
+  }, [])
+
+  useEffect(() => {
+    setUnauthenticatedHandler(() => {
+      setCsrfToken("")
+      setAuthGate({ phase: "required", configured: true })
+    })
+    void refreshAuth()
+    return () => setUnauthenticatedHandler(null)
+  }, [refreshAuth])
 
   useEffect(() => {
     function onHashChange() {
@@ -76,6 +113,27 @@ export default function App() {
     }, 4_500)
   }, [])
 
+  const handleLogout = useCallback(async () => {
+    try {
+      await api.logout()
+    } finally {
+      setCsrfToken("")
+      setAuthGate({ phase: "required", configured: true })
+    }
+  }, [])
+
+  if (authGate.phase === "checking") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+        正在检查登录状态…
+      </div>
+    )
+  }
+
+  if (authGate.phase === "required") {
+    return <AuthPage configured={authGate.configured} onAuthenticated={() => void refreshAuth()} />
+  }
+
   return (
     <div className="min-h-screen bg-background lg:grid lg:grid-cols-[228px_minmax(0,1fr)]">
       <aside className="hidden min-h-screen border-r bg-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
@@ -107,9 +165,19 @@ export default function App() {
               <StatusDot healthy={healthy} />
             </div>
             <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
-              Mihomo 数据面与节点延迟检测已接入；流量统计、告警和管理员认证仍未完成。
+              Mihomo 数据面、节点延迟检测与管理员认证已接入；流量统计与告警仍未完成。
             </div>
           </div>
+          {authGate.username && (
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-[#57606a] transition-colors hover:bg-[#f3f4f6] hover:text-foreground"
+            >
+              <LogOut className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">退出登录（{authGate.username}）</span>
+            </button>
+          )}
         </div>
       </aside>
 

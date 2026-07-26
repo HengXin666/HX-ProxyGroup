@@ -37,16 +37,34 @@ export class ApiError extends Error {
   }
 }
 
+let csrfToken = ""
+let onUnauthenticated: (() => void) | null = null
+
+export function setCsrfToken(token: string) {
+  csrfToken = token
+}
+
+export function setUnauthenticatedHandler(handler: (() => void) | null) {
+  onUnauthenticated = handler
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json")
+  }
+  const method = (init?.method ?? "GET").toUpperCase()
+  if (csrfToken && method !== "GET" && method !== "HEAD") {
+    headers.set("X-CSRF-Token", csrfToken)
   }
 
   const response = await fetch(path, {
     ...init,
     headers,
   })
+  if (response.status === 401 && !path.startsWith("/api/v1/auth/")) {
+    onUnauthenticated?.()
+  }
   if (!response.ok) {
     let payload: ApiErrorPayload | undefined
     try {
@@ -65,7 +83,52 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+export type AuthStatus = {
+  configured: boolean
+  authenticated: boolean
+  username?: string
+  csrf_token?: string
+}
+
+export type LoginResult = {
+  username: string
+  csrf_token: string
+  expires_at: string
+}
+
 export const api = {
+  authStatus(): Promise<AuthStatus> {
+    return request("/api/v1/auth/status")
+  },
+
+  authSetup(setupToken: string, username: string, password: string): Promise<void> {
+    return request("/api/v1/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({ setup_token: setupToken, username, password }),
+    })
+  },
+
+  async login(username: string, password: string): Promise<LoginResult> {
+    const result = await request<LoginResult>("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    })
+    setCsrfToken(result.csrf_token)
+    return result
+  },
+
+  async logout(): Promise<void> {
+    await request("/api/v1/auth/logout", { method: "POST" })
+    setCsrfToken("")
+  },
+
+  changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    return request("/api/v1/auth/password", {
+      method: "PUT",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    })
+  },
+
   async health(): Promise<boolean> {
     try {
       const result = await request<{ status: string }>("/health/ready")

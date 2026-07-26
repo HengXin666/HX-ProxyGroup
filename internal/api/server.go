@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
+	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
@@ -146,6 +147,7 @@ type Server struct {
 	listeners     ListenerService
 	proxyServices ProxyServiceService
 	dataplane     DataPlaneService
+	auth          AuthService
 	logger        *slog.Logger
 	ready         atomic.Bool
 }
@@ -219,7 +221,12 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/dataplane/status", s.handleDataPlaneStatus)
 		mux.HandleFunc("/api/v1/dataplane/apply", s.handleDataPlaneApply)
 	}
-	return s.requestContext(s.securityHeaders(mux))
+	var handler http.Handler = mux
+	if s.auth != nil {
+		s.registerAuthRoutes(mux)
+		handler = s.requireAuth(handler)
+	}
+	return s.requestContext(s.securityHeaders(handler))
 }
 
 func (s *Server) SetReady(ready bool) {
@@ -388,6 +395,20 @@ func (s *Server) handleVerify(writer http.ResponseWriter, request *http.Request,
 
 func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, err error) {
 	switch {
+	case errors.Is(err, auth.ErrSessionExpired):
+		s.writeAPIError(writer, request, http.StatusUnauthorized, "unauthenticated", "authentication required")
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		s.writeAPIError(writer, request, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
+	case errors.Is(err, auth.ErrLockedOut):
+		s.writeAPIError(writer, request, http.StatusTooManyRequests, "login_locked_out", "too many failed logins, retry later")
+	case errors.Is(err, auth.ErrInvalidSetupToken):
+		s.writeAPIError(writer, request, http.StatusForbidden, "invalid_setup_token", "setup token is missing or wrong")
+	case errors.Is(err, auth.ErrAlreadyConfigured):
+		s.writeAPIError(writer, request, http.StatusConflict, "already_configured", "administrator account already exists")
+	case errors.Is(err, auth.ErrNotConfigured):
+		s.writeAPIError(writer, request, http.StatusConflict, "admin_not_configured", "administrator account is not configured yet")
+	case errors.Is(err, auth.ErrWeakPassword):
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "weak_password", err.Error())
 	case errors.Is(err, artifact.ErrNotFound):
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "artifact not found")
 	case errors.Is(err, bundle.ErrSecretBundleDisabled):

@@ -16,6 +16,7 @@ import (
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/api"
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
+	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
 	"github.com/HengXin666/HX-ProxyGroup/internal/config"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
@@ -124,6 +125,17 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	authService, err := auth.NewService(
+		database,
+		filepath.Join(cfg.DataDirectory, "admin-setup-token"),
+		logger,
+	)
+	if err != nil {
+		return err
+	}
+	if err := authService.EnsureSetupToken(startupContext); err != nil {
+		return err
+	}
 	if err := mihomoManager.Apply(startupContext); err != nil {
 		logger.Error("initial Mihomo apply failed; management API remains available", "error", err)
 	}
@@ -198,6 +210,7 @@ func run(logger *slog.Logger) error {
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
 		api.WithDataPlane(mihomoManager),
+		api.WithAuth(authService),
 	)
 	if err != nil {
 		return err

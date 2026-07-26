@@ -104,12 +104,16 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 		return fmt.Sprint(proxies[left]["name"]) < fmt.Sprint(proxies[right]["name"])
 	})
 
+	groupNameByID := make(map[string]string, len(enabledGroups))
+	for id, record := range enabledGroups {
+		groupNameByID[id] = record.Name
+	}
 	proxyGroups := make([]map[string]any, 0, len(enabledGroups))
-	for _, record := range groups {
+	for _, record := range sortGroupsByDependency(groups) {
 		if !record.Enabled {
 			continue
 		}
-		compiledGroup, err := compileGroup(record, nodeByID, candidates)
+		compiledGroup, err := compileGroup(record, nodeByID, candidates, groupNameByID)
 		if err != nil {
 			return Compiled{}, err
 		}
@@ -197,14 +201,60 @@ func decodeSourceSpec(value string) (proxygroup.SourceSpec, error) {
 	return spec, nil
 }
 
-func compileGroup(record store.ProxyGroupRecord, nodes map[string]compiledNode, candidates []store.GroupNodeCandidate) (map[string]any, error) {
+// sortGroupsByDependency orders groups so every referenced group is emitted
+// before the groups referencing it, keeping the compiled YAML stable and
+// friendly to strict readers. Cycles cannot occur because the service rejects
+// them at write time; unknown references keep their original position.
+func sortGroupsByDependency(groups []store.ProxyGroupRecord) []store.ProxyGroupRecord {
+	index := make(map[string]int, len(groups))
+	for position, group := range groups {
+		index[group.ID] = position
+	}
+	visited := make([]bool, len(groups))
+	ordered := make([]store.ProxyGroupRecord, 0, len(groups))
+	var visit func(position int)
+	visit = func(position int) {
+		if visited[position] {
+			return
+		}
+		visited[position] = true
+		spec, err := decodeSourceSpec(groups[position].SourceSpecJSON)
+		if err == nil {
+			for _, referenced := range spec.GroupIDs {
+				if referencedPosition, exists := index[referenced]; exists {
+					visit(referencedPosition)
+				}
+			}
+		}
+		ordered = append(ordered, groups[position])
+	}
+	for position := range groups {
+		visit(position)
+	}
+	return ordered
+}
+
+func compileGroup(record store.ProxyGroupRecord, nodes map[string]compiledNode, candidates []store.GroupNodeCandidate, groupNameByID map[string]string) (map[string]any, error) {
 	spec, err := decodeSourceSpec(record.SourceSpecJSON)
 	if err != nil {
 		return nil, fmt.Errorf("decode group %q source spec: %w", record.Name, err)
 	}
 	resolvedNodeIDs := proxygroup.ResolveNodeIDs(spec, candidates)
-	members := make([]string, 0, len(resolvedNodeIDs)+1)
-	seen := make(map[string]struct{}, len(resolvedNodeIDs)+1)
+	members := make([]string, 0, len(spec.GroupIDs)+len(resolvedNodeIDs)+1)
+	seen := make(map[string]struct{}, len(spec.GroupIDs)+len(resolvedNodeIDs)+1)
+	for _, groupID := range spec.GroupIDs {
+		name, exists := groupNameByID[groupID]
+		if !exists {
+			// The referenced group was disabled after this spec was saved;
+			// drop the member instead of failing the whole compilation.
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		members = append(members, name)
+	}
 	for _, nodeID := range resolvedNodeIDs {
 		node, exists := nodes[nodeID]
 		if !exists {

@@ -37,7 +37,11 @@ type Reconciler interface {
 }
 
 type SourceSpec struct {
-	NodeIDs         []string `json:"node_ids"`
+	NodeIDs []string `json:"node_ids"`
+	// GroupIDs reference other proxy groups as ordered members, enabling
+	// serial (fallback chain) and parallel (url-test / load-balance)
+	// composition. References must stay acyclic.
+	GroupIDs        []string `json:"group_ids,omitempty"`
 	SubscriptionIDs []string `json:"subscription_ids,omitempty"`
 	NameKeywords    []string `json:"name_keywords,omitempty"`
 	Regions         []string `json:"regions,omitempty"`
@@ -104,11 +108,11 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Group, err
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
-	normalized, err := s.normalize(ctx, request.Name, request.Strategy, request.SourceSpec, enabled, request.EmptyBehavior, request.FallbackTarget)
+	id, err := newID("group")
 	if err != nil {
 		return Group{}, err
 	}
-	id, err := newID("group")
+	normalized, err := s.normalize(ctx, id, request.Name, request.Strategy, request.SourceSpec, enabled, request.EmptyBehavior, request.FallbackTarget)
 	if err != nil {
 		return Group{}, err
 	}
@@ -160,7 +164,7 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	if request.Version < 1 {
 		return Group{}, fmt.Errorf("%w: version must be positive", ErrInvalid)
 	}
-	normalized, err := s.normalize(ctx, request.Name, request.Strategy, request.SourceSpec, request.Enabled, request.EmptyBehavior, request.FallbackTarget)
+	normalized, err := s.normalize(ctx, id, request.Name, request.Strategy, request.SourceSpec, request.Enabled, request.EmptyBehavior, request.FallbackTarget)
 	if err != nil {
 		return Group{}, err
 	}
@@ -189,6 +193,21 @@ func (s *Service) Delete(ctx context.Context, id string, version int) error {
 	if version < 1 {
 		return fmt.Errorf("%w: version must be positive", ErrInvalid)
 	}
+	records, err := s.repository.ListProxyGroups(ctx)
+	if err != nil {
+		return err
+	}
+	if owners := referencedBy(records, id); len(owners) > 0 {
+		names := make([]string, 0, len(owners))
+		for _, record := range records {
+			for _, owner := range owners {
+				if record.ID == owner {
+					names = append(names, record.Name)
+				}
+			}
+		}
+		return fmt.Errorf("%w: group is referenced by %s", ErrConflict, strings.Join(names, ", "))
+	}
 	if err := s.repository.DeleteProxyGroup(ctx, id, version); err != nil {
 		return mapStoreError(err)
 	}
@@ -209,6 +228,7 @@ type normalizedGroup struct {
 
 func (s *Service) normalize(
 	ctx context.Context,
+	selfID string,
 	name string,
 	strategy string,
 	spec SourceSpec,
@@ -230,9 +250,45 @@ func (s *Service) normalize(
 		return normalizedGroup{}, fmt.Errorf("%w: unsupported strategy %q", ErrInvalid, strategy)
 	}
 	spec.NodeIDs = deduplicateIDs(spec.NodeIDs)
+	spec.GroupIDs = deduplicateIDs(spec.GroupIDs)
 	spec.SubscriptionIDs = deduplicateIDs(spec.SubscriptionIDs)
-	if len(spec.NodeIDs) == 0 && len(spec.SubscriptionIDs) == 0 && !spec.IncludeDirect {
-		return normalizedGroup{}, fmt.Errorf("%w: at least one node, subscription, or DIRECT is required", ErrInvalid)
+	if len(spec.NodeIDs) == 0 && len(spec.GroupIDs) == 0 && len(spec.SubscriptionIDs) == 0 && !spec.IncludeDirect {
+		return normalizedGroup{}, fmt.Errorf("%w: at least one node, group, subscription, or DIRECT is required", ErrInvalid)
+	}
+	if len(spec.GroupIDs) > 0 {
+		records, err := s.repository.ListProxyGroups(ctx)
+		if err != nil {
+			return normalizedGroup{}, err
+		}
+		known := make(map[string]store.ProxyGroupRecord, len(records))
+		for _, record := range records {
+			known[record.ID] = record
+		}
+		for _, groupID := range spec.GroupIDs {
+			if groupID == selfID {
+				return normalizedGroup{}, fmt.Errorf("%w: a group cannot reference itself", ErrInvalid)
+			}
+			referenced, exists := known[groupID]
+			if !exists {
+				return normalizedGroup{}, fmt.Errorf("%w: referenced group %q does not exist", ErrInvalid, groupID)
+			}
+			if !referenced.Enabled {
+				return normalizedGroup{}, fmt.Errorf("%w: referenced group %q is disabled", ErrInvalid, referenced.Name)
+			}
+		}
+		if cycle := findCycle(groupEdges(records, selfID, spec), selfID); cycle != nil {
+			names := make([]string, 0, len(cycle))
+			for _, member := range cycle {
+				if record, exists := known[member]; exists {
+					names = append(names, record.Name)
+				} else if member == selfID {
+					names = append(names, name)
+				} else {
+					names = append(names, member)
+				}
+			}
+			return normalizedGroup{}, fmt.Errorf("%w: group references form a cycle: %s", ErrInvalid, strings.Join(names, " -> "))
+		}
 	}
 	if len(spec.NodeIDs) > 0 {
 		nodes, err := s.repository.ListNodeConfigs(ctx, spec.NodeIDs)

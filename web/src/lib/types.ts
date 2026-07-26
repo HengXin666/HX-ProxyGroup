@@ -141,6 +141,7 @@ export type ProxyGroupStrategy = "manual" | "url-test" | "fallback" | "round-rob
 
 export interface ProxyGroupSourceSpec {
   node_ids: string[]
+  group_ids?: string[]
   subscription_ids?: string[]
   name_keywords?: string[]
   regions?: string[]

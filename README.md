@@ -18,7 +18,12 @@
 - [x] 接入 Mihomo 配置编译、校验、进程管理、Listener 就绪检查与失败回滚
 - [x] 创建订阅、节点、代理服务、Backup / Export 的浅色 React 管理面板
 - [x] 实现跨订阅动态 Proxy Group、入口与账号聚合编排、HTTP/SOCKS/Mixed Listener，以及单节点/批量延迟检测
-- [ ] 完成统计、告警、管理员认证、规则流水线和高级协议入口
+- [x] 实现固定阶段规则流水线（Normalize→Enrich→Predicate→Score→Bucket→Sort→Limit）与可解释评分
+- [x] 实现管理员认证（Argon2id、Session、CSRF、登录限速与锁定、改密全体注销）
+- [x] 实现告警状态机（冷却、恢复通知、确认、重启不重复轰炸）与 SMTP 邮件通道
+- [x] 订阅调度增强：Cron 表达式、重试随机抖动与快速重试上限、结构化失败原因持久化、节点管理员禁用
+- [x] v2：浏览器内终端（PTY + WebSocket + xterm.js，默认关闭、强制认证、空闲超时、审计）
+- [ ] 完成流量统计与 30 天聚合、高级协议入口（VLESS/VMess/Trojan WS 模板）
 - [ ] 完成 `install.sh` 与 systemd 双服务注册
 - [ ] 完成基准测试与故障恢复测试
 
@@ -26,7 +31,21 @@
 
 当前里程碑已提供 Go 控制面、SQLite WAL/迁移、事务一致 Online Backup、加密订阅 CRUD、自动刷新与快照、常见节点格式解析和指纹去重，以及 Mihomo 配置编译、语法校验、受控重启、Listener 就绪检查与失败回滚。可在 Web 面板中创建 Proxy Group，开放独立 HTTP、SOCKS5 或 Mixed 端口，并使用 Mihomo Unix Socket API 执行真实代理延迟检测。管理 API 在管理员认证完成前强制绑定显式环回 IP。
 
-当前已经可以作为本机代理服务使用。管理面按订阅树展示节点，可批量刷新订阅和一键测试节点；代理服务可将多个订阅按地区名称标签、协议、状态和延迟筛选后排序取 Top N，并与入口 IP、端口和加密保存的登录账号一次绑定。尚未完成的是流量统计与 30 天聚合、告警、管理员登录、完整可追踪规则流水线、Provider 展开、订阅导出和 VLESS/VMess/Trojan 服务端入口等扩展能力。
+当前已经可以作为本机代理服务使用。管理面按订阅树展示节点，可批量刷新订阅和一键测试节点；代理服务可将多个订阅按地区名称标签、协议、状态和延迟筛选后排序取 Top N，并与入口 IP、端口和加密保存的登录账号一次绑定。
+
+本迭代新增：固定阶段规则流水线（每条规则输出命中/未命中/修改前后值/排除原因，可配置加权评分并支持显式缺失指标策略）；单管理员认证（首次启动生成 0600 的一次性 `admin-setup-token`，通过 `/api/v1/auth/setup` 初始化，此后全部 `/api/v1/*` 强制登录并校验 CSRF）；告警状态机与 SMTP 邮件通道（订阅连续失败、空快照、空代理组、数据面异常，冷却 6 小时、恢复通知一次、确认后静默、重启不重复轰炸）；订阅 Cron 调度、退避抖动与结构化失败原因；节点管理员禁用/启用；以及 v2 浏览器内终端。
+
+尚未完成的是流量统计与 30 天聚合、Provider 展开、订阅导出和 VLESS/VMess/Trojan 服务端入口等扩展能力。
+
+### v2 浏览器内终端
+
+终端默认关闭。启用方式：
+
+```bash
+HX_PROXYGROUP_TERMINAL=1 bash run.sh
+```
+
+约束：必须先完成管理员初始化并登录；每个会话空闲 10 分钟自动断开、最长 2 小时；并发会话上限 2；全部会话的建立与关闭（含操作者、来源地址、时长与关闭原因）写入结构化审计日志。可用 `HX_PROXYGROUP_TERMINAL_SHELL` 覆盖默认 Shell。
 
 ```bash
 cd HX-ProxyGroup
@@ -120,6 +139,7 @@ HX-ProxyGroup 不是新的代理协议实现，而是一个代理控制平面：
 - [`docs/RELIABILITY.md`](docs/RELIABILITY.md)：可靠性、安全、安装和运行约束。
 - [`docs/BACKUP_EXPORT.md`](docs/BACKUP_EXPORT.md)：备份、恢复、便携导出与当前 API。
 - [`docs/SUBSCRIPTIONS.md`](docs/SUBSCRIPTIONS.md)：订阅加密存储、刷新、SSRF 边界与自动调度。
+- [`docs/V2.md`](docs/V2.md)：v2 交付说明——规则流水线、管理员认证、告警、调度增强与浏览器内终端。
 - [`AGENTS.md`](AGENTS.md)：后续 AI / Agent 开发必须遵守的工程规范。
 - [`ref/README.md`](ref/README.md)：参考项目与参考范围。
 
@@ -128,7 +148,7 @@ HX-ProxyGroup 不是新的代理协议实现，而是一个代理控制平面：
 - [ ] 多管理员、多租户和复杂 RBAC。
 - [ ] 多节点控制面集群或分布式数据库。
 - [ ] Kubernetes Operator。
-- [ ] 浏览器内 SSH 终端；该功能进入 v2。
+- [x] ~~浏览器内 SSH 终端；该功能进入 v2。~~ 已随 v2 交付为本机 Shell 终端（默认关闭），见 [`docs/V2.md`](docs/V2.md)。
 - [ ] 自研 VMess、VLESS、Trojan、Hysteria、TUIC 等协议实现。
 - [ ] 承诺“任意未知协议均可解析”；协议能力以当前数据面版本实际支持范围为准。
 

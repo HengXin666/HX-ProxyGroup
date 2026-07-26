@@ -1,128 +1,152 @@
 package proxygroup
 
 import (
-	"sort"
-	"strings"
+	"context"
+	"encoding/json"
+	"fmt"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/pipeline"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
+var defaultRegistry = pipeline.DefaultRegistry()
+
+// Resolution is the explainable output of member resolution.
+type Resolution struct {
+	NodeIDs  []string
+	Excluded []pipeline.Exclusion
+	Traces   []pipeline.Trace
+}
+
+// ResolveNodeIDs resolves group members without traces. It keeps the
+// historical behavior: explicitly pinned node IDs always come first and skip
+// filtering; dynamic selection only runs when subscriptions are referenced.
 func ResolveNodeIDs(spec SourceSpec, candidates []store.GroupNodeCandidate) []string {
+	resolution, err := ResolveMembers(spec, "", candidates)
+	if err != nil {
+		// A SourceSpec already validated by the service cannot produce an
+		// invalid derived pipeline; keep pinned nodes if it somehow does.
+		return deduplicateIDs(spec.NodeIDs)
+	}
+	return resolution.NodeIDs
+}
+
+// ResolveMembers resolves group members through the rule pipeline and returns
+// the full trace so the UI can explain every inclusion and exclusion.
+// rulePipelineJSON optionally extends the pipeline derived from the source
+// spec with stored custom rules (proxy_groups.rule_pipeline_json).
+func ResolveMembers(spec SourceSpec, rulePipelineJSON string, candidates []store.GroupNodeCandidate) (Resolution, error) {
 	resolved := deduplicateIDs(spec.NodeIDs)
+	if len(spec.SubscriptionIDs) == 0 {
+		return Resolution{NodeIDs: resolved}, nil
+	}
+	pipelineSpec, err := derivePipelineSpec(spec, rulePipelineJSON)
+	if err != nil {
+		return Resolution{}, err
+	}
+	built, err := defaultRegistry.Build(pipelineSpec)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("build group pipeline: %w", err)
+	}
+	nodes := make([]*pipeline.Node, 0, len(candidates))
+	for _, candidate := range candidates {
+		nodes = append(nodes, candidateToNode(candidate))
+	}
+	result, err := built.Run(context.Background(), nodes)
+	if err != nil {
+		return Resolution{}, err
+	}
 	seen := make(map[string]struct{}, len(resolved))
 	for _, id := range resolved {
 		seen[id] = struct{}{}
 	}
-	if len(spec.SubscriptionIDs) == 0 {
-		return resolved
-	}
-	selected := make([]store.GroupNodeCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if intersects(candidate.SubscriptionIDs, spec.SubscriptionIDs) && matchesCandidate(candidate, spec) {
-			selected = append(selected, candidate)
-		}
-	}
-	sortCandidates(selected, spec.SortBy)
-	if spec.Limit > 0 && len(selected) > spec.Limit {
-		selected = selected[:spec.Limit]
-	}
-	for _, candidate := range selected {
-		if _, exists := seen[candidate.ID]; exists {
+	for _, nodeCtx := range result.Nodes {
+		if _, exists := seen[nodeCtx.Node.ID]; exists {
 			continue
 		}
-		seen[candidate.ID] = struct{}{}
-		resolved = append(resolved, candidate.ID)
+		seen[nodeCtx.Node.ID] = struct{}{}
+		resolved = append(resolved, nodeCtx.Node.ID)
 	}
-	return resolved
+	return Resolution{NodeIDs: resolved, Excluded: result.Excluded, Traces: result.Traces}, nil
 }
 
-func matchesCandidate(candidate store.GroupNodeCandidate, spec SourceSpec) bool {
-	if len(spec.Protocols) > 0 && !containsFold(spec.Protocols, candidate.Protocol) {
-		return false
+// derivePipelineSpec translates the structured SourceSpec filters into
+// pipeline rules, then merges optional stored custom rules on top.
+func derivePipelineSpec(spec SourceSpec, rulePipelineJSON string) (pipeline.Spec, error) {
+	derived := pipeline.Spec{
+		Enrich: []pipeline.RuleSpec{{Use: "name-region"}},
+		Predicates: []pipeline.RuleSpec{
+			mustRule("subscriptions", map[string]any{"values": spec.SubscriptionIDs}),
+		},
+		Limit: pipeline.LimitSpec{Total: spec.Limit},
 	}
-	if len(spec.States) > 0 && !containsFold(spec.States, candidate.LifecycleState) {
-		return false
+	if len(spec.Protocols) > 0 {
+		derived.Predicates = append(derived.Predicates, mustRule("protocols", map[string]any{"values": spec.Protocols}))
 	}
-	if spec.MaxLatencyMS > 0 && (candidate.LastLatencyMS == nil || *candidate.LastLatencyMS > spec.MaxLatencyMS) {
-		return false
+	if len(spec.States) > 0 {
+		derived.Predicates = append(derived.Predicates, mustRule("states", map[string]any{"values": spec.States}))
 	}
-	name := strings.ToLower(candidate.DisplayName)
-	if len(spec.NameKeywords) > 0 && !containsAny(name, spec.NameKeywords) {
-		return false
+	if len(spec.NameKeywords) > 0 {
+		derived.Predicates = append(derived.Predicates, mustRule("name-keywords", map[string]any{"values": spec.NameKeywords}))
 	}
-	if len(spec.Regions) == 0 {
-		return true
+	if len(spec.Regions) > 0 {
+		derived.Predicates = append(derived.Predicates, mustRule("regions", map[string]any{"values": spec.Regions}))
 	}
-	for _, region := range spec.Regions {
-		if containsAny(name, regionAliases(region)) {
-			return true
-		}
+	if spec.MaxLatencyMS > 0 {
+		derived.Predicates = append(derived.Predicates, mustRule("max-latency", map[string]any{"max_ms": spec.MaxLatencyMS}))
 	}
-	return false
+	if spec.SortBy == "name" {
+		derived.Sort = []string{"name"}
+	} else {
+		derived.Sort = []string{"latency"}
+	}
+	custom, err := pipeline.ParseSpec(rulePipelineJSON)
+	if err != nil {
+		return pipeline.Spec{}, err
+	}
+	derived.Normalize = append(derived.Normalize, custom.Normalize...)
+	derived.Enrich = append(derived.Enrich, custom.Enrich...)
+	derived.Predicates = append(derived.Predicates, custom.Predicates...)
+	if custom.Score != nil {
+		derived.Score = custom.Score
+		derived.Sort = []string{"score"}
+	}
+	if custom.Bucket != nil {
+		derived.Bucket = custom.Bucket
+	}
+	if len(custom.Sort) > 0 {
+		derived.Sort = custom.Sort
+	}
+	if custom.Limit.Total > 0 {
+		derived.Limit.Total = custom.Limit.Total
+	}
+	if custom.Limit.PerBucket > 0 {
+		derived.Limit.PerBucket = custom.Limit.PerBucket
+	}
+	return derived, nil
 }
 
-func intersects(left, right []string) bool {
-	for _, candidate := range left {
-		if containsFold(right, candidate) {
-			return true
-		}
+func candidateToNode(candidate store.GroupNodeCandidate) *pipeline.Node {
+	var latency *int
+	if candidate.LastLatencyMS != nil {
+		value := *candidate.LastLatencyMS
+		latency = &value
 	}
-	return false
-}
-
-func containsFold(values []string, target string) bool {
-	for _, value := range values {
-		if strings.EqualFold(value, target) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsAny(haystack string, needles []string) bool {
-	for _, needle := range needles {
-		if strings.Contains(haystack, strings.ToLower(needle)) {
-			return true
-		}
-	}
-	return false
-}
-
-func regionAliases(region string) []string {
-	switch strings.ToLower(strings.TrimSpace(region)) {
-	case "jp", "japan", "日本":
-		return []string{"jp", "japan", "日本", "东京", "大阪", "tokyo", "osaka"}
-	case "hk", "hong kong", "香港":
-		return []string{"hk", "hong kong", "香港"}
-	case "tw", "taiwan", "台湾", "台灣":
-		return []string{"tw", "taiwan", "台湾", "台灣", "台北", "taipei"}
-	case "sg", "singapore", "新加坡":
-		return []string{"sg", "singapore", "新加坡", "狮城"}
-	case "us", "usa", "united states", "美国", "美國":
-		return []string{"us", "usa", "united states", "美国", "美國", "洛杉矶", "los angeles", "san jose"}
-	case "kr", "korea", "韩国", "韓國":
-		return []string{"kr", "korea", "韩国", "韓國", "首尔", "seoul"}
-	default:
-		return []string{region}
+	return &pipeline.Node{
+		ID:              candidate.ID,
+		Fingerprint:     candidate.Fingerprint,
+		DisplayName:     candidate.DisplayName,
+		Protocol:        candidate.Protocol,
+		LifecycleState:  candidate.LifecycleState,
+		SubscriptionIDs: append([]string(nil), candidate.SubscriptionIDs...),
+		LatencyMS:       latency,
 	}
 }
 
-func sortCandidates(candidates []store.GroupNodeCandidate, sortBy string) {
-	sort.SliceStable(candidates, func(left, right int) bool {
-		if sortBy == "name" {
-			return strings.ToLower(candidates[left].DisplayName) < strings.ToLower(candidates[right].DisplayName)
-		}
-		leftLatency := candidates[left].LastLatencyMS
-		rightLatency := candidates[right].LastLatencyMS
-		if leftLatency == nil {
-			return false
-		}
-		if rightLatency == nil {
-			return true
-		}
-		if *leftLatency != *rightLatency {
-			return *leftLatency < *rightLatency
-		}
-		return candidates[left].ID < candidates[right].ID
-	})
+func mustRule(name string, config map[string]any) pipeline.RuleSpec {
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		panic(fmt.Sprintf("encode pipeline rule %s config: %v", name, err))
+	}
+	return pipeline.RuleSpec{Use: name, Config: encoded}
 }

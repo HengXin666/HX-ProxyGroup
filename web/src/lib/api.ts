@@ -83,6 +83,46 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+export type AlertRecord = {
+  id: string
+  rule: string
+  target_id: string
+  target_name: string
+  severity: "warning" | "critical"
+  status: "firing" | "resolved"
+  message: string
+  fired_at: string
+  resolved_at?: string
+  last_notified_at?: string
+  notify_count: number
+  acknowledged: boolean
+}
+
+export type AlertList = { items: AlertRecord[] }
+
+export type AlertSettings = {
+  enabled: boolean
+  configured: boolean
+  host?: string
+  port?: number
+  security?: string
+  username?: string
+  has_password: boolean
+  from?: string
+  to?: string[]
+}
+
+export type UpdateAlertSettingsRequest = {
+  enabled: boolean
+  host: string
+  port: number
+  security: string
+  username: string
+  password: string
+  from: string
+  to: string[]
+}
+
 export type AuthStatus = {
   configured: boolean
   authenticated: boolean
@@ -127,6 +167,31 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
     })
+  },
+
+  listAlerts(status?: "firing" | "resolved"): Promise<AlertList> {
+    const query = new URLSearchParams({ limit: "200" })
+    if (status) query.set("status", status)
+    return request(`/api/v1/alerts?${query.toString()}`)
+  },
+
+  acknowledgeAlert(id: string): Promise<void> {
+    return request(`/api/v1/alerts/${encodeURIComponent(id)}/ack`, { method: "POST" })
+  },
+
+  alertSettings(): Promise<AlertSettings> {
+    return request("/api/v1/alerts/settings")
+  },
+
+  updateAlertSettings(payload: UpdateAlertSettingsRequest): Promise<AlertSettings> {
+    return request("/api/v1/alerts/settings", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  testAlertSettings(): Promise<void> {
+    return request("/api/v1/alerts/settings/test", { method: "POST" })
   },
 
   async health(): Promise<boolean> {

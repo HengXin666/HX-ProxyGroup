@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   Archive,
+  BellRing,
   CheckCircle2,
   CircleX,
   LogOut,
@@ -12,13 +13,14 @@ import {
 
 import { api, setCsrfToken, setUnauthenticatedHandler } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { AlertsPage } from "@/pages/alerts-page"
 import { ArtifactsPage } from "@/pages/artifacts-page"
 import { AuthPage } from "@/pages/auth-page"
 import { NodesPage } from "@/pages/nodes-page"
 import { RoutingPage } from "@/pages/routing-page"
 import { SubscriptionsPage } from "@/pages/subscriptions-page"
 
-type Page = "subscriptions" | "nodes" | "routing" | "artifacts"
+type Page = "subscriptions" | "nodes" | "routing" | "alerts" | "artifacts"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 
 const pages: Array<{
@@ -30,6 +32,7 @@ const pages: Array<{
   { id: "subscriptions", label: "订阅", description: "来源与刷新", icon: Radio },
   { id: "nodes", label: "节点", description: "解析与生命周期", icon: Network },
   { id: "routing", label: "代理服务", description: "代理组与 Listener", icon: Route },
+  { id: "alerts", label: "告警", description: "状态与邮件通知", icon: BellRing },
   { id: "artifacts", label: "备份", description: "Backup 与 Export", icon: Archive },
 ]
 
@@ -229,6 +232,7 @@ export default function App() {
           {page === "subscriptions" && <SubscriptionsPage onNotice={showNotice} />}
           {page === "nodes" && <NodesPage onNotice={showNotice} />}
           {page === "routing" && <RoutingPage onNotice={showNotice} />}
+          {page === "alerts" && <AlertsPage onNotice={showNotice} />}
           {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
         </main>
       </div>

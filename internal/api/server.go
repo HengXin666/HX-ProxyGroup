@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/alert"
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
@@ -148,6 +149,7 @@ type Server struct {
 	proxyServices ProxyServiceService
 	dataplane     DataPlaneService
 	auth          AuthService
+	alerts        AlertService
 	logger        *slog.Logger
 	ready         atomic.Bool
 }
@@ -220,6 +222,10 @@ func (s *Server) Handler() http.Handler {
 	if s.dataplane != nil {
 		mux.HandleFunc("/api/v1/dataplane/status", s.handleDataPlaneStatus)
 		mux.HandleFunc("/api/v1/dataplane/apply", s.handleDataPlaneApply)
+	}
+	if s.alerts != nil {
+		mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
+		mux.HandleFunc("/api/v1/alerts/", s.handleAlertItem)
 	}
 	var handler http.Handler = mux
 	if s.auth != nil {
@@ -409,6 +415,12 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusConflict, "admin_not_configured", "administrator account is not configured yet")
 	case errors.Is(err, auth.ErrWeakPassword):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "weak_password", err.Error())
+	case errors.Is(err, alert.ErrNotFound):
+		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "alert not found")
+	case errors.Is(err, alert.ErrInvalidSetting):
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+	case errors.Is(err, alert.ErrNoChannel):
+		s.writeAPIError(writer, request, http.StatusConflict, "alert_channel_not_configured", "configure SMTP settings first")
 	case errors.Is(err, artifact.ErrNotFound):
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "artifact not found")
 	case errors.Is(err, bundle.ErrSecretBundleDisabled):

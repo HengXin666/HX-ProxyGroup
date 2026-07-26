@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/alert"
 	"github.com/HengXin666/HX-ProxyGroup/internal/api"
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
@@ -152,6 +153,30 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	alertService, err := alert.NewService(
+		database,
+		secretBox,
+		[]alert.Detector{
+			alert.NewSubscriptionDetector(database),
+			alert.NewEmptyGroupDetector(database),
+			alert.NewDataPlaneDetector(func() alert.DataPlaneStatus {
+				status := mihomoManager.Status()
+				return alert.DataPlaneStatus{
+					Available: status.Available,
+					Running:   status.Running,
+					LastError: status.LastError,
+				}
+			}),
+		},
+		logger,
+	)
+	if err != nil {
+		return err
+	}
+	alertScheduler, err := scheduler.NewAlertScheduler(alertService, logger, scheduler.AlertConfig{})
+	if err != nil {
+		return err
+	}
 
 	portableStatePath := filepath.Join(cfg.DataDirectory, "state", "control-plane.json")
 	if err := writePortableState(portableStatePath, cfg, databaseStatus.SchemaVersion); err != nil {
@@ -211,6 +236,7 @@ func run(logger *slog.Logger) error {
 		api.WithProxyServices(proxyService),
 		api.WithDataPlane(mihomoManager),
 		api.WithAuth(authService),
+		api.WithAlerts(alertService),
 	)
 	if err != nil {
 		return err
@@ -245,13 +271,24 @@ func run(logger *slog.Logger) error {
 		serverErrors <- nil
 	}()
 
-	backgroundErrors := make(chan error, 2)
+	const backgroundTasks = 3
+	backgroundErrors := make(chan error, backgroundTasks)
 	go func() {
 		backgroundErrors <- subscriptionScheduler.Run(ctx)
 	}()
 	go func() {
 		backgroundErrors <- nodeScheduler.Run(ctx)
 	}()
+	go func() {
+		backgroundErrors <- alertScheduler.Run(ctx)
+	}()
+	drainBackground := func(alreadyRead int) error {
+		var joined error
+		for index := alreadyRead; index < backgroundTasks; index++ {
+			joined = errors.Join(joined, <-backgroundErrors)
+		}
+		return joined
+	}
 
 	shutdownHTTP := func() error {
 		apiServer.SetReady(false)
@@ -266,21 +303,16 @@ func run(logger *slog.Logger) error {
 	select {
 	case serverErr := <-serverErrors:
 		stop()
-		firstBackgroundErr := <-backgroundErrors
-		secondBackgroundErr := <-backgroundErrors
-		return errors.Join(serverErr, firstBackgroundErr, secondBackgroundErr)
+		return errors.Join(serverErr, drainBackground(0))
 	case firstBackgroundErr := <-backgroundErrors:
 		stop()
 		shutdownErr := shutdownHTTP()
 		serverErr := <-serverErrors
-		secondBackgroundErr := <-backgroundErrors
-		return errors.Join(firstBackgroundErr, secondBackgroundErr, shutdownErr, serverErr)
+		return errors.Join(firstBackgroundErr, drainBackground(1), shutdownErr, serverErr)
 	case <-ctx.Done():
 		shutdownErr := shutdownHTTP()
 		serverErr := <-serverErrors
-		firstBackgroundErr := <-backgroundErrors
-		secondBackgroundErr := <-backgroundErrors
-		return errors.Join(shutdownErr, serverErr, firstBackgroundErr, secondBackgroundErr)
+		return errors.Join(shutdownErr, serverErr, drainBackground(0))
 	}
 }
 

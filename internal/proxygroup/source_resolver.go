@@ -11,6 +11,15 @@ import (
 
 var defaultRegistry = pipeline.DefaultRegistry()
 
+// DecodeSourceSpec parses a stored source_spec_json value.
+func DecodeSourceSpec(raw string) (SourceSpec, error) {
+	var spec SourceSpec
+	if err := json.Unmarshal([]byte(raw), &spec); err != nil {
+		return SourceSpec{}, fmt.Errorf("decode source spec: %w", err)
+	}
+	return spec, nil
+}
+
 // Resolution is the explainable output of member resolution.
 type Resolution struct {
 	NodeIDs  []string

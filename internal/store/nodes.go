@@ -29,6 +29,8 @@ type NodeRecord struct {
 	RetiredAt                *time.Time
 	LastCheckedAt            *time.Time
 	LastLatencyMS            *int
+	LastErrorCode            string
+	LastErrorMessage         string
 	ConsecutiveProbeFailures int
 	Version                  int
 	SourceCount              int
@@ -367,6 +369,10 @@ SELECT
     n.last_latency_ms,
     n.consecutive_probe_failures,
     n.version,
+    (SELECT qc.error_code FROM node_quality_checks qc
+     WHERE qc.node_id = n.id ORDER BY qc.checked_at DESC LIMIT 1) AS last_error_code,
+    (SELECT qc.error_message FROM node_quality_checks qc
+     WHERE qc.node_id = n.id ORDER BY qc.checked_at DESC LIMIT 1) AS last_error_message,
     COUNT(DISTINCT CASE WHEN ss.status = 'active' THEN sn.subscription_id END) AS source_count
 FROM nodes n
 LEFT JOIN subscription_nodes sn ON sn.node_id = n.id
@@ -419,6 +425,10 @@ SELECT
     n.last_latency_ms,
     n.consecutive_probe_failures,
     n.version,
+    (SELECT qc.error_code FROM node_quality_checks qc
+     WHERE qc.node_id = n.id ORDER BY qc.checked_at DESC LIMIT 1) AS last_error_code,
+    (SELECT qc.error_message FROM node_quality_checks qc
+     WHERE qc.node_id = n.id ORDER BY qc.checked_at DESC LIMIT 1) AS last_error_message,
     COUNT(DISTINCT CASE WHEN ss.status = 'active' THEN sn.subscription_id END) AS source_count
 FROM nodes n
 LEFT JOIN subscription_nodes sn ON sn.node_id = n.id
@@ -443,6 +453,8 @@ func scanNode(source scanner) (NodeRecord, error) {
 	var retired sql.NullString
 	var lastChecked sql.NullString
 	var lastLatency sql.NullInt64
+	var lastErrorCode sql.NullString
+	var lastErrorMessage sql.NullString
 	if err := source.Scan(
 		&record.ID,
 		&record.Fingerprint,
@@ -456,10 +468,14 @@ func scanNode(source scanner) (NodeRecord, error) {
 		&lastLatency,
 		&record.ConsecutiveProbeFailures,
 		&record.Version,
+		&lastErrorCode,
+		&lastErrorMessage,
 		&record.SourceCount,
 	); err != nil {
 		return NodeRecord{}, err
 	}
+	record.LastErrorCode = lastErrorCode.String
+	record.LastErrorMessage = lastErrorMessage.String
 	parsedFirstSeen, err := time.Parse(time.RFC3339Nano, firstSeen)
 	if err != nil {
 		return NodeRecord{}, fmt.Errorf("parse node first_seen_at: %w", err)

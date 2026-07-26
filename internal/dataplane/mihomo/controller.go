@@ -72,6 +72,9 @@ func (m *Manager) TestProxy(
 	}
 	response, err := client.Do(request)
 	if err != nil {
+		if strings.Contains(err.Error(), "dial unix") {
+			return 0, fmt.Errorf("%w: control socket unreachable", ErrNotRunning)
+		}
 		return 0, fmt.Errorf("Mihomo proxy delay request failed: %w", err)
 	}
 	defer response.Body.Close()

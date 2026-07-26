@@ -105,6 +105,8 @@ export interface NodeRecord {
   retired_at?: string
   last_checked_at?: string
   last_latency_ms?: number
+  last_error_code?: string
+  last_error_message?: string
   consecutive_probe_failures: number
   version: number
   source_count: number

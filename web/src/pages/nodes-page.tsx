@@ -73,7 +73,12 @@ export function NodesPage({ onNotice }: NodesPageProps) {
     try {
       const result = await api.checkNode(item.id)
       setItems((current) => current.map((candidate) => candidate.id === item.id ? result.node : candidate))
-      onNotice(result.success ? `检测成功：${result.latency_ms ?? "—"} ms` : `检测失败：${result.error_code || "probe_failed"}`, result.success ? "success" : "error")
+      onNotice(
+        result.success
+          ? `检测成功：${result.latency_ms ?? "—"} ms`
+          : `检测失败：${errorCodeLabel(result.error_code)}${result.error ? `（${result.error}）` : ""}`,
+        result.success ? "success" : "error",
+      )
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "节点检测失败", "error")
     } finally {
@@ -172,6 +177,21 @@ export function NodesPage({ onNotice }: NodesPageProps) {
   )
 }
 
+const errorCodeLabels: Record<string, string> = {
+  node_unreachable: "节点不可用",
+  timeout: "测速超时",
+  connect_failed: "连接被拒绝",
+  dataplane_down: "数据面未运行",
+  proxy_not_found: "配置缺少该节点",
+  http_failed: "HTTP 响应异常",
+  probe_failed: "检测失败",
+}
+
+function errorCodeLabel(code?: string): string {
+  if (!code) return "检测失败"
+  return errorCodeLabels[code] ?? code
+}
+
 function formatInterval(seconds: number): string {
   if (seconds % 3600 === 0) return `${seconds / 3600} 小时`
   if (seconds % 60 === 0) return `${seconds / 60} 分钟`
@@ -262,7 +282,19 @@ function NodeRow({ item, checking, onCheck, onToggle }: { item: NodeRecord; chec
   return <tr className="hover:bg-[#f6f8fa]">
     <Td><div className="flex min-w-0 items-center gap-2.5"><div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-white text-[#57606a]"><CircleDot className="size-3.5" /></div><div className="min-w-0"><div className="max-w-[300px] truncate font-medium text-foreground" title={item.display_name}>{item.display_name}</div><div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{compactId(item.id)}</div></div></div></Td>
     <Td><Badge variant="outline">{item.protocol.toUpperCase()}</Badge></Td>
-    <Td><Badge variant={state.variant}>{state.label}</Badge></Td>
+    <Td>
+      <div className="flex items-center gap-1.5">
+        <Badge variant={state.variant}>{state.label}</Badge>
+        {item.last_error_code && (
+          <span
+            className="max-w-[160px] truncate text-[11px] text-[#a40e26]"
+            title={item.last_error_message || item.last_error_code}
+          >
+            {errorCodeLabel(item.last_error_code)}
+          </span>
+        )}
+      </div>
+    </Td>
     <Td>{item.last_latency_ms == null ? "—" : <span className="inline-flex items-center gap-1 tabular-nums"><Gauge className="size-3.5" />{item.last_latency_ms} ms</span>}</Td>
     <Td><span className={cn("tabular-nums", item.consecutive_probe_failures > 0 && "text-[#a40e26]")}>{item.consecutive_probe_failures}</span></Td>
     <Td>{formatDate(item.last_checked_at)}</Td>

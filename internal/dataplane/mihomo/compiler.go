@@ -147,10 +147,23 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	}
 
 	document := map[string]any{
-		"mode":         "rule",
-		"log-level":    "warning",
-		"ipv6":         false,
-		"allow-lan":    false,
+		"mode":      "rule",
+		"log-level": "warning",
+		"ipv6":      false,
+		"allow-lan": false,
+		// Without an explicit DNS section Mihomo falls back to the system
+		// resolver; a polluted system DNS silently breaks every node whose
+		// server is a domain name while IP-based nodes keep working.
+		"dns": map[string]any{
+			"enable":             true,
+			"ipv6":               false,
+			"enhanced-mode":      "normal",
+			"default-nameserver": []string{"223.5.5.5", "119.29.29.29"},
+			"nameserver": []string{
+				"https://223.5.5.5/dns-query",
+				"https://120.53.53.53/dns-query",
+			},
+		},
 		"proxies":      proxies,
 		"proxy-groups": proxyGroups,
 		"listeners":    listenerConfigs,

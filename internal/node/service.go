@@ -60,6 +60,8 @@ type Node struct {
 	RetiredAt                *time.Time `json:"retired_at,omitempty"`
 	LastCheckedAt            *time.Time `json:"last_checked_at,omitempty"`
 	LastLatencyMS            *int       `json:"last_latency_ms,omitempty"`
+	LastErrorCode            string     `json:"last_error_code,omitempty"`
+	LastErrorMessage         string     `json:"last_error_message,omitempty"`
 	ConsecutiveProbeFailures int        `json:"consecutive_probe_failures"`
 	Version                  int        `json:"version"`
 	SourceCount              int        `json:"source_count"`
@@ -235,6 +237,11 @@ func (s *Service) checkPrepared(ctx context.Context, id string, settings Quality
 		timeout = defaultTestTimeout
 	}
 	latency, probeErr := s.prober.TestProxy(ctx, config.Fingerprint, testURL, timeout)
+	if probeErr != nil && isDataplaneUnavailable(probeErr) {
+		// A dead control socket is a dataplane outage, not a property of this
+		// node: surface the error instead of polluting the quality history.
+		return CheckResult{}, fmt.Errorf("%w: %s", ErrCheckUnavailable, sanitizeProbeError(probeErr))
+	}
 	quality := store.NodeQualityResult{
 		NodeID:    id,
 		CheckedAt: checkedAt,
@@ -378,7 +385,9 @@ func (s *Service) CheckDue(ctx context.Context) ([]CheckResult, error) {
 	for _, id := range ids {
 		result, checkErr := s.checkPrepared(ctx, id, settings)
 		if checkErr != nil {
-			if errors.Is(checkErr, context.Canceled) || errors.Is(checkErr, context.DeadlineExceeded) {
+			if errors.Is(checkErr, context.Canceled) ||
+				errors.Is(checkErr, context.DeadlineExceeded) ||
+				errors.Is(checkErr, ErrCheckUnavailable) {
 				return results, checkErr
 			}
 			continue
@@ -400,15 +409,31 @@ func fromRecord(record store.NodeRecord) Node {
 		RetiredAt:                record.RetiredAt,
 		LastCheckedAt:            record.LastCheckedAt,
 		LastLatencyMS:            record.LastLatencyMS,
+		LastErrorCode:            record.LastErrorCode,
+		LastErrorMessage:         record.LastErrorMessage,
 		ConsecutiveProbeFailures: record.ConsecutiveProbeFailures,
 		Version:                  record.Version,
 		SourceCount:              record.SourceCount,
 	}
 }
 
+// isDataplaneUnavailable reports whether a probe failure was caused by the
+// Mihomo process or control socket rather than the tested node. The prober is
+// an interface, so detection is based on the stable error text.
+func isDataplaneUnavailable(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "mihomo is not running") || strings.Contains(message, "dial unix")
+}
+
 func classifyProbeError(err error) string {
 	message := strings.ToLower(err.Error())
 	switch {
+	case isDataplaneUnavailable(err):
+		return "dataplane_down"
+	case strings.Contains(message, "status 404"):
+		return "proxy_not_found"
+	case strings.Contains(message, "delay test"), strings.Contains(message, "status 503"):
+		return "node_unreachable"
 	case strings.Contains(message, "timeout"), strings.Contains(message, "deadline exceeded"):
 		return "timeout"
 	case strings.Contains(message, "connection refused"), strings.Contains(message, "network is unreachable"):

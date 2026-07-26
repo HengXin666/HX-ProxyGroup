@@ -21,6 +21,8 @@ import type {
   RefreshResult,
   Subscription,
   SubscriptionList,
+  UpdateListenerRequest,
+  UpdateProxyGroupRequest,
   VerifyResult,
 } from "@/lib/types"
 
@@ -307,6 +309,13 @@ export const api = {
     })
   },
 
+  updateProxyGroup(id: string, payload: UpdateProxyGroupRequest): Promise<ProxyGroup> {
+    return request(`/api/v1/proxy-groups/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
   deleteProxyGroup(id: string, version: number): Promise<void> {
     return request(`/api/v1/proxy-groups/${encodeURIComponent(id)}?version=${version}`, {
       method: "DELETE",
@@ -327,6 +336,13 @@ export const api = {
   createProxyService(payload: CreateProxyServiceRequest): Promise<ProxyServiceRecord> {
     return request("/api/v1/proxy-services", {
       method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  updateListener(id: string, payload: UpdateListenerRequest): Promise<ListenerRecord> {
+    return request(`/api/v1/listeners/${encodeURIComponent(id)}`, {
+      method: "PUT",
       body: JSON.stringify(payload),
     })
   },

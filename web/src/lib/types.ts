@@ -180,6 +180,16 @@ export interface CreateProxyGroupRequest {
   empty_behavior?: "fail-closed" | "direct"
 }
 
+export interface UpdateProxyGroupRequest {
+  version: number
+  name: string
+  strategy: ProxyGroupStrategy
+  source_spec: ProxyGroupSourceSpec
+  enabled: boolean
+  empty_behavior: "fail-closed" | "direct"
+  fallback_target_id?: string
+}
+
 export type ListenerKind = "http" | "socks" | "mixed"
 
 export interface ListenerRecord {
@@ -212,6 +222,21 @@ export interface CreateListenerRequest {
     password: string
   }
   enabled?: boolean
+}
+
+export interface UpdateListenerRequest {
+  version: number
+  name: string
+  kind: ListenerKind
+  bind_address: string
+  port: number
+  proxy_group_id: string
+  auth?: {
+    username: string
+    password: string
+  }
+  clear_auth?: boolean
+  enabled: boolean
 }
 
 export interface CreateProxyServiceRequest {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
 import { Cable, CheckCircle2, CircleAlert, Copy, Gauge, Link2, LoaderCircle, Network, Plus, RefreshCw, Server, Trash2 } from "lucide-react"
 
+import { strategyMeta } from "@/components/blueprint/nodes"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -13,14 +14,9 @@ interface RoutingPageProps {
   onNotice: (message: string, tone?: "success" | "error") => void
 }
 
-const strategies: Array<{ value: ProxyGroupStrategy; label: string }> = [
-  { value: "url-test", label: "自动测速" },
-  { value: "fallback", label: "故障切换" },
-  { value: "round-robin", label: "轮询" },
-  { value: "consistent-hashing", label: "一致性哈希" },
-  { value: "sticky-sessions", label: "会话粘滞" },
-  { value: "manual", label: "手动选择" },
-]
+const strategies: Array<{ value: ProxyGroupStrategy; label: string }> = (
+  ["url-test", "fallback", "round-robin", "consistent-hashing", "sticky-sessions", "manual"] as const
+).map((value) => ({ value, label: strategyMeta[value].label }))
 
 const regions = [
   { value: "jp", label: "日本" }, { value: "hk", label: "香港" }, { value: "tw", label: "台湾" },

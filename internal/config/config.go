@@ -1,0 +1,91 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+type Config struct {
+	ListenAddress     string
+	DataDirectory     string
+	ApplicationConfig string
+	DatabasePath      string
+	MasterKeyPath     string
+	RuntimeConfigPath string
+	SnapshotsPath     string
+	MihomoBinary      string
+}
+
+func Default() Config {
+	dataDirectory := envOrDefault("HX_PROXYGROUP_DATA_DIR", "./data")
+	return Config{
+		ListenAddress:     envOrDefault("HX_PROXYGROUP_LISTEN", "127.0.0.1:19090"),
+		DataDirectory:     dataDirectory,
+		ApplicationConfig: envOrDefault("HX_PROXYGROUP_CONFIG", "./config.yaml"),
+		DatabasePath:      envOrDefault("HX_PROXYGROUP_DATABASE", filepath.Join(dataDirectory, "hx-proxygroup.db")),
+		MasterKeyPath:     envOrDefault("HX_PROXYGROUP_MASTER_KEY", filepath.Join(dataDirectory, "master.key")),
+		RuntimeConfigPath: envOrDefault("HX_PROXYGROUP_RUNTIME_CONFIG", filepath.Join(dataDirectory, "runtime", "active.yaml")),
+		SnapshotsPath:     envOrDefault("HX_PROXYGROUP_SNAPSHOTS", filepath.Join(dataDirectory, "snapshots")),
+		MihomoBinary:      envOrDefault("HX_PROXYGROUP_MIHOMO", "mihomo"),
+	}
+}
+
+func (config Config) Validate() error {
+	if strings.TrimSpace(config.ListenAddress) == "" {
+		return errors.New("listen address is required")
+	}
+	host, portText, err := net.SplitHostPort(config.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("invalid listen address: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("v1 bootstrap API must bind to an explicit loopback IP until administrator authentication is implemented")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("listen port must be an integer between 1 and 65535")
+	}
+	if strings.TrimSpace(config.DataDirectory) == "" {
+		return errors.New("data directory is required")
+	}
+	if strings.TrimSpace(config.ApplicationConfig) == "" {
+		return errors.New("application config path is required")
+	}
+	if strings.TrimSpace(config.DatabasePath) == "" {
+		return errors.New("database path is required")
+	}
+	if strings.TrimSpace(config.MasterKeyPath) == "" {
+		return errors.New("master key path is required")
+	}
+	return nil
+}
+
+func (config Config) EnsureDirectories() error {
+	directories := []string{
+		config.DataDirectory,
+		filepath.Join(config.DataDirectory, "artifacts"),
+		filepath.Dir(config.DatabasePath),
+		filepath.Dir(config.MasterKeyPath),
+		filepath.Dir(config.RuntimeConfigPath),
+		config.SnapshotsPath,
+	}
+	for _, directory := range directories {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return fmt.Errorf("create directory %q: %w", directory, err)
+		}
+	}
+	return nil
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}

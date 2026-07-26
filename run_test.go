@@ -1,0 +1,393 @@
+package hxproxygroup
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestRunScriptSyntaxAndHelp(t *testing.T) {
+	t.Parallel()
+
+	command := exec.Command("bash", "-n", "run.sh")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("bash -n run.sh failed: %v\n%s", err, output)
+	}
+
+	command = exec.Command("bash", "run.sh", "--help")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run.sh --help failed: %v\n%s", err, output)
+	}
+	help := string(output)
+	for _, expected := range []string{
+		"--backend-only",
+		"--require-frontend",
+		"--install-frontend-deps",
+		"--no-install-frontend-deps",
+		"--mihomo",
+		"Ctrl+C stops all child processes",
+	} {
+		if !strings.Contains(help, expected) {
+			t.Errorf("run.sh help is missing %q", expected)
+		}
+	}
+}
+
+func TestRunScriptStartsAndStopsBackend(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("listener Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command := exec.Command(
+		"bash",
+		"run.sh",
+		"--backend-only",
+		"--listen", address,
+		"--data-dir", t.TempDir(),
+	)
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("run.sh Start() error = %v", err)
+	}
+
+	waitResult := make(chan error, 1)
+	go func() {
+		waitResult <- command.Wait()
+	}()
+
+	client := &http.Client{
+		Timeout: 250 * time.Millisecond,
+		Transport: &http.Transport{
+			Proxy: nil,
+		},
+	}
+	healthURL := "http://" + address + "/health/ready"
+	deadline := time.Now().Add(20 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-waitResult:
+			t.Fatalf("run.sh exited before ready: %v\nstdout:\n%s\nstderr:\n%s", waitErr, stdout.String(), stderr.String())
+		default:
+		}
+		response, requestErr := client.Get(healthURL)
+		if requestErr == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				ready = true
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		_ = command.Process.Kill()
+		<-waitResult
+		t.Fatalf("backend did not become ready\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	}
+
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		_ = command.Process.Kill()
+		<-waitResult
+		t.Fatalf("signal run.sh: %v", err)
+	}
+	select {
+	case <-waitResult:
+	case <-time.After(5 * time.Second):
+		_ = command.Process.Kill()
+		<-waitResult
+		t.Fatal("run.sh did not stop after SIGTERM")
+	}
+
+	response, requestErr := client.Get(healthURL)
+	if requestErr == nil {
+		response.Body.Close()
+		t.Fatal("backend still accepts requests after run.sh stopped")
+	}
+}
+
+func TestRunScriptStartsFrontendAndProxiesBackend(t *testing.T) {
+	backendListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("backend Listen() error = %v", err)
+	}
+	backendAddress := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener Close() error = %v", err)
+	}
+	frontendListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("frontend Listen() error = %v", err)
+	}
+	frontendPort := frontendListener.Addr().(*net.TCPAddr).Port
+	if err := frontendListener.Close(); err != nil {
+		t.Fatalf("frontend listener Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command := exec.Command(
+		"bash",
+		"run.sh",
+		"--listen", backendAddress,
+		"--frontend-host", "127.0.0.1",
+		"--frontend-port", fmt.Sprintf("%d", frontendPort),
+		"--data-dir", t.TempDir(),
+	)
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("run.sh Start() error = %v", err)
+	}
+	waitResult := make(chan error, 1)
+	go func() { waitResult <- command.Wait() }()
+
+	client := &http.Client{Timeout: 500 * time.Millisecond, Transport: &http.Transport{Proxy: nil}}
+	frontendURL := fmt.Sprintf("http://127.0.0.1:%d", frontendPort)
+	deadline := time.Now().Add(25 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-waitResult:
+			t.Fatalf("run.sh exited before frontend ready: %v\nstdout:\n%s\nstderr:\n%s", waitErr, stdout.String(), stderr.String())
+		default:
+		}
+		pageResponse, pageErr := client.Get(frontendURL + "/")
+		proxyResponse, proxyErr := client.Get(frontendURL + "/health/ready")
+		if pageErr == nil {
+			pageResponse.Body.Close()
+		}
+		if proxyErr == nil {
+			proxyResponse.Body.Close()
+		}
+		if pageErr == nil && proxyErr == nil && pageResponse.StatusCode == http.StatusOK && proxyResponse.StatusCode == http.StatusOK {
+			ready = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		_ = command.Process.Kill()
+		<-waitResult
+		t.Fatalf("frontend or proxy did not become ready\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	}
+
+	client.Timeout = 2 * time.Second
+	createRequest, err := http.NewRequest(
+		http.MethodPost,
+		frontendURL+"/api/v1/subscriptions",
+		bytes.NewBufferString(`{"name":"run-e2e","source_type":"inline","source_config":{"inline":"vless://11111111-1111-1111-1111-111111111111@run.example.com:443#run"},"refresh_interval_seconds":3600}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRequest.Header.Set("Content-Type", "application/json")
+	createResponse, err := client.Do(createRequest)
+	if err != nil {
+		t.Fatalf("create subscription through frontend proxy: %v", err)
+	}
+	defer createResponse.Body.Close()
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create subscription status = %d", createResponse.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResponse.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created subscription: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("created subscription id is empty")
+	}
+
+	refreshRequest, err := http.NewRequest(http.MethodPost, frontendURL+"/api/v1/subscriptions/"+created.ID+"/refresh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshResponse, err := client.Do(refreshRequest)
+	if err != nil {
+		t.Fatalf("refresh subscription through frontend proxy: %v", err)
+	}
+	refreshResponse.Body.Close()
+	if refreshResponse.StatusCode != http.StatusOK {
+		t.Fatalf("refresh subscription status = %d", refreshResponse.StatusCode)
+	}
+
+	nodeResponse, err := client.Get(frontendURL + "/api/v1/nodes?protocol=vless&state=candidate")
+	if err != nil {
+		t.Fatalf("list nodes through frontend proxy: %v", err)
+	}
+	defer nodeResponse.Body.Close()
+	if nodeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("list nodes status = %d", nodeResponse.StatusCode)
+	}
+	var nodeList struct {
+		Items []struct {
+			ID       string `json:"id"`
+			Protocol string `json:"protocol"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(nodeResponse.Body).Decode(&nodeList); err != nil {
+		t.Fatalf("decode node list: %v", err)
+	}
+	if len(nodeList.Items) != 1 || nodeList.Items[0].ID == "" || nodeList.Items[0].Protocol != "vless" {
+		t.Fatalf("unexpected node list: %#v", nodeList.Items)
+	}
+
+	groupRequest, err := http.NewRequest(
+		http.MethodPost,
+		frontendURL+"/api/v1/proxy-groups",
+		bytes.NewBufferString(`{"name":"run-direct","strategy":"manual","source_spec":{"node_ids":[],"include_direct":true},"empty_behavior":"fail-closed"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupRequest.Header.Set("Content-Type", "application/json")
+	groupResponse, err := client.Do(groupRequest)
+	if err != nil {
+		t.Fatalf("create proxy group through frontend proxy: %v", err)
+	}
+	if groupResponse.StatusCode != http.StatusCreated {
+		groupResponse.Body.Close()
+		t.Fatalf("create proxy group status = %d", groupResponse.StatusCode)
+	}
+	var createdGroup struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(groupResponse.Body).Decode(&createdGroup); err != nil {
+		groupResponse.Body.Close()
+		t.Fatalf("decode proxy group: %v", err)
+	}
+	groupResponse.Body.Close()
+	if createdGroup.ID == "" {
+		t.Fatal("created proxy group id is empty")
+	}
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve proxy listener port: %v", err)
+	}
+	proxyPort := proxyListener.Addr().(*net.TCPAddr).Port
+	if err := proxyListener.Close(); err != nil {
+		t.Fatalf("release proxy listener port: %v", err)
+	}
+	listenerPayload := fmt.Sprintf(
+		`{"name":"run-mixed","kind":"mixed","bind_address":"127.0.0.1","port":%d,"proxy_group_id":%q}`,
+		proxyPort,
+		createdGroup.ID,
+	)
+	listenerRequest, err := http.NewRequest(
+		http.MethodPost,
+		frontendURL+"/api/v1/listeners",
+		bytes.NewBufferString(listenerPayload),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerRequest.Header.Set("Content-Type", "application/json")
+	listenerResponse, err := client.Do(listenerRequest)
+	if err != nil {
+		t.Fatalf("create listener through frontend proxy: %v", err)
+	}
+	listenerResponse.Body.Close()
+	if listenerResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create listener status = %d", listenerResponse.StatusCode)
+	}
+
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte("run-script-mihomo-proxy"))
+	}))
+	defer origin.Close()
+	proxyURL, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+	}
+	proxiedResponse, err := proxyClient.Get(origin.URL)
+	if err != nil {
+		t.Fatalf("request through run.sh Mihomo listener: %v", err)
+	}
+	proxiedBody, err := io.ReadAll(proxiedResponse.Body)
+	proxiedResponse.Body.Close()
+	if err != nil {
+		t.Fatalf("read proxied response: %v", err)
+	}
+	if string(proxiedBody) != "run-script-mihomo-proxy" {
+		t.Fatalf("proxied response = %q", proxiedBody)
+	}
+
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		_ = command.Process.Kill()
+		<-waitResult
+		t.Fatalf("signal run.sh: %v", err)
+	}
+	select {
+	case <-waitResult:
+	case <-time.After(8 * time.Second):
+		_ = command.Process.Kill()
+		<-waitResult
+		t.Fatal("run.sh did not stop frontend and backend")
+	}
+	if response, requestErr := client.Get(frontendURL + "/"); requestErr == nil {
+		response.Body.Close()
+		t.Fatal("frontend still accepts requests after run.sh stopped")
+	}
+}
+
+func TestRunScriptDoesNotRegisterSystemServices(t *testing.T) {
+	t.Parallel()
+
+	content, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatalf("ReadFile(run.sh) error = %v", err)
+	}
+	script := string(content)
+	for _, forbidden := range []string{
+		"systemctl ",
+		"useradd ",
+		"groupadd ",
+		"sudo ",
+		"/etc/systemd/system",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("run.sh must not contain service-install operation %q", forbidden)
+		}
+	}
+	for _, expected := range []string{
+		"go build",
+		"--master-key",
+		"--mihomo",
+		"package.json",
+		"VITE_BACKEND_TARGET",
+		"wait -n",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Errorf("run.sh is missing %q", expected)
+		}
+	}
+}

@@ -1,0 +1,143 @@
+# HX-ProxyGroup
+
+面向个人服务器部署的代理订阅、节点质量评估、代理组编排与多协议出口管理平台。
+
+> 项目名中的“代理组”统一使用 **Proxy Group**，目录名为 `HX-ProxyGroup`。
+
+## 当前阶段
+
+- [x] 明确 v1 产品边界与核心功能
+- [x] 明确控制面 / 数据面分离架构
+- [x] 明确低占用、高性能、可恢复部署约束
+- [x] 创建 Go 控制面工程与健康检查
+- [x] 实现备份 / 便携导出归档、下载与完整性校验 API
+- [x] 接入 SQLite Desired State、迁移与 Online Backup
+- [x] 实现加密订阅 CRUD、手动刷新、快照与自动调度
+- [x] 实现 Clash/Mihomo YAML 与常见分享 URI 解析、稳定指纹去重和节点生命周期持久化
+- [ ] 补齐剩余订阅协议兼容、Provider 展开与解析兼容矩阵
+- [x] 接入 Mihomo 配置编译、校验、进程管理、Listener 就绪检查与失败回滚
+- [x] 创建订阅、节点、代理服务、Backup / Export 的浅色 React 管理面板
+- [x] 实现跨订阅动态 Proxy Group、入口与账号聚合编排、HTTP/SOCKS/Mixed Listener，以及单节点/批量延迟检测
+- [ ] 完成统计、告警、管理员认证、规则流水线和高级协议入口
+- [ ] 完成 `install.sh` 与 systemd 双服务注册
+- [ ] 完成基准测试与故障恢复测试
+
+## 当前可运行能力
+
+当前里程碑已提供 Go 控制面、SQLite WAL/迁移、事务一致 Online Backup、加密订阅 CRUD、自动刷新与快照、常见节点格式解析和指纹去重，以及 Mihomo 配置编译、语法校验、受控重启、Listener 就绪检查与失败回滚。可在 Web 面板中创建 Proxy Group，开放独立 HTTP、SOCKS5 或 Mixed 端口，并使用 Mihomo Unix Socket API 执行真实代理延迟检测。管理 API 在管理员认证完成前强制绑定显式环回 IP。
+
+当前已经可以作为本机代理服务使用。管理面按订阅树展示节点，可批量刷新订阅和一键测试节点；代理服务可将多个订阅按地区名称标签、协议、状态和延迟筛选后排序取 Top N，并与入口 IP、端口和加密保存的登录账号一次绑定。尚未完成的是流量统计与 30 天聚合、告警、管理员登录、完整可追踪规则流水线、Provider 展开、订阅导出和 VLESS/VMess/Trojan 服务端入口等扩展能力。
+
+```bash
+cd HX-ProxyGroup
+go test ./...
+bash run.sh
+```
+
+`run.sh` 仅在项目目录下构建并启动进程，不要求 root，不注册 systemd，也不会写入 `/usr/local`、`/etc` 或 `/var/lib`。本地状态默认保存在 `./.tmp/run-data`，按 `Ctrl+C` 会统一停止后端和前端子进程。
+
+`run.sh` 会自动识别 npm / pnpm / yarn / bun，并同时启动 Go 后端和 Vite 前端。首次运行若缺少 `web/node_modules`，脚本会优先根据锁文件自动安装依赖。前端默认地址为 `http://127.0.0.1:5173`，节点页为 `http://127.0.0.1:5173/#/nodes`。前端通过 Vite 代理访问后端，因此无需额外开放 CORS。管理面板仅提供浅色模式。
+
+如需禁止自动安装依赖：
+
+```bash
+bash run.sh --no-install-frontend-deps
+```
+
+只启动后端：
+
+```bash
+bash run.sh --backend-only
+```
+
+查看全部参数：
+
+```bash
+bash run.sh --help
+```
+
+创建并校验一个便携导出：
+
+```bash
+curl -fsS -X POST http://127.0.0.1:19090/api/v1/exports \
+  -H 'Content-Type: application/json' \
+  -d '{"description":"manual export","include_secrets":false}'
+
+curl -fsS http://127.0.0.1:19090/api/v1/exports
+```
+
+创建并刷新一个内联订阅：
+
+```bash
+subscription_id="$({
+  curl -fsS -X POST http://127.0.0.1:19090/api/v1/subscriptions \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"example","source_type":"inline","source_config":{"inline":"vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls#example-node"}}'
+} | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+
+curl -fsS -X POST \
+  "http://127.0.0.1:19090/api/v1/subscriptions/${subscription_id}/refresh"
+```
+
+该示例中的 `python3` 只用于提取演示响应字段；生产服务本身不依赖 Python。
+
+服务器安装当前控制面：
+
+```bash
+sudo bash install.sh install --version dev
+```
+
+Backup 通过 SQLite Online Backup API 包含事务一致的数据库快照，但普通归档不包含主密钥、Mihomo 运行配置或原始订阅快照。完整加密灾难恢复、Restore 和 Portable Import 仍在后续清单中。
+
+## 核心定位
+
+HX-ProxyGroup 不是新的代理协议实现，而是一个代理控制平面：
+
+1. 加载并定时刷新多个机场订阅。
+2. 对节点执行可扩展的质量检测、过滤、评分和排序。
+3. 将多个订阅和规则组合为可复用代理组。
+4. 为每个代理组暴露独立的 HTTP、SOCKS5 或 Mixed 端口。
+5. 支持负载均衡、故障切换和会话粘滞。
+6. 将当前服务器作为直连出口，生成可供 Clash、V2Ray 等客户端使用的节点订阅。
+7. 提供 30 天统计、告警和管理员 Web 面板。
+
+## 固定技术路线
+
+| 层级 | 选择 | 约束 |
+| --- | --- | --- |
+| 控制面 | Go 单体服务 | 单二进制、低常驻内存、无运行时脚本依赖 |
+| 数据面 | Mihomo 独立受管进程 | 复用成熟协议栈、Proxy Provider、Proxy Group、Listener 与 API |
+| 数据库 | SQLite + WAL | 单机部署优先，批量写入，按周期聚合和清理 |
+| 前端 | React + TypeScript + Tailwind + shadcn/ui | 生产环境仅部署静态资源，不运行 Node.js |
+| 实时通信 | SSE 为主，WebSocket 按需 | 状态推送避免高频轮询 |
+| 服务管理 | systemd | 开机启动、崩溃重启、Watchdog、资源限制 |
+| 部署 | `install.sh` | 幂等安装、升级、回滚和完整卸载 |
+
+## 文档
+
+- [`docs/V1_CORE.md`](docs/V1_CORE.md)：v1 核心功能清单与验收标准。
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：系统架构、领域模型和扩展点。
+- [`docs/RELIABILITY.md`](docs/RELIABILITY.md)：可靠性、安全、安装和运行约束。
+- [`docs/BACKUP_EXPORT.md`](docs/BACKUP_EXPORT.md)：备份、恢复、便携导出与当前 API。
+- [`docs/SUBSCRIPTIONS.md`](docs/SUBSCRIPTIONS.md)：订阅加密存储、刷新、SSRF 边界与自动调度。
+- [`AGENTS.md`](AGENTS.md)：后续 AI / Agent 开发必须遵守的工程规范。
+- [`ref/README.md`](ref/README.md)：参考项目与参考范围。
+
+## v1 明确不做
+
+- [ ] 多管理员、多租户和复杂 RBAC。
+- [ ] 多节点控制面集群或分布式数据库。
+- [ ] Kubernetes Operator。
+- [ ] 浏览器内 SSH 终端；该功能进入 v2。
+- [ ] 自研 VMess、VLESS、Trojan、Hysteria、TUIC 等协议实现。
+- [ ] 承诺“任意未知协议均可解析”；协议能力以当前数据面版本实际支持范围为准。
+
+## 设计原则
+
+- **协议能力由数据面提供，控制面不手搓协议。**
+- **一个控制面进程 + 一个数据面进程，不为每个节点启动独立进程。**
+- **配置变更必须先生成、校验、原子替换，再热重载或平滑重启。**
+- **刷新失败不得清空上一版可用节点。**
+- **质量检测必须有并发、带宽和频率预算，禁止无界探测。**
+- **生产环境不依赖 Node.js、Python、Redis、MySQL。**
+- **所有关键操作必须可追踪、可回滚、可在服务器重启后恢复。**

@@ -35,12 +35,59 @@ func (s *Server) handleListeners(writer http.ResponseWriter, request *http.Reque
 	}
 }
 
-func (s *Server) handleListener(writer http.ResponseWriter, request *http.Request) {
-	id := strings.TrimPrefix(request.URL.Path, "/api/v1/listeners/")
-	if id == "" || id == request.URL.Path || strings.Contains(id, "/") {
+// handleListenerShare serves the public token-addressed subscription export.
+// The default response body is the conventional base64 subscription payload;
+// ?format=uri returns the plain URI list.
+func (s *Server) handleListenerShare(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, request, http.MethodGet)
+		return
+	}
+	token := strings.TrimPrefix(request.URL.Path, "/sub/")
+	if token == "" || strings.Contains(token, "/") {
 		http.NotFound(writer, request)
 		return
 	}
+	export, err := s.listeners.ExportByShareToken(request.Context(), token, request.Host)
+	if err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	body := export.EncodeSubscription()
+	if request.URL.Query().Get("format") == "uri" {
+		body = export.Body
+	}
+	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.Header().Set("Content-Disposition", `attachment; filename="`+export.FileName+`"`)
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte(body))
+}
+
+func (s *Server) handleListener(writer http.ResponseWriter, request *http.Request) {
+	path := strings.TrimPrefix(request.URL.Path, "/api/v1/listeners/")
+	if path == "" || path == request.URL.Path {
+		http.NotFound(writer, request)
+		return
+	}
+	if identifier, action, found := strings.Cut(path, "/"); found {
+		if action == "rotate-share" && identifier != "" {
+			if request.Method != http.MethodPost {
+				methodNotAllowed(writer, request, http.MethodPost)
+				return
+			}
+			updated, err := s.listeners.RotateShareToken(request.Context(), identifier)
+			if err != nil {
+				s.handleError(writer, request, err)
+				return
+			}
+			writeJSON(writer, http.StatusOK, updated)
+			return
+		}
+		http.NotFound(writer, request)
+		return
+	}
+	id := path
 	switch request.Method {
 	case http.MethodGet:
 		item, err := s.listeners.Get(request.Context(), id)

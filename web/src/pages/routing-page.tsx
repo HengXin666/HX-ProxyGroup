@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
-import { Cable, CheckCircle2, CircleAlert, Gauge, LoaderCircle, Network, Plus, RefreshCw, Server, Trash2 } from "lucide-react"
+import { Cable, CheckCircle2, CircleAlert, Copy, Gauge, Link2, LoaderCircle, Network, Plus, RefreshCw, Server, Trash2 } from "lucide-react"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Badge } from "@/components/ui/badge"
@@ -106,7 +106,7 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
           <PanelHeader title="服务列表" description="入口与节点策略保持一一对应" count={listeners.length} />
           {listeners.length === 0 ? <EmptyState /> : <div className="divide-y">{listeners.map((listener) => {
             const group = groups.find((item) => item.id === listener.proxy_group_id)
-            return <ServiceRow key={listener.id} listener={listener} group={group} onDelete={() => setDeleteTarget({ listener, group })} />
+            return <ServiceRow key={listener.id} listener={listener} group={group} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
           })}</div>}
         </section>
         <CreateProxyServiceForm nodes={nodes} subscriptions={subscriptions} onCreated={load} onNotice={onNotice} />
@@ -117,19 +117,44 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
   )
 }
 
-function ServiceRow({ listener, group, onDelete }: { listener: ListenerRecord; group?: ProxyGroup; onDelete: () => void }) {
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function ServiceRow({ listener, group, onDelete, onNotice }: { listener: ListenerRecord; group?: ProxyGroup; onDelete: () => void; onNotice: RoutingPageProps["onNotice"] }) {
   const spec = group?.source_spec
   const sourceText = spec?.subscription_ids?.length
     ? `${spec.subscription_ids.length} 个订阅${spec.regions?.length ? ` · ${spec.regions.map(regionLabel).join("/")}` : ""} · Top ${spec.limit || "全部"}`
     : `${spec?.node_ids.length || 0} 个固定节点`
+
+  async function copyShareLink() {
+    if (!listener.share_path) return
+    const ok = await copyText(api.listenerShareURL(listener.share_path))
+    onNotice(ok ? "订阅链接已复制，可直接导入代理客户端" : "复制失败，请手动复制", ok ? "success" : "error")
+  }
+
+  async function copyEndpoint() {
+    const ok = await copyText(`${listener.bind_address}:${listener.port}`)
+    onNotice(ok ? "入口地址已复制" : "复制失败，请手动复制", ok ? "success" : "error")
+  }
+
   return (
-    <div className="grid gap-3 px-3 py-3 hover:bg-[#f6f8fa] sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_32px] sm:items-center">
+    <div className="grid gap-3 px-3 py-3 hover:bg-[#f6f8fa] sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_auto] sm:items-center">
       <div className="flex min-w-0 items-start gap-2.5">
         <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-white text-[#57606a]"><Cable className="size-4" /></div>
         <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">{listener.bind_address}:{listener.port}</div></div>
       </div>
       <div className="min-w-0"><div className="flex items-center gap-1.5 text-xs font-medium"><Network className="size-3.5" />{group ? strategyLabel(group.strategy) : "组已缺失"}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={sourceText}>{sourceText}</div></div>
-      <Button variant="ghost" size="icon" onClick={onDelete} aria-label={`删除 ${listener.name}`}><Trash2 className="text-destructive" /></Button>
+      <div className="inline-flex items-center gap-1">
+        {listener.share_path && <Button variant="outline" size="sm" onClick={() => void copyShareLink()} title="复制订阅链接（base64，可直接导入客户端）"><Link2 />订阅</Button>}
+        <Button variant="outline" size="sm" onClick={() => void copyEndpoint()} title="复制 IP:端口"><Copy />地址</Button>
+        <Button variant="ghost" size="icon" onClick={onDelete} aria-label={`删除 ${listener.name}`}><Trash2 className="text-destructive" /></Button>
+      </div>
     </div>
   )
 }

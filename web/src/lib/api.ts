@@ -331,6 +331,16 @@ export const api = {
     })
   },
 
+  rotateListenerShare(id: string): Promise<ListenerRecord> {
+    return request(`/api/v1/listeners/${encodeURIComponent(id)}/rotate-share`, {
+      method: "POST",
+    })
+  },
+
+  listenerShareURL(sharePath: string): string {
+    return `${window.location.protocol}//${window.location.host}${sharePath}`
+  },
+
   deleteListener(id: string, version: number): Promise<void> {
     return request(`/api/v1/listeners/${encodeURIComponent(id)}?version=${version}`, {
       method: "DELETE",

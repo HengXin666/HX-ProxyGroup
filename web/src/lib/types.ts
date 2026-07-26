@@ -190,6 +190,7 @@ export interface ListenerRecord {
   port: number
   proxy_group_id: string
   auth_configured: boolean
+  share_path?: string
   enabled: boolean
   version: number
   created_at: string

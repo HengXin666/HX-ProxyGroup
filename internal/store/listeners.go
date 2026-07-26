@@ -17,6 +17,7 @@ type ListenerRecord struct {
 	ProxyGroupID        string
 	AuthMode            string
 	AuthConfigEncrypted []byte
+	ShareToken          string
 	Enabled             bool
 	Version             int
 	CreatedAt           time.Time
@@ -28,8 +29,8 @@ func (s *Store) CreateListener(ctx context.Context, record ListenerRecord) (List
 INSERT INTO listeners(
     id, name, listener_type, kind, bind_address, port, proxy_group_id,
     auth_policy_encrypted, auth_mode, auth_config_encrypted,
-    enabled, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    share_token, enabled, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -41,6 +42,7 @@ INSERT INTO listeners(
 		record.AuthConfigEncrypted,
 		record.AuthMode,
 		record.AuthConfigEncrypted,
+		record.ShareToken,
 		boolToInteger(record.Enabled),
 		record.Version,
 		record.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -153,8 +155,44 @@ func (s *Store) DeleteListener(ctx context.Context, id string, expectedVersion i
 const listenerSelect = `
 SELECT
     id, name, kind, bind_address, port, proxy_group_id, auth_mode,
-    auth_config_encrypted, enabled, version, created_at, updated_at
+    auth_config_encrypted, share_token, enabled, version, created_at, updated_at
 FROM listeners`
+
+// GetListenerByShareToken resolves the public subscription-export token.
+func (s *Store) GetListenerByShareToken(ctx context.Context, token string) (ListenerRecord, error) {
+	record, err := scanListener(s.db.QueryRowContext(ctx, listenerSelect+" WHERE share_token = ?", token))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ListenerRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ListenerRecord{}, fmt.Errorf("get listener by share token: %w", err)
+	}
+	return record, nil
+}
+
+// RotateListenerShareToken replaces the share token and bumps the version so
+// previously distributed subscription links stop working.
+func (s *Store) RotateListenerShareToken(ctx context.Context, id, token string) (ListenerRecord, error) {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE listeners
+SET share_token = ?, version = version + 1, updated_at = ?
+WHERE id = ?
+`, token, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return ListenerRecord{}, ErrConflict
+		}
+		return ListenerRecord{}, fmt.Errorf("rotate listener share token: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return ListenerRecord{}, fmt.Errorf("read listener rotate result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return ListenerRecord{}, ErrNotFound
+	}
+	return s.GetListener(ctx, id)
+}
 
 func scanListener(source scanner) (ListenerRecord, error) {
 	var record ListenerRecord
@@ -170,6 +208,7 @@ func scanListener(source scanner) (ListenerRecord, error) {
 		&record.ProxyGroupID,
 		&record.AuthMode,
 		&record.AuthConfigEncrypted,
+		&record.ShareToken,
 		&enabled,
 		&record.Version,
 		&createdAt,

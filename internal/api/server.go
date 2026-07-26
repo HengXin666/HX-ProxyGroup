@@ -71,6 +71,8 @@ type ListenerService interface {
 	List(context.Context) ([]listener.Listener, error)
 	Update(context.Context, string, listener.UpdateRequest) (listener.Listener, error)
 	Delete(context.Context, string, int) error
+	ExportByShareToken(context.Context, string, string) (listener.ShareExport, error)
+	RotateShareToken(context.Context, string) (listener.Listener, error)
 }
 
 type DataPlaneService interface {
@@ -221,6 +223,9 @@ func (s *Server) Handler() http.Handler {
 	if s.listeners != nil {
 		mux.HandleFunc("/api/v1/listeners", s.handleListeners)
 		mux.HandleFunc("/api/v1/listeners/", s.handleListener)
+		// Public token-addressed subscription export; the token itself is
+		// the credential, so the route stays outside /api/v1 auth.
+		mux.HandleFunc("/sub/", s.handleListenerShare)
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
@@ -439,6 +444,8 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, proxygroup.ErrInvalid), errors.Is(err, listener.ErrInvalid):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+	case errors.Is(err, listener.ErrShareDisabled):
+		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, proxygroup.ErrNotFound), errors.Is(err, listener.ErrNotFound), errors.Is(err, node.ErrNotFound):
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, node.ErrCheckUnavailable), errors.Is(err, mihomo.ErrNotRunning):
@@ -470,7 +477,11 @@ func (s *Server) requestContext(next http.Handler) http.Handler {
 		ctx := context.WithValue(request.Context(), requestIDKey{}, requestID)
 		startedAt := time.Now()
 		next.ServeHTTP(writer, request.WithContext(ctx))
-		s.logger.InfoContext(ctx, "HTTP request", "method", request.Method, "path", request.URL.Path, "duration_ms", time.Since(startedAt).Milliseconds(), "request_id", requestID)
+		loggedPath := request.URL.Path
+		if strings.HasPrefix(loggedPath, "/sub/") {
+			loggedPath = "/sub/[redacted]"
+		}
+		s.logger.InfoContext(ctx, "HTTP request", "method", request.Method, "path", loggedPath, "duration_ms", time.Since(startedAt).Milliseconds(), "request_id", requestID)
 	})
 }
 

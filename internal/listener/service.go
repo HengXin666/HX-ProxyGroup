@@ -23,14 +23,17 @@ var (
 type Repository interface {
 	CreateListener(context.Context, store.ListenerRecord) (store.ListenerRecord, error)
 	GetListener(context.Context, string) (store.ListenerRecord, error)
+	GetListenerByShareToken(context.Context, string) (store.ListenerRecord, error)
 	ListListeners(context.Context) ([]store.ListenerRecord, error)
 	UpdateListener(context.Context, store.ListenerRecord, int) (store.ListenerRecord, error)
+	RotateListenerShareToken(context.Context, string, string) (store.ListenerRecord, error)
 	DeleteListener(context.Context, string, int) error
 	GetProxyGroup(context.Context, string) (store.ProxyGroupRecord, error)
 }
 
 type Cipher interface {
 	Seal([]byte, []byte) ([]byte, error)
+	Open([]byte, []byte) ([]byte, error)
 }
 
 type Reconciler interface {
@@ -50,6 +53,7 @@ type Listener struct {
 	Port           int       `json:"port"`
 	ProxyGroupID   string    `json:"proxy_group_id"`
 	AuthConfigured bool      `json:"auth_configured"`
+	SharePath      string    `json:"share_path,omitempty"`
 	Enabled        bool      `json:"enabled"`
 	Version        int       `json:"version"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -111,6 +115,10 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Listener, 
 	if err != nil {
 		return Listener{}, err
 	}
+	shareToken, err := newShareToken()
+	if err != nil {
+		return Listener{}, err
+	}
 	now := s.now().UTC()
 	record := store.ListenerRecord{
 		ID:                  id,
@@ -121,6 +129,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Listener, 
 		ProxyGroupID:        normalized.ProxyGroupID,
 		AuthMode:            normalized.AuthMode,
 		AuthConfigEncrypted: normalized.AuthConfigEncrypted,
+		ShareToken:          shareToken,
 		Enabled:             normalized.Enabled,
 		Version:             1,
 		CreatedAt:           now,
@@ -299,6 +308,10 @@ func (s *Service) normalize(
 }
 
 func fromRecord(record store.ListenerRecord) Listener {
+	sharePath := ""
+	if record.ShareToken != "" {
+		sharePath = "/sub/" + record.ShareToken
+	}
 	return Listener{
 		ID:             record.ID,
 		Name:           record.Name,
@@ -307,6 +320,7 @@ func fromRecord(record store.ListenerRecord) Listener {
 		Port:           record.Port,
 		ProxyGroupID:   record.ProxyGroupID,
 		AuthConfigured: record.AuthMode != "none" && len(record.AuthConfigEncrypted) > 0,
+		SharePath:      sharePath,
 		Enabled:        record.Enabled,
 		Version:        record.Version,
 		CreatedAt:      record.CreatedAt,

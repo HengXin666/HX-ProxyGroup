@@ -266,6 +266,15 @@ ALTER TABLE subscriptions ADD COLUMN refresh_cron TEXT NOT NULL DEFAULT '';
 ALTER TABLE subscriptions ADD COLUMN last_failure_json TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		version: 10,
+		name:    "listener_share_tokens",
+		sql: `
+ALTER TABLE listeners ADD COLUMN share_token TEXT NOT NULL DEFAULT '';
+UPDATE listeners SET share_token = lower(hex(randomblob(16)));
+CREATE UNIQUE INDEX listeners_share_token ON listeners(share_token);
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

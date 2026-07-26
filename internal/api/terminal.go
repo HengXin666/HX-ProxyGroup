@@ -1,0 +1,137 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/HengXin666/HX-ProxyGroup/internal/terminal"
+)
+
+type TerminalService interface {
+	Enabled() bool
+	Status() terminal.Status
+	Open(ctx context.Context, actor, remote string) (*terminal.Session, error)
+}
+
+func WithTerminal(service TerminalService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("terminal service is required")
+		}
+		server.terminal = service
+		return nil
+	}
+}
+
+func (s *Server) handleTerminalStatus(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, request, http.MethodGet)
+		return
+	}
+	writeJSON(writer, http.StatusOK, s.terminal.Status())
+}
+
+// terminalMessage is the client -> server control protocol. Server -> client
+// traffic is raw binary PTY output rendered by xterm.js.
+type terminalMessage struct {
+	Type string `json:"type"`
+	Data string `json:"data,omitempty"`
+	Cols int    `json:"cols,omitempty"`
+	Rows int    `json:"rows,omitempty"`
+}
+
+// handleTerminalSocket bridges one WebSocket to one PTY session. Unlike the
+// rest of the API, the terminal requires a fully configured and
+// authenticated administrator unconditionally — there is no pre-setup
+// bootstrap window for shell access.
+func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, request, http.MethodGet)
+		return
+	}
+	if s.auth == nil {
+		s.writeAPIError(writer, request, http.StatusForbidden, "terminal_requires_auth", "terminal requires administrator authentication")
+		return
+	}
+	session, err := s.auth.Authenticate(request.Context(), sessionToken(request))
+	if err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	if !s.terminal.Enabled() {
+		s.writeAPIError(writer, request, http.StatusForbidden, "terminal_disabled", "terminal is disabled; set HX_PROXYGROUP_TERMINAL=1 to enable it")
+		return
+	}
+	connection, err := websocket.Accept(writer, request, nil)
+	if err != nil {
+		return
+	}
+	defer connection.Close(websocket.StatusInternalError, "terminal closed")
+	connection.SetReadLimit(64 << 10)
+
+	socketCtx, cancel := context.WithCancel(request.Context())
+	defer cancel()
+	shell, err := s.terminal.Open(socketCtx, session.Username, clientAddress(request))
+	if err != nil {
+		message := "terminal unavailable"
+		if errors.Is(err, terminal.ErrSessionLimit) {
+			message = "too many concurrent terminal sessions"
+		}
+		_ = connection.Close(websocket.StatusPolicyViolation, message)
+		return
+	}
+	defer shell.Close("connection closed")
+
+	// PTY output -> WebSocket binary frames.
+	outputDone := make(chan struct{})
+	go func() {
+		defer close(outputDone)
+		buffer := make([]byte, 16<<10)
+		for {
+			count, readErr := shell.Read(buffer)
+			if count > 0 {
+				writeCtx, writeCancel := context.WithTimeout(socketCtx, 15*time.Second)
+				writeErr := connection.Write(writeCtx, websocket.MessageBinary, buffer[:count])
+				writeCancel()
+				if writeErr != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+
+	// WebSocket control frames -> PTY.
+	for {
+		kind, payload, readErr := connection.Read(socketCtx)
+		if readErr != nil {
+			break
+		}
+		if kind != websocket.MessageText {
+			continue
+		}
+		var message terminalMessage
+		if json.Unmarshal(payload, &message) != nil {
+			continue
+		}
+		switch message.Type {
+		case "input":
+			if _, writeErr := io.WriteString(shell, message.Data); writeErr != nil {
+				break
+			}
+		case "resize":
+			_ = shell.Resize(message.Cols, message.Rows)
+		}
+	}
+	cancel()
+	<-outputDone
+	_ = connection.Close(websocket.StatusNormalClosure, "bye")
+}

@@ -30,6 +30,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 	"github.com/HengXin666/HX-ProxyGroup/internal/subscription"
+	"github.com/HengXin666/HX-ProxyGroup/internal/terminal"
 	"github.com/HengXin666/HX-ProxyGroup/internal/transfer"
 )
 
@@ -177,6 +178,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	terminalService, err := terminal.NewService(terminal.Config{
+		Enabled: cfg.TerminalEnabled,
+		Shell:   cfg.TerminalShell,
+	}, logger)
+	if err != nil {
+		return err
+	}
+	defer terminalService.Shutdown()
 
 	portableStatePath := filepath.Join(cfg.DataDirectory, "state", "control-plane.json")
 	if err := writePortableState(portableStatePath, cfg, databaseStatus.SchemaVersion); err != nil {
@@ -237,6 +246,7 @@ func run(logger *slog.Logger) error {
 		api.WithDataPlane(mihomoManager),
 		api.WithAuth(authService),
 		api.WithAlerts(alertService),
+		api.WithTerminal(terminalService),
 	)
 	if err != nil {
 		return err

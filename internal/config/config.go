@@ -19,6 +19,11 @@ type Config struct {
 	RuntimeConfigPath string
 	SnapshotsPath     string
 	MihomoBinary      string
+	// TerminalEnabled gates the v2 in-browser terminal. Off by default;
+	// set HX_PROXYGROUP_TERMINAL=1 to enable.
+	TerminalEnabled bool
+	// TerminalShell optionally overrides the shell used by the terminal.
+	TerminalShell string
 }
 
 func Default() Config {
@@ -32,6 +37,8 @@ func Default() Config {
 		RuntimeConfigPath: envOrDefault("HX_PROXYGROUP_RUNTIME_CONFIG", filepath.Join(dataDirectory, "runtime", "active.yaml")),
 		SnapshotsPath:     envOrDefault("HX_PROXYGROUP_SNAPSHOTS", filepath.Join(dataDirectory, "snapshots")),
 		MihomoBinary:      envOrDefault("HX_PROXYGROUP_MIHOMO", "mihomo"),
+		TerminalEnabled:   envOrDefault("HX_PROXYGROUP_TERMINAL", "") == "1",
+		TerminalShell:     envOrDefault("HX_PROXYGROUP_TERMINAL_SHELL", ""),
 	}
 }
 

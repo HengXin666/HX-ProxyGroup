@@ -8,6 +8,7 @@ import {
   Network,
   Radio,
   Route,
+  TerminalSquare,
   X,
 } from "lucide-react"
 
@@ -19,8 +20,9 @@ import { AuthPage } from "@/pages/auth-page"
 import { NodesPage } from "@/pages/nodes-page"
 import { RoutingPage } from "@/pages/routing-page"
 import { SubscriptionsPage } from "@/pages/subscriptions-page"
+import { TerminalPage } from "@/pages/terminal-page"
 
-type Page = "subscriptions" | "nodes" | "routing" | "alerts" | "artifacts"
+type Page = "subscriptions" | "nodes" | "routing" | "alerts" | "artifacts" | "terminal"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 
 const pages: Array<{
@@ -34,6 +36,7 @@ const pages: Array<{
   { id: "routing", label: "代理服务", description: "代理组与 Listener", icon: Route },
   { id: "alerts", label: "告警", description: "状态与邮件通知", icon: BellRing },
   { id: "artifacts", label: "备份", description: "Backup 与 Export", icon: Archive },
+  { id: "terminal", label: "终端", description: "v2 · 服务器 Shell", icon: TerminalSquare },
 ]
 
 function pageFromHash(): Page {
@@ -234,6 +237,7 @@ export default function App() {
           {page === "routing" && <RoutingPage onNotice={showNotice} />}
           {page === "alerts" && <AlertsPage onNotice={showNotice} />}
           {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
+          {page === "terminal" && <TerminalPage onNotice={showNotice} />}
         </main>
       </div>
 

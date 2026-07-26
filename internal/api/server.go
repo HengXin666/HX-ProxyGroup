@@ -152,6 +152,7 @@ type Server struct {
 	dataplane     DataPlaneService
 	auth          AuthService
 	alerts        AlertService
+	terminal      TerminalService
 	logger        *slog.Logger
 	ready         atomic.Bool
 }
@@ -228,6 +229,10 @@ func (s *Server) Handler() http.Handler {
 	if s.alerts != nil {
 		mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
 		mux.HandleFunc("/api/v1/alerts/", s.handleAlertItem)
+	}
+	if s.terminal != nil {
+		mux.HandleFunc("/api/v1/terminal/status", s.handleTerminalStatus)
+		mux.HandleFunc("/api/v1/terminal/ws", s.handleTerminalSocket)
 	}
 	var handler http.Handler = mux
 	if s.auth != nil {

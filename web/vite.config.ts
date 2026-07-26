@@ -21,6 +21,8 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: backendTarget,
           changeOrigin: false,
+          // Required for the v2 in-browser terminal (/api/v1/terminal/ws).
+          ws: true,
         },
         "/health": {
           target: backendTarget,

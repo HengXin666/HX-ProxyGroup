@@ -124,6 +124,13 @@ export type UpdateAlertSettingsRequest = {
   to: string[]
 }
 
+export type TerminalStatus = {
+  enabled: boolean
+  active_sessions: number
+  max_sessions: number
+  idle_timeout_seconds: number
+}
+
 export type AuthStatus = {
   configured: boolean
   authenticated: boolean
@@ -193,6 +200,15 @@ export const api = {
 
   testAlertSettings(): Promise<void> {
     return request("/api/v1/alerts/settings/test", { method: "POST" })
+  },
+
+  terminalStatus(): Promise<TerminalStatus> {
+    return request("/api/v1/terminal/status")
+  },
+
+  terminalSocketURL(): string {
+    const scheme = window.location.protocol === "https:" ? "wss" : "ws"
+    return `${scheme}://${window.location.host}/api/v1/terminal/ws`
   },
 
   async health(): Promise<boolean> {

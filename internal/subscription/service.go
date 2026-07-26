@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/cron"
 	"github.com/HengXin666/HX-ProxyGroup/internal/nodeparse"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
@@ -54,8 +55,10 @@ type Subscription struct {
 	SourceConfigured       bool       `json:"source_configured"`
 	Enabled                bool       `json:"enabled"`
 	RefreshIntervalSeconds int        `json:"refresh_interval_seconds"`
+	RefreshCron            string     `json:"refresh_cron,omitempty"`
 	LastSuccessSnapshotID  string     `json:"last_success_snapshot_id,omitempty"`
 	ConsecutiveFailures    int        `json:"consecutive_failures"`
+	LastFailure            *Failure   `json:"last_failure,omitempty"`
 	LastRefreshAttemptAt   *time.Time `json:"last_refresh_attempt_at,omitempty"`
 	NextRefreshAt          *time.Time `json:"next_refresh_at,omitempty"`
 	Version                int        `json:"version"`
@@ -69,6 +72,7 @@ type CreateRequest struct {
 	SourceConfig           SourceConfig `json:"source_config"`
 	Enabled                *bool        `json:"enabled,omitempty"`
 	RefreshIntervalSeconds int          `json:"refresh_interval_seconds,omitempty"`
+	RefreshCron            string       `json:"refresh_cron,omitempty"`
 }
 
 type UpdateRequest struct {
@@ -78,6 +82,7 @@ type UpdateRequest struct {
 	SourceConfig           SourceConfig `json:"source_config"`
 	Enabled                bool         `json:"enabled"`
 	RefreshIntervalSeconds int          `json:"refresh_interval_seconds"`
+	RefreshCron            string       `json:"refresh_cron,omitempty"`
 }
 
 type Repository interface {
@@ -90,7 +95,7 @@ type Repository interface {
 	GetSubscriptionSnapshotByHash(context.Context, string, string) (store.SubscriptionSnapshotRecord, error)
 	CommitSubscriptionSnapshot(context.Context, store.SubscriptionSnapshotRecord) error
 	ActivateSubscriptionSnapshot(context.Context, string, string, time.Time, time.Time, string) error
-	MarkSubscriptionRefreshFailed(context.Context, string, time.Time, time.Time) error
+	MarkSubscriptionRefreshFailed(context.Context, string, time.Time, time.Time, string) error
 }
 
 type ParsedNodeRepository interface {
@@ -180,7 +185,7 @@ func NewService(repository Repository, cipher Cipher, options ...ServiceOption) 
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (Subscription, error) {
 	request = normalizeCreateRequest(request)
-	if err := validateRequest(request.Name, request.SourceType, request.SourceConfig, request.RefreshIntervalSeconds); err != nil {
+	if err := validateRequest(request.Name, request.SourceType, request.SourceConfig, request.RefreshIntervalSeconds, request.RefreshCron); err != nil {
 		return Subscription{}, err
 	}
 	id, err := newID()
@@ -203,6 +208,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Subscripti
 		SourceConfigEncrypted:  encrypted,
 		Enabled:                enabled,
 		RefreshIntervalSeconds: request.RefreshIntervalSeconds,
+		RefreshCron:            strings.TrimSpace(request.RefreshCron),
 		NextRefreshAt:          &now,
 		Version:                1,
 		CreatedAt:              now,
@@ -242,7 +248,7 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	if request.RefreshIntervalSeconds == 0 {
 		request.RefreshIntervalSeconds = defaultRefreshInterval
 	}
-	if err := validateRequest(request.Name, request.SourceType, request.SourceConfig, request.RefreshIntervalSeconds); err != nil {
+	if err := validateRequest(request.Name, request.SourceType, request.SourceConfig, request.RefreshIntervalSeconds, request.RefreshCron); err != nil {
 		return Subscription{}, err
 	}
 	encrypted, err := s.encryptSourceConfig(id, request.SourceConfig)
@@ -257,6 +263,7 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 		SourceConfigEncrypted:  encrypted,
 		Enabled:                request.Enabled,
 		RefreshIntervalSeconds: request.RefreshIntervalSeconds,
+		RefreshCron:            strings.TrimSpace(request.RefreshCron),
 		NextRefreshAt:          &now,
 		UpdatedAt:              now,
 	}, request.Version)
@@ -309,12 +316,17 @@ func normalizeCreateRequest(request CreateRequest) CreateRequest {
 	return request
 }
 
-func validateRequest(name string, sourceType SourceType, config SourceConfig, refreshInterval int) error {
+func validateRequest(name string, sourceType SourceType, config SourceConfig, refreshInterval int, refreshCron string) error {
 	if name == "" || len(name) > 128 {
 		return fmt.Errorf("%w: name must contain 1 to 128 characters", ErrInvalid)
 	}
 	if refreshInterval < minimumRefreshInterval {
 		return fmt.Errorf("%w: refresh interval must be at least %d seconds", ErrInvalid, minimumRefreshInterval)
+	}
+	if refreshCron = strings.TrimSpace(refreshCron); refreshCron != "" {
+		if _, err := cron.Parse(refreshCron); err != nil {
+			return fmt.Errorf("%w: invalid refresh cron: %v", ErrInvalid, err)
+		}
 	}
 	if config.TimeoutSeconds < 0 || config.TimeoutSeconds > 300 {
 		return fmt.Errorf("%w: timeout must be between 0 and 300 seconds", ErrInvalid)
@@ -358,6 +370,13 @@ func validateRequest(name string, sourceType SourceType, config SourceConfig, re
 }
 
 func fromRecord(record store.SubscriptionRecord) Subscription {
+	var lastFailure *Failure
+	if record.LastFailureJSON != "" {
+		var failure Failure
+		if json.Unmarshal([]byte(record.LastFailureJSON), &failure) == nil && failure.Code != "" {
+			lastFailure = &failure
+		}
+	}
 	return Subscription{
 		ID:                     record.ID,
 		Name:                   record.Name,
@@ -365,8 +384,10 @@ func fromRecord(record store.SubscriptionRecord) Subscription {
 		SourceConfigured:       len(record.SourceConfigEncrypted) > 0,
 		Enabled:                record.Enabled,
 		RefreshIntervalSeconds: record.RefreshIntervalSeconds,
+		RefreshCron:            record.RefreshCron,
 		LastSuccessSnapshotID:  record.LastSuccessSnapshotID,
 		ConsecutiveFailures:    record.ConsecutiveFailures,
+		LastFailure:            lastFailure,
 		LastRefreshAttemptAt:   record.LastRefreshAttemptAt,
 		NextRefreshAt:          record.NextRefreshAt,
 		Version:                record.Version,

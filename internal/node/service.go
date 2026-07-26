@@ -27,6 +27,7 @@ type Repository interface {
 	GetNodeConfig(context.Context, string) (store.NodeConfigRecord, error)
 	RecordNodeQualityResult(context.Context, store.NodeQualityResult) (store.NodeRecord, error)
 	DueNodeIDs(context.Context, time.Time, int) ([]string, error)
+	SetNodeLifecycleState(context.Context, string, string) error
 }
 
 type Prober interface {
@@ -143,6 +144,37 @@ func (s *Service) List(ctx context.Context, filter Filter) ([]Node, error) {
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+// Disable removes a node from every compiled configuration until an
+// administrator re-enables it. The dataplane is re-applied immediately.
+func (s *Service) Disable(ctx context.Context, id string) (Node, error) {
+	return s.setLifecycle(ctx, id, "disabled")
+}
+
+// Enable returns a disabled node to the candidate state; the next probe
+// decides its health.
+func (s *Service) Enable(ctx context.Context, id string) (Node, error) {
+	return s.setLifecycle(ctx, id, "candidate")
+}
+
+func (s *Service) setLifecycle(ctx context.Context, id, state string) (Node, error) {
+	if err := s.repository.SetNodeLifecycleState(ctx, id, state); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return Node{}, ErrNotFound
+		}
+		return Node{}, err
+	}
+	updated, err := s.Get(ctx, id)
+	if err != nil {
+		return Node{}, err
+	}
+	if s.prober != nil {
+		if applyErr := s.prober.Apply(ctx); applyErr != nil {
+			return updated, fmt.Errorf("node state saved but dataplane apply failed: %w", applyErr)
+		}
+	}
+	return updated, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Node, error) {

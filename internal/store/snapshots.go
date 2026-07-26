@@ -94,6 +94,7 @@ UPDATE subscriptions
 SET
     last_success_snapshot_id = ?,
     consecutive_failures = 0,
+    last_failure_json = '',
     last_refresh_attempt_at = ?,
     next_refresh_at = ?,
     updated_at = ?
@@ -167,6 +168,7 @@ UPDATE subscriptions
 SET
     last_success_snapshot_id = ?,
     consecutive_failures = 0,
+    last_failure_json = '',
     last_refresh_attempt_at = ?,
     next_refresh_at = ?,
     updated_at = ?
@@ -192,16 +194,19 @@ func (s *Store) MarkSubscriptionRefreshFailed(
 	subscriptionID string,
 	failedAt time.Time,
 	nextRefreshAt time.Time,
+	failureJSON string,
 ) error {
 	result, err := s.db.ExecContext(ctx, `
 UPDATE subscriptions
 SET
     consecutive_failures = consecutive_failures + 1,
+    last_failure_json = ?,
     last_refresh_attempt_at = ?,
     next_refresh_at = ?,
     updated_at = ?
 WHERE id = ?
 `,
+		failureJSON,
 		failedAt.UTC().Format(time.RFC3339Nano),
 		nextRefreshAt.UTC().Format(time.RFC3339Nano),
 		failedAt.UTC().Format(time.RFC3339Nano),

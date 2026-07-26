@@ -58,6 +58,24 @@ func (service *fakeNodeService) Get(_ context.Context, id string) (node.Node, er
 	return node.Node{}, node.ErrNotFound
 }
 
+func (service *fakeNodeService) Disable(ctx context.Context, id string) (node.Node, error) {
+	return service.setState(ctx, id, "disabled")
+}
+
+func (service *fakeNodeService) Enable(ctx context.Context, id string) (node.Node, error) {
+	return service.setState(ctx, id, "candidate")
+}
+
+func (service *fakeNodeService) setState(_ context.Context, id, state string) (node.Node, error) {
+	for index, item := range service.items {
+		if item.ID == id {
+			service.items[index].LifecycleState = state
+			return service.items[index], nil
+		}
+	}
+	return node.Node{}, node.ErrNotFound
+}
+
 func (service *fakeNodeService) Check(_ context.Context, id string) (node.CheckResult, error) {
 	item, err := service.Get(context.Background(), id)
 	if err != nil {

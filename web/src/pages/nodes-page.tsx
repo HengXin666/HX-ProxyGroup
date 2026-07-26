@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Activity, CircleDot, Filter, Gauge, LoaderCircle, Network, RefreshCw, Search } from "lucide-react"
+import { Activity, Ban, CircleDot, CirclePlay, Filter, Gauge, LoaderCircle, Network, RefreshCw, Search } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -60,6 +60,17 @@ export function NodesPage({ onNotice }: NodesPageProps) {
     }
   }
 
+  async function toggleNode(item: NodeRecord) {
+    const disabling = item.lifecycle_state !== "disabled"
+    try {
+      const updated = disabling ? await api.disableNode(item.id) : await api.enableNode(item.id)
+      setItems((current) => current.map((candidate) => candidate.id === item.id ? updated : candidate))
+      onNotice(disabling ? "节点已禁用，配置已重新下发" : "节点已恢复为未检测状态")
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "节点状态修改失败", "error")
+    }
+  }
+
   const protocols = useMemo(() => Array.from(new Set(items.map((item) => item.protocol))).sort(), [items])
   const metrics = useMemo(() => ({
     healthy: items.filter((item) => item.lifecycle_state === "healthy").length,
@@ -111,7 +122,7 @@ export function NodesPage({ onNotice }: NodesPageProps) {
               <thead className="bg-[#f6f8fa] text-xs text-muted-foreground"><tr>
                 <Th>节点</Th><Th>协议</Th><Th>状态</Th><Th>延迟</Th><Th>失败次数</Th><Th>最近检测</Th><Th>来源</Th><Th>指纹</Th><Th align="right">操作</Th>
               </tr></thead>
-              <tbody className="divide-y">{items.map((item) => <NodeRow key={item.id} item={item} checking={Boolean(checking[item.id])} onCheck={() => void checkNode(item)} />)}</tbody>
+              <tbody className="divide-y">{items.map((item) => <NodeRow key={item.id} item={item} checking={Boolean(checking[item.id])} onCheck={() => void checkNode(item)} onToggle={() => void toggleNode(item)} />)}</tbody>
             </table>
           </div>
         )}
@@ -124,9 +135,11 @@ export function NodesPage({ onNotice }: NodesPageProps) {
   )
 }
 
-function NodeRow({ item, checking, onCheck }: { item: NodeRecord; checking: boolean; onCheck: () => void }) {
+function NodeRow({ item, checking, onCheck, onToggle }: { item: NodeRecord; checking: boolean; onCheck: () => void; onToggle: () => void }) {
   const state = stateMeta[item.lifecycle_state]
   const unavailable = item.lifecycle_state === "disabled" || item.lifecycle_state === "retired"
+  const disabled = item.lifecycle_state === "disabled"
+  const retired = item.lifecycle_state === "retired"
   return <tr className="hover:bg-[#f6f8fa]">
     <Td><div className="flex min-w-0 items-center gap-2.5"><div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-white text-[#57606a]"><CircleDot className="size-3.5" /></div><div className="min-w-0"><div className="max-w-[300px] truncate font-medium text-foreground" title={item.display_name}>{item.display_name}</div><div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{compactId(item.id)}</div></div></div></Td>
     <Td><Badge variant="outline">{item.protocol.toUpperCase()}</Badge></Td>
@@ -136,7 +149,7 @@ function NodeRow({ item, checking, onCheck }: { item: NodeRecord; checking: bool
     <Td>{formatDate(item.last_checked_at)}</Td>
     <Td>{item.source_count}</Td>
     <Td><span className="font-mono text-[11px]" title={item.fingerprint}>{compactId(item.fingerprint)}</span></Td>
-    <Td align="right"><Button variant="outline" size="sm" onClick={onCheck} disabled={checking || unavailable}>{checking ? <LoaderCircle className="animate-spin" /> : <Activity />}复测</Button></Td>
+    <Td align="right"><div className="inline-flex items-center gap-1.5"><Button variant="outline" size="sm" onClick={onCheck} disabled={checking || unavailable}>{checking ? <LoaderCircle className="animate-spin" /> : <Activity />}复测</Button><Button variant="outline" size="sm" onClick={onToggle} disabled={retired}>{disabled ? <CirclePlay /> : <Ban />}{disabled ? "启用" : "禁用"}</Button></div></Td>
   </tr>
 }
 

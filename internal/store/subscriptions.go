@@ -18,8 +18,10 @@ type SubscriptionRecord struct {
 	SourceConfigEncrypted  []byte
 	Enabled                bool
 	RefreshIntervalSeconds int
+	RefreshCron            string
 	LastSuccessSnapshotID  string
 	ConsecutiveFailures    int
+	LastFailureJSON        string
 	LastRefreshAttemptAt   *time.Time
 	NextRefreshAt          *time.Time
 	Version                int
@@ -36,6 +38,7 @@ INSERT INTO subscriptions(
     source_config_encrypted,
     enabled,
     refresh_interval_seconds,
+    refresh_cron,
     last_success_snapshot_id,
     consecutive_failures,
     last_refresh_attempt_at,
@@ -43,7 +46,7 @@ INSERT INTO subscriptions(
     version,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -51,6 +54,7 @@ INSERT INTO subscriptions(
 		record.SourceConfigEncrypted,
 		boolToInteger(record.Enabled),
 		record.RefreshIntervalSeconds,
+		record.RefreshCron,
 		record.LastSuccessSnapshotID,
 		record.ConsecutiveFailures,
 		nullableTimeString(record.LastRefreshAttemptAt),
@@ -120,6 +124,7 @@ SET
     source_config_encrypted = ?,
     enabled = ?,
     refresh_interval_seconds = ?,
+    refresh_cron = ?,
     next_refresh_at = NULLIF(?, ''),
     version = version + 1,
     updated_at = ?
@@ -130,6 +135,7 @@ WHERE id = ? AND version = ?
 		record.SourceConfigEncrypted,
 		boolToInteger(record.Enabled),
 		record.RefreshIntervalSeconds,
+		record.RefreshCron,
 		nullableTimeString(record.NextRefreshAt),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		record.ID,
@@ -215,8 +221,10 @@ SELECT
     source_config_encrypted,
     enabled,
     refresh_interval_seconds,
+    refresh_cron,
     COALESCE(last_success_snapshot_id, ''),
     consecutive_failures,
+    last_failure_json,
     last_refresh_attempt_at,
     next_refresh_at,
     version,
@@ -242,8 +250,10 @@ func scanSubscription(source scanner) (SubscriptionRecord, error) {
 		&record.SourceConfigEncrypted,
 		&enabled,
 		&record.RefreshIntervalSeconds,
+		&record.RefreshCron,
 		&record.LastSuccessSnapshotID,
 		&record.ConsecutiveFailures,
+		&record.LastFailureJSON,
 		&lastRefreshAttemptAt,
 		&nextRefreshAt,
 		&record.Version,

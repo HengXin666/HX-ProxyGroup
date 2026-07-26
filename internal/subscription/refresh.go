@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/cron"
 	"github.com/HengXin666/HX-ProxyGroup/internal/nodeparse"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
@@ -165,7 +167,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (result RefreshResult,
 		return RefreshResult{}, err
 	}
 	fetchedAt := s.now().UTC()
-	nextSuccessAt := fetchedAt.Add(time.Duration(record.RefreshIntervalSeconds) * time.Second)
+	nextSuccessAt := nextScheduledRefresh(record, fetchedAt)
 	fetchResult, err := s.loader.Load(ctx, SourceType(record.SourceType), config, condition)
 	if err != nil {
 		return RefreshResult{}, s.refreshFailed(ctx, record, fetchedAt, err)
@@ -325,22 +327,88 @@ func (s *Service) fetchCondition(
 	return FetchCondition{ETag: metadata.ETag, LastModified: metadata.LastModified}, snapshot, nil
 }
 
+// Failure is the persisted, structured reason of the most recent refresh
+// failure. It never contains the subscription URL or credentials.
+type Failure struct {
+	Code    string    `json:"code"`
+	Message string    `json:"message"`
+	At      time.Time `json:"at"`
+}
+
+// maxFastRetries bounds the exponential fast-retry phase. Beyond it the
+// subscription falls back to its regular schedule instead of hammering a
+// broken source.
+const maxFastRetries = 8
+
 func (s *Service) refreshFailed(
 	ctx context.Context,
 	record store.SubscriptionRecord,
 	failedAt time.Time,
 	cause error,
 ) error {
-	nextRefreshAt := failedAt.Add(refreshFailureBackoff(
-		record.ConsecutiveFailures+1,
-		time.Duration(record.RefreshIntervalSeconds)*time.Second,
-	))
-	if markErr := s.repository.MarkSubscriptionRefreshFailed(ctx, record.ID, failedAt, nextRefreshAt); markErr != nil {
+	failureCount := record.ConsecutiveFailures + 1
+	var nextRefreshAt time.Time
+	if failureCount > maxFastRetries {
+		nextRefreshAt = nextScheduledRefresh(record, failedAt)
+	} else {
+		nextRefreshAt = failedAt.Add(refreshFailureBackoff(
+			failureCount,
+			time.Duration(record.RefreshIntervalSeconds)*time.Second,
+		))
+	}
+	failure := Failure{Code: classifyRefreshError(cause), Message: sanitizeBatchError(cause), At: failedAt}
+	failureJSON, marshalErr := json.Marshal(failure)
+	if marshalErr != nil {
+		failureJSON = []byte(`{"code":"internal","message":"failed to encode failure"}`)
+	}
+	if markErr := s.repository.MarkSubscriptionRefreshFailed(ctx, record.ID, failedAt, nextRefreshAt, string(failureJSON)); markErr != nil {
 		return errors.Join(cause, fmt.Errorf("record refresh failure: %w", mapRepositoryError(markErr)))
 	}
 	return cause
 }
 
+// nextScheduledRefresh computes the next regular slot: the cron schedule
+// when configured, otherwise the fixed interval.
+func nextScheduledRefresh(record store.SubscriptionRecord, from time.Time) time.Time {
+	if expression := strings.TrimSpace(record.RefreshCron); expression != "" {
+		if schedule, err := cron.Parse(expression); err == nil {
+			if next := schedule.Next(from); !next.IsZero() {
+				return next
+			}
+		}
+	}
+	return from.Add(time.Duration(record.RefreshIntervalSeconds) * time.Second)
+}
+
+// classifyRefreshError maps an error chain onto a stable failure code the
+// UI can rely on without string matching.
+func classifyRefreshError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), strings.Contains(message, "timed out"), strings.Contains(message, "timeout"):
+		return "timeout"
+	case strings.Contains(message, "status"):
+		return "http_status"
+	case strings.Contains(message, "too large"), strings.Contains(message, "exceeds"):
+		return "content_too_large"
+	case strings.Contains(message, "parse"), strings.Contains(message, "decode"), strings.Contains(message, "unsupported"):
+		return "parse"
+	case strings.Contains(message, "network"), strings.Contains(message, "dial"), strings.Contains(message, "dns"),
+		strings.Contains(message, "connection"), strings.Contains(message, "request failed"):
+		return "network"
+	case strings.Contains(message, "empty"):
+		return "empty_content"
+	default:
+		return "internal"
+	}
+}
+
+// refreshFailureBackoff returns the exponential retry delay with a ±20%
+// deterministic-free jitter so many failing subscriptions do not retry in
+// lockstep after an outage.
 func refreshFailureBackoff(failureCount int, refreshInterval time.Duration) time.Duration {
 	if failureCount < 1 {
 		failureCount = 1
@@ -357,7 +425,12 @@ func refreshFailureBackoff(failureCount int, refreshInterval time.Duration) time
 	if delay > maximum {
 		delay = maximum
 	}
-	return delay
+	// Jitter in [0.8, 1.2) of the base delay.
+	jittered := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
+	if jittered < time.Second {
+		jittered = time.Second
+	}
+	return jittered
 }
 
 func (s *Service) writeSnapshot(subscriptionID, snapshotID string, content []byte) (string, error) {

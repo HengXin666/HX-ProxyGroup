@@ -77,6 +77,27 @@ func (s *Server) handleNode(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, result)
 		return
 	}
+	if len(parts) == 2 && (parts[1] == "disable" || parts[1] == "enable") {
+		if request.Method != http.MethodPost {
+			methodNotAllowed(writer, request, http.MethodPost)
+			return
+		}
+		var (
+			item node.Node
+			err  error
+		)
+		if parts[1] == "disable" {
+			item, err = s.nodes.Disable(request.Context(), parts[0])
+		} else {
+			item, err = s.nodes.Enable(request.Context(), parts[0])
+		}
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, item)
+		return
+	}
 	if len(parts) != 1 || request.Method != http.MethodGet {
 		if len(parts) == 1 {
 			methodNotAllowed(writer, request, http.MethodGet)

@@ -258,6 +258,14 @@ CREATE TABLE alert_settings (
 ) STRICT;
 `,
 	},
+	{
+		version: 9,
+		name:    "subscription_cron_and_failure_reason",
+		sql: `
+ALTER TABLE subscriptions ADD COLUMN refresh_cron TEXT NOT NULL DEFAULT '';
+ALTER TABLE subscriptions ADD COLUMN last_failure_json TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

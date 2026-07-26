@@ -14,6 +14,7 @@ import type {
   NodeCheckResult,
   NodeCheckList,
   NodeList,
+  NodeRecord,
   ProxyGroup,
   ProxyGroupList,
   ProxyServiceRecord,
@@ -237,6 +238,14 @@ export const api = {
 
   checkNode(id: string): Promise<NodeCheckResult> {
     return request(`/api/v1/nodes/${encodeURIComponent(id)}/check`, { method: "POST" })
+  },
+
+  disableNode(id: string): Promise<NodeRecord> {
+    return request(`/api/v1/nodes/${encodeURIComponent(id)}/disable`, { method: "POST" })
+  },
+
+  enableNode(id: string): Promise<NodeRecord> {
+    return request(`/api/v1/nodes/${encodeURIComponent(id)}/enable`, { method: "POST" })
   },
 
   checkNodes(nodeIds: string[]): Promise<NodeCheckList> {

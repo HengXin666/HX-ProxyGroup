@@ -224,6 +224,7 @@ UPDATE subscriptions
 SET
     last_success_snapshot_id = ?,
     consecutive_failures = 0,
+    last_failure_json = '',
     last_refresh_attempt_at = ?,
     next_refresh_at = ?,
     updated_at = ?
@@ -494,4 +495,29 @@ func escapeLike(value string) string {
 	value = strings.ReplaceAll(value, "\\", "\\\\")
 	value = strings.ReplaceAll(value, "%", "\\%")
 	return strings.ReplaceAll(value, "_", "\\_")
+}
+
+// SetNodeLifecycleState performs an administrator lifecycle transition.
+// Only 'disabled' (admin off) and 'candidate' (re-enable, waiting for a new
+// probe) are valid targets, and retired nodes cannot be changed.
+func (s *Store) SetNodeLifecycleState(ctx context.Context, id, state string) error {
+	if state != "disabled" && state != "candidate" {
+		return fmt.Errorf("unsupported lifecycle transition to %q", state)
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE nodes
+SET lifecycle_state = ?, version = version + 1
+WHERE id = ? AND lifecycle_state <> 'retired'
+`, state, id)
+	if err != nil {
+		return fmt.Errorf("set node lifecycle state: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read node lifecycle update result: %w", err)
+	}
+	if rows != 1 {
+		return ErrNotFound
+	}
+	return nil
 }

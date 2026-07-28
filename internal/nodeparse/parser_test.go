@@ -117,3 +117,30 @@ func TestUnsupportedURIIsRetainedAsFailure(t *testing.T) {
 		t.Fatalf("failure protocol = %q", result.Failures[0].Protocol)
 	}
 }
+
+func TestParseSingBoxJSON(t *testing.T) {
+	result, err := Parse([]byte(`{
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "CF VLESS",
+      "server": "edge.example.com",
+      "server_port": 443,
+      "uuid": "11111111-1111-1111-1111-111111111111",
+      "tls": {"enabled": true, "server_name": "edge.example.com"},
+      "transport": {"type": "ws", "path": "/proxy", "headers": {"Host": "edge.example.com"}}
+    },
+    {"type": "direct", "tag": "direct"}
+  ]
+}`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if result.DetectedFormat != "sing-box-json" || len(result.Nodes) != 1 || len(result.Failures) != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	node := result.Nodes[0]
+	if node.Protocol != "vless" || node.DisplayName != "CF VLESS" || node.Canonical["network"] != "ws" {
+		t.Fatalf("unexpected node: %+v", node)
+	}
+}

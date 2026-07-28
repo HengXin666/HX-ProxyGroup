@@ -52,6 +52,9 @@ func parse(content []byte, depth int) (Result, error) {
 	if result, ok := parseClashYAML(trimmed); ok {
 		return result, nil
 	}
+	if result, ok := parseSingBoxJSON(trimmed); ok {
+		return result, nil
+	}
 	if result := parseURILines(string(trimmed)); len(result.Nodes) > 0 || len(result.Failures) > 0 {
 		result.DetectedFormat = "uri-list"
 		return result, nil
@@ -65,6 +68,85 @@ func parse(content []byte, depth int) (Result, error) {
 		return result, nil
 	}
 	return Result{}, errors.New("subscription format is not supported")
+}
+
+func parseSingBoxJSON(content []byte) (Result, bool) {
+	var document struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	if err := json.Unmarshal(content, &document); err != nil || document.Outbounds == nil {
+		return Result{}, false
+	}
+	result := Result{DetectedFormat: "sing-box-json", Nodes: make([]Node, 0, len(document.Outbounds))}
+	for index, raw := range document.Outbounds {
+		normalized, err := singBoxToCanonical(raw)
+		if err != nil {
+			result.Failures = append(result.Failures, Failure{
+				Index: index, Protocol: strings.ToLower(strings.TrimSpace(stringValue(raw["type"]))),
+				Name: stringValue(raw["tag"]), Reason: err.Error(),
+			})
+			continue
+		}
+		node, err := nodeFromClash(normalized)
+		if err != nil {
+			result.Failures = append(result.Failures, Failure{Index: index, Name: stringValue(raw["tag"]), Reason: err.Error()})
+			continue
+		}
+		result.Nodes = append(result.Nodes, node)
+	}
+	return result, true
+}
+
+func singBoxToCanonical(raw map[string]any) (map[string]any, error) {
+	input := normalizeMap(raw)
+	protocol := strings.ToLower(stringValue(input["type"]))
+	switch protocol {
+	case "shadowsocks":
+		protocol = "ss"
+	case "socks":
+		protocol = "socks5"
+	case "vless", "vmess", "trojan", "http":
+	default:
+		return nil, fmt.Errorf("unsupported sing-box outbound type %q", protocol)
+	}
+	canonical := map[string]any{
+		"name": stringValue(input["tag"]), "type": protocol,
+		"server": input["server"], "port": input["server_port"],
+	}
+	for _, key := range []string{"uuid", "username", "password", "flow", "security"} {
+		if value, exists := input[key]; exists {
+			canonical[key] = value
+		}
+	}
+	if method, exists := input["method"]; exists {
+		canonical["cipher"] = method
+	}
+	if alterID, exists := input["alter_id"]; exists {
+		canonical["alter-id"] = alterID
+	}
+	if tlsConfig, ok := input["tls"].(map[string]any); ok {
+		if enabled, _ := tlsConfig["enabled"].(bool); enabled {
+			canonical["tls"] = true
+		}
+		if serverName := strings.TrimSpace(stringValue(tlsConfig["server_name"])); serverName != "" {
+			canonical["servername"] = serverName
+		}
+	}
+	if transport, ok := input["transport"].(map[string]any); ok {
+		transportType := strings.ToLower(stringValue(transport["type"]))
+		if transportType == "ws" || transportType == "websocket" {
+			canonical["network"] = "ws"
+			options := map[string]any{}
+			if path := strings.TrimSpace(stringValue(transport["path"])); path != "" {
+				options["path"] = path
+			}
+			if headers, exists := transport["headers"]; exists {
+				options["headers"] = headers
+			}
+			canonical["ws-opts"] = options
+		}
+	}
+	return canonical, nil
 }
 
 func parseClashYAML(content []byte) (Result, bool) {

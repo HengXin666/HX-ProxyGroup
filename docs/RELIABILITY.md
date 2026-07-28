@@ -324,6 +324,15 @@ preflight
 
 禁止自动删除当前数据库、最后有效配置和唯一备份。
 
+### 8.5 数据面回环与资源边界
+
+- 受管 Mihomo 默认读取 Linux 主路由表的默认出口，并通过全局 `interface-name` 绑定真实网卡，避免上游拨号重新进入 Clash / Mihomo TUN。
+- `HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE` 可指定网卡；只有显式设置 `off` 才允许数据面跟随宿主机策略路由。
+- 编译候选配置时拒绝上游节点直接指向同地址、同端口的受管 Listener。
+- Mihomo 默认 `GOMAXPROCS` 不超过 4，可通过 `HX_PROXYGROUP_MIHOMO_MAX_PROCS` 调整，避免异常连接风暴占满全部 CPU 核。
+- `runtime/mihomo.log` 在线轮转，默认单文件 8 MiB、保留 2 份；上限和备份数可通过环境变量调整。
+- 自动出口识别失败时控制面保持管理 API 可用并输出结构化告警，不伪装成已完成 TUN 隔离。
+
 ---
 
 ## 9. 日志与审计
@@ -335,6 +344,7 @@ preflight
 - 每条请求包含 trace ID，不记录完整 Authorization、Cookie 或订阅 URL。
 - 高频连接和流量事件采用采样或聚合，不逐连接写 info 日志。
 - 支持临时提高单模块日志级别并自动恢复。
+- 受管 Mihomo 文件日志必须在线轮转，不得依赖进程重启后清理。
 
 ### 9.2 审计日志
 
@@ -541,6 +551,6 @@ inactive -> pending -> firing -> acknowledged/silenced -> resolved
 - [ ] 订阅失败不会清空节点。
 - [ ] 配置失败不会中断上一版代理。
 - [ ] Cloudflare / 雷池兼容边界已在 UI 和文档提示。
-- [ ] 30 天统计清理和聚合测试通过。
+- [x] 30 天统计清理和聚合测试通过。
 - [ ] CPU、RSS、连接数和吞吐基准报告已归档。
 - [ ] 至少完成一次控制面崩溃、数据面崩溃和整机重启演练。

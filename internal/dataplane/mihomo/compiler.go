@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
@@ -47,6 +49,7 @@ type Compiler struct {
 	repository       Repository
 	cipher           Cipher
 	controllerSocket string
+	egressInterface  string
 }
 
 func NewCompiler(repository Repository, cipher Cipher) (*Compiler, error) {
@@ -61,6 +64,10 @@ func NewCompiler(repository Repository, cipher Cipher) (*Compiler, error) {
 
 func (c *Compiler) setControllerSocket(path string) {
 	c.controllerSocket = strings.TrimSpace(path)
+}
+
+func (c *Compiler) setEgressInterface(name string) {
+	c.egressInterface = strings.TrimSpace(name)
 }
 
 func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
@@ -160,6 +167,9 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 			Port:        record.Port,
 		})
 	}
+	if err := validateNoListenerLoop(proxies, listenerConfigs); err != nil {
+		return Compiled{}, err
+	}
 
 	compiledRules := routingrules.Compile(routeConfig, groups, listeners, listenerConfigName)
 	compiledRules = append(compiledRules, "MATCH,DIRECT")
@@ -189,6 +199,9 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	if c.controllerSocket != "" {
 		document["external-controller-unix"] = c.controllerSocket
 	}
+	if c.egressInterface != "" {
+		document["interface-name"] = c.egressInterface
+	}
 	encoded, err := yaml.Marshal(document)
 	if err != nil {
 		return Compiled{}, fmt.Errorf("encode mihomo configuration: %w", err)
@@ -199,6 +212,60 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 		ProxyCount:       len(proxies),
 		ControllerSocket: c.controllerSocket,
 	}, nil
+}
+
+func validateNoListenerLoop(proxies, listeners []map[string]any) error {
+	for _, proxy := range proxies {
+		proxyPort, ok := integerValue(proxy["port"])
+		if !ok {
+			continue
+		}
+		proxyHost := strings.TrimSpace(fmt.Sprint(proxy["server"]))
+		for _, listener := range listeners {
+			listenerPort, ok := integerValue(listener["port"])
+			if !ok || proxyPort != listenerPort {
+				continue
+			}
+			listenerHost := strings.TrimSpace(fmt.Sprint(listener["listen"]))
+			if hostsCanReferToSameLocalEndpoint(proxyHost, listenerHost) {
+				return fmt.Errorf("proxy %q points to managed listener %s:%d", proxy["name"], listenerHost, listenerPort)
+			}
+		}
+	}
+	return nil
+}
+
+func integerValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), typed == float64(int(typed))
+	default:
+		parsed, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(value)))
+		return parsed, err == nil
+	}
+}
+
+func hostsCanReferToSameLocalEndpoint(proxyHost, listenerHost string) bool {
+	proxyHost = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(proxyHost)), ".")
+	listenerHost = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(listenerHost)), ".")
+	if proxyHost == "localhost" {
+		return listenerHost == "localhost" || listenerHost == "" || isLoopbackOrUnspecified(listenerHost)
+	}
+	proxyIP := net.ParseIP(proxyHost)
+	listenerIP := net.ParseIP(listenerHost)
+	if proxyIP != nil && proxyIP.IsLoopback() {
+		return listenerHost == "localhost" || listenerHost == "" || listenerIP != nil && (listenerIP.IsLoopback() || listenerIP.IsUnspecified())
+	}
+	return proxyHost != "" && proxyHost == listenerHost
+}
+
+func isLoopbackOrUnspecified(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
 type compiledNode struct {
@@ -319,9 +386,11 @@ func (c *Compiler) compileListener(record store.ListenerRecord, groupName string
 		"type":   record.Kind,
 		"listen": record.BindAddress,
 		"port":   record.Port,
-		"udp":    true,
 		"proxy":  groupName,
 		"users":  []any{},
+	}
+	if record.Kind == "http" || record.Kind == "socks" || record.Kind == "mixed" {
+		config["udp"] = true
 	}
 	if record.AuthMode == "userpass" {
 		plaintext, err := c.cipher.Open(record.AuthConfigEncrypted, []byte("listener:"+record.ID))
@@ -335,12 +404,36 @@ func (c *Compiler) compileListener(record store.ListenerRecord, groupName string
 		if auth.Username == "" || auth.Password == "" {
 			return nil, fmt.Errorf("listener %q has incomplete authentication", record.Name)
 		}
-		config["users"] = []map[string]string{{
-			"username": auth.Username,
-			"password": auth.Password,
-		}}
+		user := map[string]any{"username": auth.Username}
+		switch record.Kind {
+		case "vless":
+			user["uuid"] = auth.Password
+		case "vmess":
+			user["uuid"] = auth.Password
+			user["alterId"] = 0
+		default:
+			user["password"] = auth.Password
+		}
+		config["users"] = []map[string]any{user}
+	}
+	if isWebSocketListener(record.Kind) {
+		var transport listener.Transport
+		if err := json.Unmarshal([]byte(record.TransportJSON), &transport); err != nil {
+			return nil, fmt.Errorf("decode listener %q transport: %w", record.Name, err)
+		}
+		if transport.Type != "ws" || transport.WSPath == "" {
+			return nil, fmt.Errorf("listener %q has invalid WebSocket transport", record.Name)
+		}
+		config["ws-path"] = transport.WSPath
+		if record.Kind == "vless" || record.Kind == "trojan" {
+			config["allow-insecure"] = true
+		}
 	}
 	return config, nil
+}
+
+func isWebSocketListener(kind string) bool {
+	return kind == "vless" || kind == "vmess" || kind == "trojan"
 }
 
 func nodeProxyName(fingerprint string) string {

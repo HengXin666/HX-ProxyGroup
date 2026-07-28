@@ -76,16 +76,37 @@ func TestConfigEnsureDirectories(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsUnsafeMihomoResourceSettings(t *testing.T) {
+	t.Parallel()
+	tests := []func(*Config){
+		func(config *Config) { config.MihomoEgressInterface = "" },
+		func(config *Config) { config.MihomoMaxProcs = 0 },
+		func(config *Config) { config.MihomoLogMaxBytes = 1024 },
+		func(config *Config) { config.MihomoLogBackups = -1 },
+	}
+	for index, mutate := range tests {
+		config := validTestConfig(t)
+		mutate(&config)
+		if err := config.Validate(); err == nil {
+			t.Errorf("case %d Validate() error = nil, want rejection", index)
+		}
+	}
+}
+
 func validTestConfig(t *testing.T) Config {
 	t.Helper()
 	root := t.TempDir()
 	return Config{
-		ListenAddress:     "127.0.0.1:19090",
-		DataDirectory:     filepath.Join(root, "data"),
-		ApplicationConfig: filepath.Join(root, "config.yaml"),
-		DatabasePath:      filepath.Join(root, "data", "hx-proxygroup.db"),
-		MasterKeyPath:     filepath.Join(root, "data", "master.key"),
-		RuntimeConfigPath: filepath.Join(root, "data", "runtime", "active.yaml"),
-		SnapshotsPath:     filepath.Join(root, "data", "snapshots"),
+		ListenAddress:         "127.0.0.1:19090",
+		DataDirectory:         filepath.Join(root, "data"),
+		ApplicationConfig:     filepath.Join(root, "config.yaml"),
+		DatabasePath:          filepath.Join(root, "data", "hx-proxygroup.db"),
+		MasterKeyPath:         filepath.Join(root, "data", "master.key"),
+		RuntimeConfigPath:     filepath.Join(root, "data", "runtime", "active.yaml"),
+		SnapshotsPath:         filepath.Join(root, "data", "snapshots"),
+		MihomoEgressInterface: "auto",
+		MihomoMaxProcs:        4,
+		MihomoLogMaxBytes:     8 << 20,
+		MihomoLogBackups:      2,
 	}
 }

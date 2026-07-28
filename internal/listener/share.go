@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ErrShareDisabled marks share exports rejected because the listener is
@@ -23,7 +25,14 @@ type ShareExport struct {
 	// Body is the plain URI list, one proxy URI per line.
 	Body string
 	// FileName is a suggested download name.
-	FileName string
+	FileName  string
+	Name      string
+	Kind      string
+	Host      string
+	Port      int
+	Auth      *Auth
+	Transport Transport
+	Endpoint  PublicEndpoint
 }
 
 func newShareToken() (string, error) {
@@ -62,11 +71,22 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 		}
 		auth = &decoded
 	}
+	var transport Transport
+	var endpoint PublicEndpoint
+	_ = json.Unmarshal([]byte(record.TransportJSON), &transport)
+	_ = json.Unmarshal([]byte(record.PublicEndpointJSON), &endpoint)
 	host := exportHost(record.BindAddress, requestHost)
-	uris := shareURIs(record.Kind, record.Name, host, record.Port, auth)
+	port := record.Port
+	if isAdvancedKind(record.Kind) {
+		host = endpoint.Host
+		port = endpoint.Port
+	}
+	uris := shareURIs(record.Kind, record.Name, host, port, auth, transport, endpoint)
 	return ShareExport{
 		Body:     strings.Join(uris, "\n") + "\n",
 		FileName: sanitizeFileName(record.Name) + ".txt",
+		Name:     record.Name, Kind: record.Kind, Host: host, Port: port,
+		Auth: auth, Transport: transport, Endpoint: endpoint,
 	}, nil
 }
 
@@ -74,6 +94,44 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 // by most proxy clients.
 func (export ShareExport) EncodeSubscription() string {
 	return base64.StdEncoding.EncodeToString([]byte(export.Body))
+}
+
+// Render returns a client-specific subscription document. v2rayn remains the
+// default because it accepts the conventional base64-wrapped URI list.
+func (export ShareExport) Render(format string) (body, fileName, contentType string, err error) {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "v2rayn":
+		return export.EncodeSubscription(), sanitizeFileName(export.Name) + ".txt", "text/plain; charset=utf-8", nil
+	case "uri":
+		return export.Body, sanitizeFileName(export.Name) + ".txt", "text/plain; charset=utf-8", nil
+	case "clash", "mihomo":
+		groupName := "HX-PROXY"
+		if export.Name == groupName {
+			groupName = "HX-PROXY-GROUP"
+		}
+		encoded, encodeErr := yaml.Marshal(map[string]any{
+			"mode":      "rule",
+			"log-level": "info",
+			"allow-lan": false,
+			"proxies":   []map[string]any{export.clashProxy()},
+			"proxy-groups": []map[string]any{{
+				"name": groupName, "type": "select", "proxies": []string{export.Name, "DIRECT"},
+			}},
+			"rules": []string{"MATCH," + groupName},
+		})
+		if encodeErr != nil {
+			return "", "", "", fmt.Errorf("encode Clash subscription: %w", encodeErr)
+		}
+		return string(encoded), sanitizeFileName(export.Name) + ".yaml", "application/yaml; charset=utf-8", nil
+	case "sing-box", "singbox":
+		encoded, encodeErr := json.MarshalIndent(map[string]any{"outbounds": []map[string]any{export.singBoxOutbound()}}, "", "  ")
+		if encodeErr != nil {
+			return "", "", "", fmt.Errorf("encode sing-box subscription: %w", encodeErr)
+		}
+		return string(encoded) + "\n", sanitizeFileName(export.Name) + ".json", "application/json; charset=utf-8", nil
+	default:
+		return "", "", "", fmt.Errorf("%w: format must be v2rayn, clash, sing-box, or uri", ErrInvalid)
+	}
 }
 
 func exportHost(bindAddress, requestHost string) string {
@@ -90,13 +148,24 @@ func exportHost(bindAddress, requestHost string) string {
 	return bindAddress
 }
 
-func shareURIs(kind, name, host string, port int, auth *Auth) []string {
+func shareURIs(kind, name, host string, port int, auth *Auth, transport Transport, endpoint PublicEndpoint) []string {
+	if kind == "vmess" {
+		payload := map[string]any{
+			"v": "2", "ps": name, "add": host, "port": strconv.Itoa(port),
+			"id": authPassword(auth), "aid": "0", "scy": "auto", "net": "ws",
+			"type": "none", "host": endpoint.Host, "path": transport.WSPath, "tls": "tls", "sni": endpoint.Host,
+		}
+		encoded, _ := json.Marshal(payload)
+		return []string{"vmess://" + base64.RawStdEncoding.EncodeToString(encoded)}
+	}
 	var schemes []string
 	switch kind {
 	case "http":
 		schemes = []string{"http"}
 	case "socks":
 		schemes = []string{"socks5"}
+	case "vless", "trojan":
+		schemes = []string{kind}
 	default: // mixed exposes both entry protocols on one port
 		schemes = []string{"http", "socks5"}
 	}
@@ -108,11 +177,92 @@ func shareURIs(kind, name, host string, port int, auth *Auth) []string {
 			Fragment: name,
 		}
 		if auth != nil {
-			address.User = url.UserPassword(auth.Username, auth.Password)
+			if kind == "vless" || kind == "trojan" {
+				address.User = url.User(auth.Password)
+			} else {
+				address.User = url.UserPassword(auth.Username, auth.Password)
+			}
+		}
+		if kind == "vless" || kind == "trojan" {
+			query := url.Values{"security": {"tls"}, "type": {"ws"}, "host": {endpoint.Host}, "path": {transport.WSPath}, "sni": {endpoint.Host}}
+			if kind == "vless" {
+				query.Set("encryption", "none")
+			}
+			address.RawQuery = query.Encode()
 		}
 		uris = append(uris, address.String())
 	}
 	return uris
+}
+
+func (export ShareExport) clashProxy() map[string]any {
+	proxy := map[string]any{"name": export.Name, "type": export.Kind, "server": export.Host, "port": export.Port}
+	switch export.Kind {
+	case "http", "socks":
+		if export.Kind == "socks" {
+			proxy["type"] = "socks5"
+		}
+		addUserPassword(proxy, export.Auth)
+	case "mixed":
+		proxy["type"] = "http"
+		addUserPassword(proxy, export.Auth)
+	case "vless", "vmess", "trojan":
+		proxy["tls"] = true
+		proxy["network"] = "ws"
+		proxy["server-name"] = export.Endpoint.Host
+		proxy["ws-opts"] = map[string]any{"path": export.Transport.WSPath, "headers": map[string]string{"Host": export.Endpoint.Host}}
+		if export.Kind == "trojan" {
+			proxy["password"] = authPassword(export.Auth)
+		} else {
+			proxy["uuid"] = authPassword(export.Auth)
+		}
+		if export.Kind == "vless" {
+			proxy["udp"] = true
+		}
+	}
+	return proxy
+}
+
+func (export ShareExport) singBoxOutbound() map[string]any {
+	outbound := map[string]any{"type": export.Kind, "tag": export.Name, "server": export.Host, "server_port": export.Port}
+	switch export.Kind {
+	case "http", "socks", "mixed":
+		if export.Kind == "mixed" {
+			outbound["type"] = "http"
+		}
+		if export.Kind == "socks" {
+			outbound["type"] = "socks"
+		}
+		addUserPassword(outbound, export.Auth)
+	case "vless", "vmess", "trojan":
+		outbound["tls"] = map[string]any{"enabled": true, "server_name": export.Endpoint.Host}
+		outbound["transport"] = map[string]any{"type": "ws", "path": export.Transport.WSPath, "headers": map[string]string{"Host": export.Endpoint.Host}}
+		if export.Kind == "trojan" {
+			outbound["password"] = authPassword(export.Auth)
+		} else {
+			outbound["uuid"] = authPassword(export.Auth)
+		}
+		if export.Kind == "vmess" {
+			outbound["security"] = "auto"
+			outbound["alter_id"] = 0
+		}
+	}
+	return outbound
+}
+
+func addUserPassword(target map[string]any, auth *Auth) {
+	if auth == nil {
+		return
+	}
+	target["username"] = auth.Username
+	target["password"] = auth.Password
+}
+
+func authPassword(auth *Auth) string {
+	if auth == nil {
+		return ""
+	}
+	return auth.Password
 }
 
 func sanitizeFileName(name string) string {

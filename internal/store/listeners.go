@@ -17,6 +17,8 @@ type ListenerRecord struct {
 	ProxyGroupID        string
 	AuthMode            string
 	AuthConfigEncrypted []byte
+	TransportJSON       string
+	PublicEndpointJSON  string
 	ShareToken          string
 	Enabled             bool
 	Version             int
@@ -29,8 +31,8 @@ func (s *Store) CreateListener(ctx context.Context, record ListenerRecord) (List
 INSERT INTO listeners(
     id, name, listener_type, kind, bind_address, port, proxy_group_id,
     auth_policy_encrypted, auth_mode, auth_config_encrypted,
-    share_token, enabled, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    transport_json, public_endpoint_json, share_token, enabled, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -42,6 +44,8 @@ INSERT INTO listeners(
 		record.AuthConfigEncrypted,
 		record.AuthMode,
 		record.AuthConfigEncrypted,
+		record.TransportJSON,
+		record.PublicEndpointJSON,
 		record.ShareToken,
 		boolToInteger(record.Enabled),
 		record.Version,
@@ -97,7 +101,8 @@ func (s *Store) UpdateListener(
 UPDATE listeners
 SET
     name = ?, listener_type = ?, kind = ?, bind_address = ?, port = ?, proxy_group_id = ?,
-    auth_policy_encrypted = ?, auth_mode = ?, auth_config_encrypted = ?, enabled = ?,
+    auth_policy_encrypted = ?, auth_mode = ?, auth_config_encrypted = ?,
+    transport_json = ?, public_endpoint_json = ?, enabled = ?,
     version = version + 1, updated_at = ?
 WHERE id = ? AND version = ?
 `,
@@ -110,6 +115,8 @@ WHERE id = ? AND version = ?
 		record.AuthConfigEncrypted,
 		record.AuthMode,
 		record.AuthConfigEncrypted,
+		record.TransportJSON,
+		record.PublicEndpointJSON,
 		boolToInteger(record.Enabled),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		record.ID,
@@ -155,7 +162,8 @@ func (s *Store) DeleteListener(ctx context.Context, id string, expectedVersion i
 const listenerSelect = `
 SELECT
     id, name, kind, bind_address, port, proxy_group_id, auth_mode,
-    auth_config_encrypted, share_token, enabled, version, created_at, updated_at
+    auth_config_encrypted, transport_json, public_endpoint_json,
+    share_token, enabled, version, created_at, updated_at
 FROM listeners`
 
 // GetListenerByShareToken resolves the public subscription-export token.
@@ -208,6 +216,8 @@ func scanListener(source scanner) (ListenerRecord, error) {
 		&record.ProxyGroupID,
 		&record.AuthMode,
 		&record.AuthConfigEncrypted,
+		&record.TransportJSON,
+		&record.PublicEndpointJSON,
 		&record.ShareToken,
 		&enabled,
 		&record.Version,

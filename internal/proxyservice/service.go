@@ -30,12 +30,14 @@ type CreateRequest struct {
 }
 
 type ListenerCreateRequest struct {
-	Name        string         `json:"name"`
-	Kind        string         `json:"kind"`
-	BindAddress string         `json:"bind_address"`
-	Port        int            `json:"port"`
-	Auth        *listener.Auth `json:"auth,omitempty"`
-	Enabled     *bool          `json:"enabled,omitempty"`
+	Name           string                  `json:"name"`
+	Kind           string                  `json:"kind"`
+	BindAddress    string                  `json:"bind_address"`
+	Port           int                     `json:"port"`
+	Auth           *listener.Auth          `json:"auth,omitempty"`
+	Transport      listener.Transport      `json:"transport,omitempty"`
+	PublicEndpoint listener.PublicEndpoint `json:"public_endpoint,omitempty"`
+	Enabled        *bool                   `json:"enabled,omitempty"`
 }
 
 type ServiceRecord struct {
@@ -70,13 +72,15 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (ServiceRec
 		return ServiceRecord{}, fmt.Errorf("%w: create proxy group: %v", ErrCreateFailed, err)
 	}
 	createdListener, err := s.listeners.Create(ctx, listener.CreateRequest{
-		Name:         request.Listener.Name,
-		Kind:         request.Listener.Kind,
-		BindAddress:  request.Listener.BindAddress,
-		Port:         request.Listener.Port,
-		ProxyGroupID: group.ID,
-		Auth:         request.Listener.Auth,
-		Enabled:      request.Listener.Enabled,
+		Name:           request.Listener.Name,
+		Kind:           request.Listener.Kind,
+		BindAddress:    request.Listener.BindAddress,
+		Port:           request.Listener.Port,
+		ProxyGroupID:   group.ID,
+		Auth:           request.Listener.Auth,
+		Transport:      request.Listener.Transport,
+		PublicEndpoint: request.Listener.PublicEndpoint,
+		Enabled:        request.Listener.Enabled,
 	})
 	if err != nil {
 		cleanupErr := s.groups.Delete(ctx, group.ID, group.Version)

@@ -36,8 +36,7 @@ func (s *Server) handleListeners(writer http.ResponseWriter, request *http.Reque
 }
 
 // handleListenerShare serves the public token-addressed subscription export.
-// The default response body is the conventional base64 subscription payload;
-// ?format=uri returns the plain URI list.
+// The default response body is v2rayN's conventional base64 subscription.
 func (s *Server) handleListenerShare(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		methodNotAllowed(writer, request, http.MethodGet)
@@ -53,15 +52,48 @@ func (s *Server) handleListenerShare(writer http.ResponseWriter, request *http.R
 		s.handleError(writer, request, err)
 		return
 	}
-	body := export.EncodeSubscription()
-	if request.URL.Query().Get("format") == "uri" {
-		body = export.Body
+	format := requestedShareFormat(request)
+	body, fileName, contentType, err := export.Render(format)
+	if err != nil {
+		s.handleError(writer, request, err)
+		return
 	}
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	writer.Header().Set("Content-Disposition", `attachment; filename="`+export.FileName+`"`)
+	writer.Header().Set("Content-Type", contentType)
+	writer.Header().Set("Content-Disposition", `attachment; filename="`+fileName+`"`)
 	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.Header().Set("X-HX-Subscription-Format", canonicalShareFormat(format))
+	writer.Header().Set("Vary", "User-Agent")
 	writer.WriteHeader(http.StatusOK)
 	_, _ = writer.Write([]byte(body))
+}
+
+func requestedShareFormat(request *http.Request) string {
+	if format := request.URL.Query().Get("format"); format != "" {
+		return format
+	}
+	userAgent := strings.ToLower(request.UserAgent())
+	switch {
+	case strings.Contains(userAgent, "clash"), strings.Contains(userAgent, "mihomo"):
+		return "clash"
+	case strings.Contains(userAgent, "sing-box"):
+		return "sing-box"
+	default:
+		return ""
+	}
+}
+
+func canonicalShareFormat(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "clash", "mihomo":
+		return "clash"
+	case "sing-box", "singbox":
+		return "sing-box"
+	case "uri":
+		return "uri"
+	default:
+		return "v2rayn"
+	}
 }
 
 func (s *Server) handleListener(writer http.ResponseWriter, request *http.Request) {

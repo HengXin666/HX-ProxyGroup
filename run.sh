@@ -57,7 +57,8 @@ Options:
 
 The React frontend is discovered from web/package.json and starts automatically.
 When dependencies are missing, run.sh installs them from the lock file before
-starting Vite.
+starting Vite. If the requested frontend port is occupied, the next available
+port within the following 20 ports is selected and printed.
 USAGE
 }
 
@@ -298,6 +299,26 @@ start_frontend_if_available() {
             fail "frontend dependencies are missing; rerun with --install-frontend-deps"
         fi
         install_frontend_dependencies "${package_manager}"
+    fi
+
+    local requested_port="${FRONTEND_PORT}"
+    local probe_host="${FRONTEND_HOST}"
+    if [[ "${probe_host}" == "0.0.0.0" || "${probe_host}" == "::" ]]; then
+        probe_host="127.0.0.1"
+    fi
+    local maximum_port=$((requested_port + 20))
+    ((maximum_port > 65535)) && maximum_port=65535
+    while ((FRONTEND_PORT <= maximum_port)); do
+        if ! (exec 9<>"/dev/tcp/${probe_host}/${FRONTEND_PORT}") 2>/dev/null; then
+            break
+        fi
+        FRONTEND_PORT=$((FRONTEND_PORT + 1))
+    done
+    if ((FRONTEND_PORT > maximum_port)); then
+        fail "no available frontend port between ${requested_port} and ${maximum_port}"
+    fi
+    if [[ "${FRONTEND_PORT}" != "${requested_port}" ]]; then
+        warn "frontend port ${requested_port} is in use; using ${FRONTEND_PORT} instead"
     fi
 
     local api_base="http://${LISTEN_ADDRESS}"

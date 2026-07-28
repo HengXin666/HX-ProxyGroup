@@ -5,14 +5,13 @@ import {
   CheckCircle2,
   CircleX,
   LogOut,
-  LayoutDashboard,
   ListFilter,
+	LayoutDashboard,
   Network,
   Radio,
   Route,
   Settings2,
   TerminalSquare,
-  Workflow,
   X,
 } from "lucide-react"
 
@@ -21,7 +20,6 @@ import { cn } from "@/lib/utils"
 import { AlertsPage } from "@/pages/alerts-page"
 import { ArtifactsPage } from "@/pages/artifacts-page"
 import { AuthPage } from "@/pages/auth-page"
-import { BlueprintPage } from "@/pages/blueprint-page"
 import { NodesPage } from "@/pages/nodes-page"
 import { OverviewPage } from "@/pages/overview-page"
 import { RoutingPage } from "@/pages/routing-page"
@@ -30,7 +28,7 @@ import { SettingsPage } from "@/pages/settings-page"
 import { SubscriptionsPage } from "@/pages/subscriptions-page"
 import { TerminalPage } from "@/pages/terminal-page"
 
-type Page = "overview" | "subscriptions" | "nodes" | "blueprint" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal"
+type Page = "overview" | "subscriptions" | "nodes" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 
 const pages: Array<{
@@ -42,7 +40,6 @@ const pages: Array<{
   { id: "overview", label: "总览", description: "流量与路由", icon: LayoutDashboard },
   { id: "subscriptions", label: "订阅", description: "来源与刷新", icon: Radio },
   { id: "nodes", label: "节点", description: "解析与生命周期", icon: Network },
-  { id: "blueprint", label: "蓝图编排", description: "可视化代理链路", icon: Workflow },
   { id: "routing", label: "代理服务", description: "代理组与 Listener", icon: Route },
   { id: "rules", label: "路由规则", description: "分流与规则集", icon: ListFilter },
   { id: "settings", label: "全局配置", description: "测速、DNS 与性能", icon: Settings2 },
@@ -183,7 +180,7 @@ export default function App() {
               <StatusDot healthy={healthy} />
             </div>
             <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
-              Mihomo 数据面、节点延迟检测与管理员认证已接入；流量统计与告警仍未完成。
+              Mihomo 数据面、节点检测、持久化流量统计、实时日志与告警均已接入。
             </div>
           </div>
           {authGate.username && (
@@ -220,7 +217,7 @@ export default function App() {
                   onClick={() => navigate(item.id)}
                   className={cn(
                     "inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground",
-                    page === item.id && "bg-[#ddf4ff] text-[#0550ae]",
+                    page === item.id && "bg-accent text-accent-foreground",
                   )}
                 >
                   <Icon className="size-3.5" />
@@ -231,7 +228,7 @@ export default function App() {
           </nav>
         </header>
 
-        <main className="mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+        <main key={page} className="page-enter mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
           {healthy === false && (
             <div className="mb-4 flex items-start gap-2.5 rounded-md border border-[#ff8182] bg-[#ffebe9] px-3 py-2.5 text-sm text-[#a40e26]">
               <CircleX className="mt-0.5 size-4 shrink-0" />
@@ -247,7 +244,6 @@ export default function App() {
           {page === "overview" && <OverviewPage onNotice={showNotice} />}
           {page === "subscriptions" && <SubscriptionsPage onNotice={showNotice} />}
           {page === "nodes" && <NodesPage onNotice={showNotice} />}
-          {page === "blueprint" && <BlueprintPage onNotice={showNotice} />}
           {page === "routing" && <RoutingPage onNotice={showNotice} />}
           {page === "rules" && <RulesPage onNotice={showNotice} />}
           {page === "settings" && <SettingsPage onNotice={showNotice} />}
@@ -258,7 +254,7 @@ export default function App() {
       </div>
 
       {notice && (
-        <div className="fixed bottom-4 right-4 z-[90] flex max-w-sm items-start gap-2.5 rounded-md border bg-white px-3 py-2.5 shadow-[0_8px_24px_rgba(31,35,40,0.16)]">
+        <div className="toast-enter fixed bottom-4 right-4 z-[90] flex max-w-sm items-start gap-2.5 rounded-md border bg-white px-3 py-2.5 shadow-[0_12px_32px_rgba(23,33,31,0.16)]">
           {notice.tone === "success" ? (
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[#1a7f37]" />
           ) : (
@@ -295,13 +291,13 @@ function SidebarItem({
       onClick={onClick}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm text-[#57606a] transition-colors hover:bg-[#f3f4f6] hover:text-foreground",
-        active && "bg-[#ddf4ff] font-medium text-[#0550ae]",
+        active && "bg-accent font-medium text-accent-foreground",
       )}
     >
       <Icon className="size-4 shrink-0" />
       <span className="min-w-0 flex-1">
         <span className="block truncate">{item.label}</span>
-        <span className={cn("block truncate text-[11px] font-normal", active ? "text-[#0969da]" : "text-[#8c959f]")}>{item.description}</span>
+        <span className={cn("block truncate text-[11px] font-normal", active ? "text-accent-foreground/80" : "text-muted-foreground")}>{item.description}</span>
       </span>
     </button>
   )

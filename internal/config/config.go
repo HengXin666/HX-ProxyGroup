@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -19,6 +20,13 @@ type Config struct {
 	RuntimeConfigPath string
 	SnapshotsPath     string
 	MihomoBinary      string
+	// MihomoEgressInterface selects the physical interface used by the managed
+	// data plane. "auto" resolves the Linux main-table default route; "off"
+	// leaves routing to the host policy tables.
+	MihomoEgressInterface string
+	MihomoMaxProcs        int
+	MihomoLogMaxBytes     int64
+	MihomoLogBackups      int
 	// TerminalEnabled gates the v2 in-browser terminal. Off by default;
 	// set HX_PROXYGROUP_TERMINAL=1 to enable.
 	TerminalEnabled bool
@@ -37,6 +45,13 @@ func Default() Config {
 		RuntimeConfigPath: envOrDefault("HX_PROXYGROUP_RUNTIME_CONFIG", filepath.Join(dataDirectory, "runtime", "active.yaml")),
 		SnapshotsPath:     envOrDefault("HX_PROXYGROUP_SNAPSHOTS", filepath.Join(dataDirectory, "snapshots")),
 		MihomoBinary:      envOrDefault("HX_PROXYGROUP_MIHOMO", "mihomo"),
+		MihomoEgressInterface: envOrDefault(
+			"HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE",
+			"auto",
+		),
+		MihomoMaxProcs:    envIntOrDefault("HX_PROXYGROUP_MIHOMO_MAX_PROCS", min(runtime.NumCPU(), 4)),
+		MihomoLogMaxBytes: int64(envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_MAX_BYTES", 8<<20)),
+		MihomoLogBackups:  envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_BACKUPS", 2),
 		TerminalEnabled:   envOrDefault("HX_PROXYGROUP_TERMINAL", "") == "1",
 		TerminalShell:     envOrDefault("HX_PROXYGROUP_TERMINAL_SHELL", ""),
 	}
@@ -70,6 +85,18 @@ func (config Config) Validate() error {
 	if strings.TrimSpace(config.MasterKeyPath) == "" {
 		return errors.New("master key path is required")
 	}
+	if strings.TrimSpace(config.MihomoEgressInterface) == "" {
+		return errors.New("mihomo egress interface is required; use auto or off")
+	}
+	if config.MihomoMaxProcs < 1 || config.MihomoMaxProcs > 1024 {
+		return errors.New("mihomo max procs must be between 1 and 1024")
+	}
+	if config.MihomoLogMaxBytes < 1<<20 || config.MihomoLogMaxBytes > 1<<30 {
+		return errors.New("mihomo log max bytes must be between 1 MiB and 1 GiB")
+	}
+	if config.MihomoLogBackups < 0 || config.MihomoLogBackups > 10 {
+		return errors.New("mihomo log backups must be between 0 and 10")
+	}
 	return nil
 }
 
@@ -95,4 +122,16 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envIntOrDefault(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }

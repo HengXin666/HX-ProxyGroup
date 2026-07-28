@@ -67,7 +67,7 @@ func TestParsedRefreshPersistsDeduplicatedNodesAndRetiresMissingNodes(t *testing
 		Version:                created.Version,
 		Name:                   created.Name,
 		SourceType:             SourceInline,
-		SourceConfig:           SourceConfig{Inline: "trojan://password@new.example.com:443#new"},
+		SourceConfig:           &SourceConfig{Inline: "trojan://password@new.example.com:443#new"},
 		Enabled:                true,
 		RefreshIntervalSeconds: created.RefreshIntervalSeconds,
 	})
@@ -177,7 +177,7 @@ func TestParsedRefreshFailureKeepsPreviousNodeSnapshot(t *testing.T) {
 		Version:                created.Version,
 		Name:                   created.Name,
 		SourceType:             SourceInline,
-		SourceConfig:           SourceConfig{Inline: "unsupported://broken.example.com:1234#broken"},
+		SourceConfig:           &SourceConfig{Inline: "unsupported://broken.example.com:1234#broken"},
 		Enabled:                true,
 		RefreshIntervalSeconds: created.RefreshIntervalSeconds,
 	})

@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
-import { Cable, CheckCircle2, CircleAlert, Copy, Gauge, Link2, LoaderCircle, Network, Plus, RefreshCw, Server, Trash2 } from "lucide-react"
+import { Activity, Cable, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Gauge, Link2, ListTree, LoaderCircle, Network, Pencil, Plus, RefreshCw, ScrollText, Server } from "lucide-react"
 
-import { strategyMeta } from "@/components/blueprint/nodes"
 import { ConfirmDialog } from "@/components/confirm-dialog"
+import { EditProxyServiceForm } from "@/components/edit-proxy-service-form"
+import { LiveLogsPanel, TrafficPanel } from "@/components/service-observability"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
+import { strategyMeta } from "@/lib/proxy-groups"
 import type { DataPlaneStatus, ListenerKind, ListenerRecord, NodeRecord, ProxyGroup, ProxyGroupStrategy, Subscription } from "@/lib/types"
 import { cn, formatDate } from "@/lib/utils"
 
@@ -25,6 +30,7 @@ const regions = [
 
 const kinds: Array<{ value: ListenerKind; label: string }> = [
   { value: "mixed", label: "Mixed" }, { value: "http", label: "HTTP" }, { value: "socks", label: "SOCKS5" },
+  { value: "vless", label: "VLESS WS" }, { value: "vmess", label: "VMess WS" }, { value: "trojan", label: "Trojan WS" },
 ]
 
 export function RoutingPage({ onNotice }: RoutingPageProps) {
@@ -36,6 +42,8 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<{ listener: ListenerRecord; group?: ProxyGroup } | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [editing, setEditing] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -102,7 +110,7 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
           <PanelHeader title="服务列表" description="入口与节点策略保持一一对应" count={listeners.length} />
           {listeners.length === 0 ? <EmptyState /> : <div className="divide-y">{listeners.map((listener) => {
             const group = groups.find((item) => item.id === listener.proxy_group_id)
-            return <ServiceRow key={listener.id} listener={listener} group={group} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
+            return <ServiceRow key={listener.id} listener={listener} group={group} nodes={resolveServiceNodes(group, nodes)} subscriptions={subscriptions} allNodes={nodes} expanded={expanded.has(listener.id)} editing={editing === listener.id} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(listener.id)) next.delete(listener.id); else next.add(listener.id); return next })} onEdit={() => { setExpanded((current) => new Set(current).add(listener.id)); setEditing(listener.id) }} onCloseEdit={() => setEditing(null)} onChanged={async () => { setEditing(null); await load() }} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
           })}</div>}
         </section>
         <CreateProxyServiceForm nodes={nodes} subscriptions={subscriptions} onCreated={load} onNotice={onNotice} />
@@ -122,16 +130,20 @@ async function copyText(value: string): Promise<boolean> {
   }
 }
 
-function ServiceRow({ listener, group, onDelete, onNotice }: { listener: ListenerRecord; group?: ProxyGroup; onDelete: () => void; onNotice: RoutingPageProps["onNotice"] }) {
+function ServiceRow({ listener, group, nodes, subscriptions, allNodes, expanded, editing, onToggle, onEdit, onCloseEdit, onChanged, onDelete, onNotice }: { listener: ListenerRecord; group?: ProxyGroup; nodes: NodeRecord[]; subscriptions: Subscription[]; allNodes: NodeRecord[]; expanded: boolean; editing: boolean; onToggle: () => void; onEdit: () => void; onCloseEdit: () => void; onChanged: () => Promise<void>; onDelete: () => void; onNotice: RoutingPageProps["onNotice"] }) {
+  const [action, setAction] = useState("")
+  const [detailTab, setDetailTab] = useState("members")
   const spec = group?.source_spec
-  const sourceText = spec?.subscription_ids?.length
+  const sourceText = spec?.include_direct && !spec.subscription_ids?.length && !spec.node_ids.length
+    ? "当前服务器 DIRECT 出口"
+    : spec?.subscription_ids?.length
     ? `${spec.subscription_ids.length} 个订阅${spec.regions?.length ? ` · ${spec.regions.map(regionLabel).join("/")}` : ""} · Top ${spec.limit || "全部"}`
     : `${spec?.node_ids.length || 0} 个固定节点`
 
-  async function copyShareLink() {
+  async function copyShareLink(format: "v2rayn" | "clash" | "sing-box" | "uri", client: string) {
     if (!listener.share_path) return
-    const ok = await copyText(api.listenerShareURL(listener.share_path))
-    onNotice(ok ? "订阅链接已复制，可直接导入代理客户端" : "复制失败，请手动复制", ok ? "success" : "error")
+    const ok = await copyText(api.listenerShareURL(listener.share_path, format))
+    onNotice(ok ? `${client} 订阅链接已复制` : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
   async function copyEndpoint() {
@@ -139,26 +151,55 @@ function ServiceRow({ listener, group, onDelete, onNotice }: { listener: Listene
     onNotice(ok ? "入口地址已复制" : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
+  const memberCount = nodes.length + (group?.source_spec.include_direct ? 1 : 0)
+  const healthyCount = nodes.filter((node) => node.lifecycle_state === "healthy").length + (group?.source_spec.include_direct ? 1 : 0)
+  function runAction(value: string) {
+    setAction(value)
+    if (value === "address") void copyEndpoint()
+    else if (value === "edit") { setDetailTab("edit"); onEdit() }
+    else if (value === "delete") onDelete()
+    else { const [format = "clash", client = format] = value.split(":"); void copyShareLink(format as "v2rayn" | "clash" | "sing-box" | "uri", client) }
+    window.setTimeout(() => setAction(""), 0)
+  }
   return (
-    <div className="grid gap-3 px-3 py-3 hover:bg-[#f6f8fa] sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_auto] sm:items-center">
+    <div>
+    <div className="grid cursor-pointer gap-3 px-3 py-3 hover:bg-[#f6f8fa] lg:grid-cols-[minmax(0,1fr)_minmax(180px,0.7fr)_auto] lg:items-center" onClick={onToggle}>
       <div className="flex min-w-0 items-start gap-2.5">
+        <Button variant="ghost" size="icon" className="size-7" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={expanded ? "收起节点" : "展开节点"}>{expanded ? <ChevronDown /> : <ChevronRight />}</Button>
         <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-white text-[#57606a]"><Cable className="size-4" /></div>
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">{listener.bind_address}:{listener.port}</div></div>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge><Badge variant={healthyCount === memberCount && memberCount > 0 ? "success" : "warning"}>{healthyCount}/{memberCount} 可用</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">{listener.bind_address}:{listener.port}</div></div>
       </div>
       <div className="min-w-0"><div className="flex items-center gap-1.5 text-xs font-medium"><Network className="size-3.5" />{group ? strategyLabel(group.strategy) : "组已缺失"}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={sourceText}>{sourceText}</div></div>
-      <div className="inline-flex items-center gap-1">
-        {listener.share_path && <Button variant="outline" size="sm" onClick={() => void copyShareLink()} title="复制订阅链接（base64，可直接导入客户端）"><Link2 />订阅</Button>}
-        <Button variant="outline" size="sm" onClick={() => void copyEndpoint()} title="复制 IP:端口"><Copy />地址</Button>
-        <Button variant="ghost" size="icon" onClick={onDelete} aria-label={`删除 ${listener.name}`}><Trash2 className="text-destructive" /></Button>
+      <div className="w-full lg:w-[200px]">
+        <Select value={action} onValueChange={runAction}><SelectTrigger onClick={(event) => event.stopPropagation()} className="h-8"><Link2 className="mr-1 size-3.5" /><SelectValue placeholder="服务操作" /></SelectTrigger><SelectContent><SelectItem value="edit">编辑服务</SelectItem>{listener.share_path && <><SelectItem value="clash:Clash / Mihomo">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="v2rayn:v2rayN / v2rayNG">复制 v2rayN / v2rayNG 订阅</SelectItem><SelectItem value="v2rayn:Shadowrocket">复制 Shadowrocket 订阅</SelectItem><SelectItem value="sing-box:sing-box / NekoBox">复制 sing-box / NekoBox 订阅</SelectItem></>}<SelectItem value="address">复制入口地址</SelectItem><SelectItem value="delete" className="text-destructive">删除服务</SelectItem></SelectContent></Select>
       </div>
+    </div>
+    {expanded && <div className="border-t bg-muted/70 px-3 py-3 sm:px-4">
+      <Tabs value={editing ? "edit" : detailTab} onValueChange={(value) => { setDetailTab(value); if (value === "edit") onEdit(); else if (editing) onCloseEdit() }}>
+        <TabsList className="max-w-full overflow-x-auto">
+          <TabsTrigger value="members"><ListTree className="mr-1.5 size-3.5" />节点成员</TabsTrigger>
+          <TabsTrigger value="traffic"><Activity className="mr-1.5 size-3.5" />流量统计</TabsTrigger>
+          <TabsTrigger value="logs"><ScrollText className="mr-1.5 size-3.5" />实时日志</TabsTrigger>
+          <TabsTrigger value="edit" disabled={!group}><Pencil className="mr-1.5 size-3.5" />动态编辑</TabsTrigger>
+        </TabsList>
+        <TabsContent value="members"><div className="overflow-hidden rounded-md border bg-white">{group?.source_spec.include_direct && <ServiceMember name="DIRECT（当前服务器出口）" protocol="DIRECT" state="可用" latency={null} source="本机" />}{nodes.map((node) => <ServiceMember key={node.id} name={node.display_name} protocol={node.protocol.toUpperCase()} state={node.lifecycle_state} latency={node.last_latency_ms} source={node.sources.map((item) => item.subscription_name).join("、") || "固定节点"} />)}{memberCount === 0 && <div className="px-3 py-4 text-center text-xs text-muted-foreground">当前规则没有命中可用节点</div>}</div></TabsContent>
+        <TabsContent value="traffic"><TrafficPanel listenerId={listener.id} groupId={group?.id} nodes={nodes} /></TabsContent>
+        <TabsContent value="logs"><LiveLogsPanel listenerId={listener.id} /></TabsContent>
+        <TabsContent value="edit">{group && <div className="overflow-hidden rounded-md border bg-white"><EditProxyServiceForm listener={listener} group={group} nodes={allNodes} subscriptions={subscriptions} onSaved={onChanged} onCancel={() => { setDetailTab("members"); onCloseEdit() }} onNotice={onNotice} /></div>}</TabsContent>
+      </Tabs>
+    </div>}
     </div>
   )
 }
 
+function ServiceMember({ name, protocol, state, latency, source }: { name: string; protocol: string; state: string; latency: number | null | undefined; source: string }) {
+  return <div className="grid gap-2 border-b px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[minmax(180px,1fr)_90px_110px_90px_minmax(100px,0.7fr)] sm:items-center"><span className="truncate font-medium" title={name}>{name}</span><Badge variant="outline">{protocol}</Badge><Badge variant={state === "healthy" || state === "可用" ? "success" : state === "quarantined" ? "warning" : "secondary"}>{state}</Badge><span className="tabular-nums text-muted-foreground">{latency == null ? "未测试" : `${latency} ms`}</span><span className="truncate text-muted-foreground" title={source}>{source}</span></div>
+}
+
 function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: { nodes: NodeRecord[]; subscriptions: Subscription[]; onCreated: () => Promise<void>; onNotice: RoutingPageProps["onNotice"] }) {
   const [name, setName] = useState("")
-  const [strategy, setStrategy] = useState<ProxyGroupStrategy>("url-test")
-  const [sourceMode, setSourceMode] = useState<"rule" | "manual">("rule")
+  const [strategy, setStrategy] = useState<ProxyGroupStrategy>("manual")
+  const [sourceMode, setSourceMode] = useState<"direct" | "rule" | "manual">("direct")
   const [selectedSubscriptions, setSelectedSubscriptions] = useState<string[]>([])
   const [selectedNodes, setSelectedNodes] = useState<string[]>([])
   const [selectedRegions, setSelectedRegions] = useState<string[]>(["jp"])
@@ -170,9 +211,11 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
   const [authEnabled, setAuthEnabled] = useState(false)
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
+  const [publicHost, setPublicHost] = useState("")
+  const [wsPath, setWSPath] = useState("/hx-proxy")
   const [submitting, setSubmitting] = useState(false)
 
-  const estimated = useMemo(() => sourceMode === "manual" ? selectedNodes.length : nodes.filter((node) => {
+  const estimated = useMemo(() => sourceMode === "direct" ? 1 : sourceMode === "manual" ? selectedNodes.length : nodes.filter((node) => {
     if (!node.sources.some((source) => selectedSubscriptions.includes(source.subscription_id))) return false
     if (node.last_latency_ms == null || node.last_latency_ms > maxLatency) return false
     return selectedRegions.length === 0 || selectedRegions.some((region) => matchesRegion(node.display_name, region))
@@ -184,12 +227,17 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
     try {
       await api.createProxyService({
         name: name.trim(), strategy,
-        source_spec: sourceMode === "rule" ? {
+        source_spec: sourceMode === "direct" ? { node_ids: [], include_direct: true } : sourceMode === "rule" ? {
           node_ids: [], subscription_ids: selectedSubscriptions, regions: selectedRegions, states: ["candidate", "healthy", "degraded"],
           max_latency_ms: maxLatency, sort_by: "latency", limit, include_direct: false,
         } : { node_ids: selectedNodes, include_direct: false },
-        empty_behavior: "fail-closed",
-        listener: { name: `${name.trim()} 入口`, kind, bind_address: bindAddress.trim(), port, auth: authEnabled ? { username: username.trim(), password } : undefined },
+        empty_behavior: sourceMode === "direct" ? "direct" : "fail-closed",
+        listener: {
+          name: `${name.trim()} 入口`, kind, bind_address: bindAddress.trim(), port,
+          auth: authEnabled ? { username: username.trim(), password } : undefined,
+          transport: advanced ? { type: "ws", ws_path: wsPath.trim() } : undefined,
+          public_endpoint: advanced ? { host: publicHost.trim(), port: 443, tls: true } : undefined,
+        },
       })
       setName("")
       await onCreated()
@@ -198,22 +246,37 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
     finally { setSubmitting(false) }
   }
 
-  const validSource = sourceMode === "rule" ? selectedSubscriptions.length > 0 : selectedNodes.length > 0
+  const validSource = sourceMode === "direct" || (sourceMode === "rule" ? selectedSubscriptions.length > 0 : selectedNodes.length > 0)
+  const advanced = kind === "vless" || kind === "vmess" || kind === "trojan"
+  function changeKind(next: ListenerKind) {
+    setKind(next)
+    const nextAdvanced = next === "vless" || next === "vmess" || next === "trojan"
+    if (nextAdvanced) {
+      setBindAddress("127.0.0.1")
+      setAuthEnabled(true)
+      if (!username) setUsername("hx-user")
+      if ((next === "vless" || next === "vmess") && !password) setPassword(crypto.randomUUID())
+    }
+  }
+  function changeSourceMode(next: "direct" | "rule" | "manual") {
+    setSourceMode(next)
+    if (next === "direct") setStrategy("manual")
+  }
   return (
     <form onSubmit={submit} className="overflow-hidden rounded-lg border bg-white">
       <PanelHeader title="新建代理服务" description="入口与聚合规则一次创建" />
       <div className="space-y-4 p-3">
         <Field label="服务名称"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：日本低延迟出口" required /></Field>
-        <Field label="节点来源"><ChipSet values={[{ value: "rule", label: "跨订阅规则" }, { value: "manual", label: "固定节点" }]} current={sourceMode} onChange={setSourceMode} /></Field>
-        {sourceMode === "rule" ? <>
+        <Field label="节点来源"><ChipSet values={[{ value: "direct", label: "服务器直连" }, { value: "rule", label: "跨订阅规则" }, { value: "manual", label: "固定节点" }]} current={sourceMode} onChange={changeSourceMode} /></Field>
+        {sourceMode === "direct" ? <div className="flex items-center gap-2 rounded-md border bg-[#f6f8fa] px-3 py-2 text-xs"><Server className="size-4 text-[#1a7f37]" />流量使用当前服务器网络出口</div> : sourceMode === "rule" ? <>
           <Field label={`订阅（已选 ${selectedSubscriptions.length}）`}><CheckList items={subscriptions.map((item) => ({ id: item.id, label: item.name }))} selected={selectedSubscriptions} onChange={setSelectedSubscriptions} empty="暂无已启用订阅" /></Field>
           <Field label="地区"><MultiChipSet values={regions} current={selectedRegions} onChange={setSelectedRegions} /></Field>
           <div className="grid grid-cols-2 gap-2"><Field label="最多节点"><Input type="number" min={1} max={500} value={limit} onChange={(event) => setLimit(Number(event.target.value))} /></Field><Field label="最大延迟 ms"><Input type="number" min={1} max={60000} value={maxLatency} onChange={(event) => setMaxLatency(Number(event.target.value))} /></Field></div>
           <div className="flex items-center gap-2 rounded-md border bg-[#f6f8fa] px-3 py-2 text-xs"><Gauge className="size-4 text-[#0969da]" />当前指标预计命中 {estimated} 个节点</div>
         </> : <Field label={`固定节点（已选 ${selectedNodes.length}）`}><CheckList items={nodes.map((item) => ({ id: item.id, label: `${item.display_name} · ${item.last_latency_ms == null ? "未测试" : `${item.last_latency_ms}ms`}` }))} selected={selectedNodes} onChange={setSelectedNodes} empty="暂无活动节点" /></Field>}
         <Field label="出站策略"><ChipSet values={strategies} current={strategy} onChange={setStrategy} /></Field>
-        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={setKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} required /></Field><Field label="端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div><label className="flex items-center gap-2 rounded-md border bg-[#f6f8fa] px-3 py-2 text-xs"><input type="checkbox" checked={authEnabled} onChange={(event) => setAuthEnabled(event.target.checked)} className="size-4 accent-[#0969da]" />启用用户名密码认证</label>{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label="用户名"><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label="密码"><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
-        <Button type="submit" disabled={submitting || !name.trim() || !validSource || (authEnabled && (!username.trim() || !password))} className="w-full">{submitting ? <LoaderCircle className="animate-spin" /> : <Plus />}创建并启动</Button>
+        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} required /></Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/hx-proxy" required /></Field></div>}{!advanced && <label className="flex items-center gap-2 rounded-md border bg-[#f6f8fa] px-3 py-2 text-xs"><Checkbox checked={authEnabled} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用用户名密码认证</label>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
+        <Button type="submit" disabled={submitting || !name.trim() || !validSource || (authEnabled && (!username.trim() || !password)) || (advanced && (!publicHost.trim() || !wsPath.startsWith("/")))} className="w-full">{submitting ? <LoaderCircle className="animate-spin" /> : <Plus />}创建并启动</Button>
       </div>
     </form>
   )
@@ -225,16 +288,40 @@ function DataPlaneBand({ status, loading }: { status: DataPlaneStatus | null; lo
 }
 
 function CheckList({ items, selected, onChange, empty }: { items: Array<{ id: string; label: string }>; selected: string[]; onChange: (ids: string[]) => void; empty: string }) {
-  return <div className="max-h-40 overflow-y-auto rounded-md border">{items.length === 0 ? <div className="px-3 py-4 text-center text-xs text-muted-foreground">{empty}</div> : items.map((item) => <label key={item.id} className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-xs last:border-b-0 hover:bg-[#f6f8fa]"><input type="checkbox" checked={selected.includes(item.id)} onChange={(event) => onChange(event.target.checked ? [...selected, item.id] : selected.filter((id) => id !== item.id))} className="size-4 accent-[#0969da]" /><span className="min-w-0 flex-1 truncate">{item.label}</span></label>)}</div>
+  return <div className="max-h-40 overflow-y-auto rounded-md border">{items.length === 0 ? <div className="px-3 py-4 text-center text-xs text-muted-foreground">{empty}</div> : items.map((item) => { const checked = selected.includes(item.id); return <label key={item.id} className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-xs last:border-b-0 hover:bg-[#f6f8fa]"><Checkbox checked={checked} onCheckedChange={(value) => onChange(value === true ? [...selected, item.id] : selected.filter((id) => id !== item.id))} /><span className="min-w-0 flex-1 truncate">{item.label}</span></label> })}</div>
 }
 
 function PanelHeader({ title, description, count }: { title: string; description: string; count?: number }) { return <div className="flex items-center justify-between border-b bg-[#f6f8fa] px-3 py-2.5"><div><div className="text-sm font-semibold">{title}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{description}</div></div>{count != null && <Badge variant="secondary">{count}</Badge>}</div> }
 function EmptyState() { return <div className="flex min-h-48 flex-col items-center justify-center px-4 text-center"><Cable className="mb-2 size-7 text-[#8c959f]" /><div className="text-sm font-medium">还没有代理服务</div><div className="mt-1 text-xs text-muted-foreground">创建入口并绑定跨订阅节点规则。</div></div> }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block space-y-1.5"><span className="text-xs font-medium">{label}</span>{children}</label> }
 function Info({ label, value }: { label: string; value: string }) { return <div className="min-w-0"><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-0.5 block truncate" title={value}>{value}</div></div> }
-function Choice({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) { return <button type="button" onClick={onClick} className={cn("rounded-md border bg-white px-2.5 py-1 text-[11px] font-medium text-[#57606a] hover:bg-[#f3f4f6]", active && "border-[#54aeff] bg-[#ddf4ff] text-[#0550ae]")}>{children}</button> }
+function Choice({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) { return <Button type="button" size="sm" variant={active ? "default" : "outline"} onClick={onClick}>{children}</Button> }
 function ChipSet<T extends string>({ values, current, onChange }: { values: Array<{ value: T; label: string }>; current: T; onChange: (value: T) => void }) { return <div className="flex flex-wrap gap-1.5">{values.map((item) => <Choice key={item.value} active={current === item.value} onClick={() => onChange(item.value)}>{item.label}</Choice>)}</div> }
 function MultiChipSet<T extends string>({ values, current, onChange }: { values: Array<{ value: T; label: string }>; current: T[]; onChange: (value: T[]) => void }) { return <div className="flex flex-wrap gap-1.5">{values.map((item) => { const active = current.includes(item.value); return <Choice key={item.value} active={active} onClick={() => onChange(active ? current.filter((value) => value !== item.value) : [...current, item.value])}>{item.label}</Choice> })}</div> }
 function strategyLabel(strategy: ProxyGroupStrategy): string { return strategies.find((item) => item.value === strategy)?.label || strategy }
 function regionLabel(region: string): string { return regions.find((item) => item.value === region)?.label || region }
 function matchesRegion(name: string, region: string): boolean { const lower = name.toLowerCase(); const aliases: Record<string, string[]> = { jp: ["jp", "japan", "日本", "东京", "大阪", "tokyo", "osaka"], hk: ["hk", "香港", "hong kong"], tw: ["tw", "台湾", "台灣", "taipei"], sg: ["sg", "新加坡", "singapore"], us: ["us", "美国", "usa", "los angeles"], kr: ["kr", "韩国", "korea", "seoul"] }; return (aliases[region] || [region]).some((value) => lower.includes(value)) }
+
+function resolveServiceNodes(group: ProxyGroup | undefined, nodes: NodeRecord[]): NodeRecord[] {
+  if (!group) return []
+  const spec = group.source_spec
+  const byID = new Map(nodes.map((node) => [node.id, node]))
+  const result = spec.node_ids.map((id) => byID.get(id)).filter((node): node is NodeRecord => Boolean(node))
+  if (spec.subscription_ids?.length) {
+    const dynamic = nodes.filter((node) => {
+      if (!node.sources.some((source) => spec.subscription_ids?.includes(source.subscription_id))) return false
+      if (spec.protocols?.length && !spec.protocols.includes(node.protocol.toLowerCase())) return false
+      if (spec.states?.length && !spec.states.includes(node.lifecycle_state as typeof spec.states[number])) return false
+      if (spec.name_keywords?.length && !spec.name_keywords.some((keyword) => node.display_name.toLowerCase().includes(keyword.toLowerCase()))) return false
+      if (spec.regions?.length && !spec.regions.some((region) => matchesRegion(node.display_name, region))) return false
+      if (spec.max_latency_ms && (node.last_latency_ms == null || node.last_latency_ms > spec.max_latency_ms)) return false
+      return true
+    }).sort((left, right) => spec.sort_by === "name"
+      ? left.display_name.localeCompare(right.display_name)
+      : (left.last_latency_ms ?? Number.MAX_SAFE_INTEGER) - (right.last_latency_ms ?? Number.MAX_SAFE_INTEGER) || left.id.localeCompare(right.id))
+    for (const node of (spec.limit ? dynamic.slice(0, spec.limit) : dynamic)) {
+      if (!result.some((item) => item.id === node.id)) result.push(node)
+    }
+  }
+  return result
+}

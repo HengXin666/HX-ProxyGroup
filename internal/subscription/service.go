@@ -76,13 +76,13 @@ type CreateRequest struct {
 }
 
 type UpdateRequest struct {
-	Version                int          `json:"version"`
-	Name                   string       `json:"name"`
-	SourceType             SourceType   `json:"source_type"`
-	SourceConfig           SourceConfig `json:"source_config"`
-	Enabled                bool         `json:"enabled"`
-	RefreshIntervalSeconds int          `json:"refresh_interval_seconds"`
-	RefreshCron            string       `json:"refresh_cron,omitempty"`
+	Version                int           `json:"version"`
+	Name                   string        `json:"name"`
+	SourceType             SourceType    `json:"source_type"`
+	SourceConfig           *SourceConfig `json:"source_config,omitempty"`
+	Enabled                bool          `json:"enabled"`
+	RefreshIntervalSeconds int           `json:"refresh_interval_seconds"`
+	RefreshCron            string        `json:"refresh_cron,omitempty"`
 }
 
 type Repository interface {
@@ -248,18 +248,32 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	if request.RefreshIntervalSeconds == 0 {
 		request.RefreshIntervalSeconds = defaultRefreshInterval
 	}
-	if err := validateRequest(request.Name, request.SourceType, request.SourceConfig, request.RefreshIntervalSeconds, request.RefreshCron); err != nil {
+	if err := validateMetadata(request.Name, request.RefreshIntervalSeconds, request.RefreshCron); err != nil {
 		return Subscription{}, err
 	}
-	encrypted, err := s.encryptSourceConfig(id, request.SourceConfig)
+	existing, err := s.repository.GetSubscription(ctx, id)
 	if err != nil {
-		return Subscription{}, err
+		return Subscription{}, mapRepositoryError(err)
+	}
+	sourceType := SourceType(existing.SourceType)
+	encrypted := existing.SourceConfigEncrypted
+	if request.SourceConfig != nil {
+		sourceType = request.SourceType
+		if err := validateRequest(request.Name, sourceType, *request.SourceConfig, request.RefreshIntervalSeconds, request.RefreshCron); err != nil {
+			return Subscription{}, err
+		}
+		encrypted, err = s.encryptSourceConfig(id, *request.SourceConfig)
+		if err != nil {
+			return Subscription{}, err
+		}
+	} else if request.SourceType != "" && request.SourceType != sourceType {
+		return Subscription{}, fmt.Errorf("%w: source_type can only change when source_config is replaced", ErrInvalid)
 	}
 	now := s.now().UTC()
 	record, err := s.repository.UpdateSubscription(ctx, store.SubscriptionRecord{
 		ID:                     id,
 		Name:                   request.Name,
-		SourceType:             string(request.SourceType),
+		SourceType:             string(sourceType),
 		SourceConfigEncrypted:  encrypted,
 		Enabled:                request.Enabled,
 		RefreshIntervalSeconds: request.RefreshIntervalSeconds,
@@ -271,6 +285,21 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 		return Subscription{}, mapRepositoryError(err)
 	}
 	return fromRecord(record), nil
+}
+
+func validateMetadata(name string, refreshInterval int, refreshCron string) error {
+	if name == "" || len(name) > 128 {
+		return fmt.Errorf("%w: name must contain 1 to 128 characters", ErrInvalid)
+	}
+	if refreshInterval < minimumRefreshInterval {
+		return fmt.Errorf("%w: refresh interval must be at least %d seconds", ErrInvalid, minimumRefreshInterval)
+	}
+	if strings.TrimSpace(refreshCron) != "" {
+		if _, err := cron.Parse(refreshCron); err != nil {
+			return fmt.Errorf("%w: invalid refresh cron: %v", ErrInvalid, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) Delete(ctx context.Context, id string, expectedVersion int) error {

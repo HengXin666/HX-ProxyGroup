@@ -45,41 +45,58 @@ type Auth struct {
 	Password string `json:"password"`
 }
 
+type Transport struct {
+	Type   string `json:"type"`
+	WSPath string `json:"ws_path,omitempty"`
+}
+
+type PublicEndpoint struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	TLS  bool   `json:"tls"`
+}
+
 type Listener struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Kind           string    `json:"kind"`
-	BindAddress    string    `json:"bind_address"`
-	Port           int       `json:"port"`
-	ProxyGroupID   string    `json:"proxy_group_id"`
-	AuthConfigured bool      `json:"auth_configured"`
-	SharePath      string    `json:"share_path,omitempty"`
-	Enabled        bool      `json:"enabled"`
-	Version        int       `json:"version"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Kind           string         `json:"kind"`
+	BindAddress    string         `json:"bind_address"`
+	Port           int            `json:"port"`
+	ProxyGroupID   string         `json:"proxy_group_id"`
+	AuthConfigured bool           `json:"auth_configured"`
+	Transport      Transport      `json:"transport"`
+	PublicEndpoint PublicEndpoint `json:"public_endpoint"`
+	SharePath      string         `json:"share_path,omitempty"`
+	Enabled        bool           `json:"enabled"`
+	Version        int            `json:"version"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 type CreateRequest struct {
-	Name         string `json:"name"`
-	Kind         string `json:"kind"`
-	BindAddress  string `json:"bind_address"`
-	Port         int    `json:"port"`
-	ProxyGroupID string `json:"proxy_group_id"`
-	Auth         *Auth  `json:"auth,omitempty"`
-	Enabled      *bool  `json:"enabled,omitempty"`
+	Name           string         `json:"name"`
+	Kind           string         `json:"kind"`
+	BindAddress    string         `json:"bind_address"`
+	Port           int            `json:"port"`
+	ProxyGroupID   string         `json:"proxy_group_id"`
+	Auth           *Auth          `json:"auth,omitempty"`
+	Transport      Transport      `json:"transport,omitempty"`
+	PublicEndpoint PublicEndpoint `json:"public_endpoint,omitempty"`
+	Enabled        *bool          `json:"enabled,omitempty"`
 }
 
 type UpdateRequest struct {
-	Version      int    `json:"version"`
-	Name         string `json:"name"`
-	Kind         string `json:"kind"`
-	BindAddress  string `json:"bind_address"`
-	Port         int    `json:"port"`
-	ProxyGroupID string `json:"proxy_group_id"`
-	Auth         *Auth  `json:"auth,omitempty"`
-	ClearAuth    bool   `json:"clear_auth,omitempty"`
-	Enabled      bool   `json:"enabled"`
+	Version        int            `json:"version"`
+	Name           string         `json:"name"`
+	Kind           string         `json:"kind"`
+	BindAddress    string         `json:"bind_address"`
+	Port           int            `json:"port"`
+	ProxyGroupID   string         `json:"proxy_group_id"`
+	Auth           *Auth          `json:"auth,omitempty"`
+	Transport      Transport      `json:"transport,omitempty"`
+	PublicEndpoint PublicEndpoint `json:"public_endpoint,omitempty"`
+	ClearAuth      bool           `json:"clear_auth,omitempty"`
+	Enabled        bool           `json:"enabled"`
 }
 
 type Service struct {
@@ -111,7 +128,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Listener, 
 	if err != nil {
 		return Listener{}, err
 	}
-	normalized, err := s.normalize(ctx, id, request.Name, request.Kind, request.BindAddress, request.Port, request.ProxyGroupID, request.Auth, nil, enabled)
+	normalized, err := s.normalize(ctx, id, request.Name, request.Kind, request.BindAddress, request.Port, request.ProxyGroupID, request.Auth, nil, request.Transport, request.PublicEndpoint, enabled)
 	if err != nil {
 		return Listener{}, err
 	}
@@ -129,6 +146,8 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Listener, 
 		ProxyGroupID:        normalized.ProxyGroupID,
 		AuthMode:            normalized.AuthMode,
 		AuthConfigEncrypted: normalized.AuthConfigEncrypted,
+		TransportJSON:       normalized.TransportJSON,
+		PublicEndpointJSON:  normalized.PublicEndpointJSON,
 		ShareToken:          shareToken,
 		Enabled:             normalized.Enabled,
 		Version:             1,
@@ -177,7 +196,7 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	if request.ClearAuth {
 		currentAuth = nil
 	}
-	normalized, err := s.normalize(ctx, id, request.Name, request.Kind, request.BindAddress, request.Port, request.ProxyGroupID, request.Auth, currentAuth, request.Enabled)
+	normalized, err := s.normalize(ctx, id, request.Name, request.Kind, request.BindAddress, request.Port, request.ProxyGroupID, request.Auth, currentAuth, request.Transport, request.PublicEndpoint, request.Enabled)
 	if err != nil {
 		return Listener{}, err
 	}
@@ -188,6 +207,8 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	existing.ProxyGroupID = normalized.ProxyGroupID
 	existing.AuthMode = normalized.AuthMode
 	existing.AuthConfigEncrypted = normalized.AuthConfigEncrypted
+	existing.TransportJSON = normalized.TransportJSON
+	existing.PublicEndpointJSON = normalized.PublicEndpointJSON
 	existing.Enabled = normalized.Enabled
 	existing.UpdatedAt = s.now().UTC()
 	updated, err := s.repository.UpdateListener(ctx, existing, request.Version)
@@ -221,6 +242,8 @@ type normalizedListener struct {
 	ProxyGroupID        string
 	AuthMode            string
 	AuthConfigEncrypted []byte
+	TransportJSON       string
+	PublicEndpointJSON  string
 	Enabled             bool
 }
 
@@ -234,6 +257,8 @@ func (s *Service) normalize(
 	groupID string,
 	auth *Auth,
 	existingAuth []byte,
+	transport Transport,
+	publicEndpoint PublicEndpoint,
 	enabled bool,
 ) (normalizedListener, error) {
 	name = strings.TrimSpace(name)
@@ -241,8 +266,8 @@ func (s *Service) normalize(
 		return normalizedListener{}, fmt.Errorf("%w: name must contain 1 to 128 characters", ErrInvalid)
 	}
 	kind = strings.ToLower(strings.TrimSpace(kind))
-	if kind != "http" && kind != "socks" && kind != "mixed" {
-		return normalizedListener{}, fmt.Errorf("%w: kind must be http, socks, or mixed", ErrInvalid)
+	if !supportedKind(kind) {
+		return normalizedListener{}, fmt.Errorf("%w: kind must be http, socks, mixed, vless, vmess, or trojan", ErrInvalid)
 	}
 	bindAddress = strings.TrimSpace(bindAddress)
 	if bindAddress == "" {
@@ -280,6 +305,9 @@ func (s *Service) normalize(
 		if len(auth.Username) > 128 || len(auth.Password) > 512 {
 			return normalizedListener{}, fmt.Errorf("%w: listener credentials are too long", ErrInvalid)
 		}
+		if (kind == "vless" || kind == "vmess") && !validUUID(auth.Password) {
+			return normalizedListener{}, fmt.Errorf("%w: %s credential must be a UUID", ErrInvalid, kind)
+		}
 		encoded, err := json.Marshal(auth)
 		if err != nil {
 			return normalizedListener{}, fmt.Errorf("encode listener auth: %w", err)
@@ -292,8 +320,19 @@ func (s *Service) normalize(
 	if len(authEncrypted) > 0 {
 		authMode = "userpass"
 	}
+	advanced := isAdvancedKind(kind)
+	if advanced && !ip.IsLoopback() {
+		return normalizedListener{}, fmt.Errorf("%w: WebSocket protocol listeners must bind to a loopback address behind a reverse proxy", ErrInvalid)
+	}
+	if advanced && authMode == "none" {
+		return normalizedListener{}, fmt.Errorf("%w: %s listeners require credentials", ErrInvalid, kind)
+	}
 	if !ip.IsLoopback() && authMode == "none" {
 		return normalizedListener{}, fmt.Errorf("%w: non-loopback listeners require username/password authentication", ErrInvalid)
+	}
+	transportJSON, publicEndpointJSON, err := normalizeEndpointConfig(advanced, transport, publicEndpoint)
+	if err != nil {
+		return normalizedListener{}, err
 	}
 	return normalizedListener{
 		Name:                name,
@@ -303,6 +342,8 @@ func (s *Service) normalize(
 		ProxyGroupID:        groupID,
 		AuthMode:            authMode,
 		AuthConfigEncrypted: authEncrypted,
+		TransportJSON:       transportJSON,
+		PublicEndpointJSON:  publicEndpointJSON,
 		Enabled:             enabled,
 	}, nil
 }
@@ -312,6 +353,10 @@ func fromRecord(record store.ListenerRecord) Listener {
 	if record.ShareToken != "" {
 		sharePath = "/sub/" + record.ShareToken
 	}
+	var transport Transport
+	var publicEndpoint PublicEndpoint
+	_ = json.Unmarshal([]byte(record.TransportJSON), &transport)
+	_ = json.Unmarshal([]byte(record.PublicEndpointJSON), &publicEndpoint)
 	return Listener{
 		ID:             record.ID,
 		Name:           record.Name,
@@ -320,12 +365,92 @@ func fromRecord(record store.ListenerRecord) Listener {
 		Port:           record.Port,
 		ProxyGroupID:   record.ProxyGroupID,
 		AuthConfigured: record.AuthMode != "none" && len(record.AuthConfigEncrypted) > 0,
+		Transport:      transport,
+		PublicEndpoint: publicEndpoint,
 		SharePath:      sharePath,
 		Enabled:        record.Enabled,
 		Version:        record.Version,
 		CreatedAt:      record.CreatedAt,
 		UpdatedAt:      record.UpdatedAt,
 	}
+}
+
+func supportedKind(kind string) bool {
+	switch kind {
+	case "http", "socks", "mixed", "vless", "vmess", "trojan":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAdvancedKind(kind string) bool {
+	return kind == "vless" || kind == "vmess" || kind == "trojan"
+}
+
+func normalizeEndpointConfig(advanced bool, transport Transport, endpoint PublicEndpoint) (string, string, error) {
+	if !advanced {
+		return "{}", "{}", nil
+	}
+	transport.Type = strings.ToLower(strings.TrimSpace(transport.Type))
+	if transport.Type == "" {
+		transport.Type = "ws"
+	}
+	transport.WSPath = strings.TrimSpace(transport.WSPath)
+	if transport.Type != "ws" || !strings.HasPrefix(transport.WSPath, "/") || len(transport.WSPath) > 256 {
+		return "", "", fmt.Errorf("%w: WebSocket transport requires a ws_path beginning with / and at most 256 characters", ErrInvalid)
+	}
+	endpoint.Host = strings.ToLower(strings.TrimSpace(endpoint.Host))
+	if !validPublicHost(endpoint.Host) {
+		return "", "", fmt.Errorf("%w: public_endpoint.host must be a valid domain name", ErrInvalid)
+	}
+	if endpoint.Port == 0 {
+		endpoint.Port = 443
+	}
+	if endpoint.Port < 1 || endpoint.Port > 65535 || !endpoint.TLS {
+		return "", "", fmt.Errorf("%w: WebSocket public endpoint must use TLS and a valid port", ErrInvalid)
+	}
+	transportEncoded, err := json.Marshal(transport)
+	if err != nil {
+		return "", "", fmt.Errorf("encode listener transport: %w", err)
+	}
+	endpointEncoded, err := json.Marshal(endpoint)
+	if err != nil {
+		return "", "", fmt.Errorf("encode listener public endpoint: %w", err)
+	}
+	return string(transportEncoded), string(endpointEncoded), nil
+}
+
+func validPublicHost(host string) bool {
+	if len(host) < 3 || len(host) > 253 || strings.ContainsAny(host, "/:@?# ") || !strings.Contains(host, ".") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	for index, character := range strings.ToLower(value) {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func associatedData(id string) []byte {

@@ -8,6 +8,7 @@ import type {
   CreateProxyGroupRequest,
   CreateProxyServiceRequest,
   CreateSubscriptionRequest,
+  UpdateSubscriptionRequest,
   DataPlaneStatus,
   GlobalSettings,
   ListenerList,
@@ -248,6 +249,13 @@ export const api = {
     })
   },
 
+  updateSubscription(id: string, payload: UpdateSubscriptionRequest): Promise<Subscription> {
+    return request(`/api/v1/subscriptions/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
   refreshSubscription(id: string): Promise<RefreshResult> {
     return request(`/api/v1/subscriptions/${encodeURIComponent(id)}/refresh`, {
       method: "POST",
@@ -428,8 +436,9 @@ export const api = {
     })
   },
 
-  listenerShareURL(sharePath: string): string {
-    return `${window.location.protocol}//${window.location.host}${sharePath}`
+  listenerShareURL(sharePath: string, format?: "v2rayn" | "clash" | "sing-box" | "uri"): string {
+    const suffix = format ? `?format=${encodeURIComponent(format)}` : ""
+    return `${window.location.protocol}//${window.location.host}${sharePath}${suffix}`
   },
 
   deleteListener(id: string, version: number): Promise<void> {
@@ -466,6 +475,15 @@ export const api = {
   trafficSummaries(resourceType: TrafficResourceType): Promise<TrafficSummaryList> {
     const query = new URLSearchParams({ resource_type: resourceType, limit: "200", offset: "0" })
     return request(`/api/v1/traffic?${query.toString()}`)
+  },
+
+  proxyLogURL(filters: { listenerId?: string; proxyGroupId?: string; nodeId?: string; level?: string }): string {
+    const query = new URLSearchParams()
+    if (filters.listenerId) query.set("listener_id", filters.listenerId)
+    if (filters.proxyGroupId) query.set("proxy_group_id", filters.proxyGroupId)
+    if (filters.nodeId) query.set("node_id", filters.nodeId)
+    if (filters.level) query.set("level", filters.level)
+    return `/api/v1/logs/stream?${query.toString()}`
   },
 
   listArtifacts(kind: ArtifactKind): Promise<ArtifactList> {

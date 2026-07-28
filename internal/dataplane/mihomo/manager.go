@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,6 +34,9 @@ type Status struct {
 	ListenerCount   int        `json:"listener_count"`
 	ProxyCount      int        `json:"proxy_count"`
 	ActiveListeners []Endpoint `json:"active_listeners"`
+	EgressInterface string     `json:"egress_interface,omitempty"`
+	MaxProcs        int        `json:"max_procs"`
+	LogMaxBytes     int64      `json:"log_max_bytes"`
 }
 
 type process struct {
@@ -55,6 +60,41 @@ type Manager struct {
 	process          *process
 	status           Status
 	lastCompiled     Compiled
+	egressInterface  string
+	maxProcs         int
+	logMaxBytes      int64
+	logBackups       int
+}
+
+type ManagerOption func(*Manager) error
+
+func WithEgressInterface(name string) ManagerOption {
+	return func(manager *Manager) error {
+		manager.compiler.setEgressInterface(name)
+		manager.egressInterface = strings.TrimSpace(name)
+		return nil
+	}
+}
+
+func WithProcessMaxProcs(value int) ManagerOption {
+	return func(manager *Manager) error {
+		if value < 1 {
+			return errors.New("mihomo max procs must be positive")
+		}
+		manager.maxProcs = value
+		return nil
+	}
+}
+
+func WithLogRotation(maxBytes int64, backups int) ManagerOption {
+	return func(manager *Manager) error {
+		if maxBytes < 1 || backups < 0 {
+			return errors.New("invalid Mihomo log rotation settings")
+		}
+		manager.logMaxBytes = maxBytes
+		manager.logBackups = backups
+		return nil
+	}
 }
 
 func NewManager(
@@ -62,6 +102,7 @@ func NewManager(
 	binary string,
 	activeConfigPath string,
 	logger *slog.Logger,
+	options ...ManagerOption,
 ) (*Manager, error) {
 	if compiler == nil {
 		return nil, errors.New("mihomo compiler is required")
@@ -86,15 +127,29 @@ func NewManager(
 		logPath:          filepath.Join(runtimeDirectory, "mihomo.log"),
 		controllerSocket: filepath.Join(runtimeDirectory, "mihomo.sock"),
 		logger:           logger,
+		maxProcs:         min(runtime.NumCPU(), 4),
+		logMaxBytes:      8 << 20,
+		logBackups:       2,
+	}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(manager); err != nil {
+			return nil, err
+		}
 	}
 	manager.compiler.setControllerSocket(manager.controllerSocket)
 	manager.resolveBinary(binary)
 	manager.status = Status{
-		Available:    manager.available,
-		State:        "idle",
-		Binary:       manager.binary,
-		Version:      manager.version,
-		ActiveConfig: manager.activePath,
+		Available:       manager.available,
+		State:           "idle",
+		Binary:          manager.binary,
+		Version:         manager.version,
+		ActiveConfig:    manager.activePath,
+		EgressInterface: manager.egressInterface,
+		MaxProcs:        manager.maxProcs,
+		LogMaxBytes:     manager.logMaxBytes,
 	}
 	return manager, nil
 }
@@ -233,13 +288,15 @@ func (m *Manager) resolveBinary(value string) {
 func (m *Manager) validateLocked(ctx context.Context, path string) error {
 	validationContext, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	_, err := exec.CommandContext(
+	command := exec.CommandContext(
 		validationContext,
 		m.binary,
 		"-t",
 		"-d", m.runtimeDir,
 		"-f", path,
-	).CombinedOutput()
+	)
+	command.Env = m.commandEnvironment()
+	_, err := command.CombinedOutput()
 	if err != nil {
 		m.logger.Error("Mihomo configuration validation failed", "error", err)
 		return fmt.Errorf("mihomo config validation failed: %w", err)
@@ -251,11 +308,12 @@ func (m *Manager) startLocked(configPath string) error {
 	if err := os.Remove(m.controllerSocket); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stale Mihomo controller socket: %w", err)
 	}
-	logFile, err := os.OpenFile(m.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logFile, err := newRotatingLogWriter(m.logPath, m.logMaxBytes, m.logBackups)
 	if err != nil {
 		return fmt.Errorf("open mihomo log: %w", err)
 	}
 	command := exec.Command(m.binary, "-d", m.runtimeDir, "-f", configPath)
+	command.Env = m.commandEnvironment()
 	command.Stdout = logFile
 	command.Stderr = logFile
 	if err := command.Start(); err != nil {
@@ -271,6 +329,17 @@ func (m *Manager) startLocked(configPath string) error {
 		close(item.done)
 	}()
 	return nil
+}
+
+func (m *Manager) commandEnvironment() []string {
+	prefix := "GOMAXPROCS="
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, prefix) {
+			environment = append(environment, value)
+		}
+	}
+	return append(environment, prefix+strconv.Itoa(m.maxProcs))
 }
 
 func (m *Manager) stopLocked(ctx context.Context) error {

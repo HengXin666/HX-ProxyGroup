@@ -93,13 +93,31 @@ func TestSubscriptionAPIHidesSourceConfigurationAndEnforcesOptimisticLocking(t *
 		t.Fatalf("updated subscription = %#v", updated)
 	}
 
+	metadataBody := `{
+		"version":2,
+		"name":"metadata-only",
+		"source_type":"inline",
+		"enabled":true,
+		"refresh_interval_seconds":3600
+	}`
+	response = doRequest(t, http.MethodPut, testServer.URL+"/api/v1/subscriptions/"+created.ID, strings.NewReader(metadataBody))
+	metadataPayload := readResponseBytes(t, response, http.StatusOK)
+	var metadataUpdated subscription.Subscription
+	if err := json.Unmarshal(metadataPayload, &metadataUpdated); err != nil {
+		t.Fatalf("decode metadata update: %v", err)
+	}
+	keptSource, err := subscriptions.SourceConfig(ctx, created.ID)
+	if err != nil || metadataUpdated.Version != 3 || keptSource.Inline != "vless://example-node" {
+		t.Fatalf("metadata update = %#v, source = %#v, error = %v", metadataUpdated, keptSource, err)
+	}
+
 	response = doRequest(t, http.MethodPut, testServer.URL+"/api/v1/subscriptions/"+created.ID, strings.NewReader(updateBody))
 	conflictPayload := readResponseBytes(t, response, http.StatusConflict)
 	if !bytes.Contains(conflictPayload, []byte(`"subscription_conflict"`)) {
 		t.Fatalf("conflict response = %s", conflictPayload)
 	}
 
-	response = doRequest(t, http.MethodDelete, testServer.URL+"/api/v1/subscriptions/"+created.ID+"?version=2", nil)
+	response = doRequest(t, http.MethodDelete, testServer.URL+"/api/v1/subscriptions/"+created.ID+"?version=3", nil)
 	response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE subscription status = %d", response.StatusCode)

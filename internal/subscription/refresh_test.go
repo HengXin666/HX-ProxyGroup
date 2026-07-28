@@ -84,7 +84,7 @@ func TestRefreshCreatesSnapshotDeduplicatesAndPreservesLastSuccessOnFailure(t *t
 		Version:                created.Version,
 		Name:                   created.Name,
 		SourceType:             SourceFile,
-		SourceConfig:           SourceConfig{FilePath: filepath.Join(root, "missing-subscription.txt")},
+		SourceConfig:           &SourceConfig{FilePath: filepath.Join(root, "missing-subscription.txt")},
 		Enabled:                true,
 		RefreshIntervalSeconds: 3600,
 	})

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { ChevronDown, ChevronRight, FileText, Gauge, Globe2, LoaderCircle, Plus, Radio, RefreshCw, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, FileText, Gauge, Globe2, LoaderCircle, Pencil, Plus, Radio, RefreshCw, Trash2 } from "lucide-react"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { CreateSubscriptionForm } from "@/components/create-subscription-form"
@@ -24,6 +24,7 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
   const [nodes, setNodes] = useState<NodeRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  const [editTarget, setEditTarget] = useState<Subscription | null>(null)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [deleteTarget, setDeleteTarget] = useState<Subscription | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -225,6 +226,7 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
                     })}
                     onCheck={() => void checkNodes(item)}
                     onRefresh={() => void refresh(item)}
+                    onEdit={() => setEditTarget(item)}
                     onDelete={() => setDeleteTarget(item)}
                   />
                 ))}
@@ -238,10 +240,23 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
         <CreateSubscriptionForm
           onCancel={() => setShowCreate(false)}
           onError={(message) => onNotice(message, "error")}
-          onCreated={(created) => {
+          onSaved={(created) => {
             setShowCreate(false)
             setItems((current) => [created, ...current])
             onNotice("订阅已创建，可立即手动刷新")
+          }}
+        />
+      )}
+
+      {editTarget && (
+        <CreateSubscriptionForm
+          subscription={editTarget}
+          onCancel={() => setEditTarget(null)}
+          onError={(message) => onNotice(message, "error")}
+          onSaved={(updated) => {
+            setEditTarget(null)
+            setItems((current) => current.map((item) => item.id === updated.id ? updated : item))
+            onNotice("订阅设置已保存")
           }}
         />
       )}
@@ -267,6 +282,7 @@ function SubscriptionRow({
   onToggle,
   onCheck,
   onRefresh,
+  onEdit,
   onDelete,
 }: {
   item: Subscription
@@ -277,16 +293,17 @@ function SubscriptionRow({
   onToggle: () => void
   onCheck: () => void
   onRefresh: () => void
+  onEdit: () => void
   onDelete: () => void
 }) {
   const source = sourceMeta[item.source_type]
   const SourceIcon = source.icon
   return (
     <>
-    <tr className="hover:bg-[#f6f8fa]">
+    <tr className="cursor-pointer hover:bg-[#f6f8fa]" onClick={onEdit} title="点击查看与编辑订阅">
       <Td>
         <div className="flex min-w-0 items-center gap-2.5">
-          <Button variant="ghost" size="icon" onClick={onToggle} aria-label={`${expanded ? "收起" : "展开"} ${item.name}`} className="size-7">
+          <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={`${expanded ? "收起" : "展开"} ${item.name}`} className="size-7">
             {expanded ? <ChevronDown /> : <ChevronRight />}
           </Button>
           <div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-white text-[#57606a]">
@@ -315,15 +332,16 @@ function SubscriptionRow({
       <Td><span className="tabular-nums">{item.refresh_interval_seconds}s</span></Td>
       <Td align="right">
         <div className="flex justify-end gap-1.5">
-          <Button variant="outline" size="sm" onClick={onCheck} disabled={busy || testing || nodes.length === 0}>
+          <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onEdit() }} aria-label={`编辑 ${item.name}`}><Pencil /></Button>
+          <Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); onCheck() }} disabled={busy || testing || nodes.length === 0}>
             {testing ? <LoaderCircle className="animate-spin" /> : <Gauge />}
             测试
           </Button>
-          <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy || !item.enabled}>
+          <Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); onRefresh() }} disabled={busy || !item.enabled}>
             {busy ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
             刷新
           </Button>
-          <Button variant="ghost" size="icon" onClick={onDelete} disabled={busy} aria-label={`删除 ${item.name}`}>
+          <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onDelete() }} disabled={busy} aria-label={`删除 ${item.name}`}>
             <Trash2 className="text-destructive" />
           </Button>
         </div>

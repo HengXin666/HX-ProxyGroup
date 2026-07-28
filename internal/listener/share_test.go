@@ -3,11 +3,17 @@ package listener
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/HengXin666/HX-ProxyGroup/internal/nodeparse"
 	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
@@ -33,6 +39,73 @@ func newShareTestService(t *testing.T) (*Service, *store.Store, context.Context)
 		t.Fatal(err)
 	}
 	return service, database, ctx
+}
+
+func TestAdvancedShareExportSupportsThreeClientFormats(t *testing.T) {
+	service, database, ctx := newShareTestService(t)
+	groupID := createShareTestGroup(t, ctx, database)
+	created, err := service.Create(ctx, CreateRequest{
+		Name: "CF VLESS", Kind: "vless", BindAddress: "127.0.0.1", Port: 18088, ProxyGroupID: groupID,
+		Auth:           &Auth{Username: "hx-user", Password: "11111111-1111-1111-1111-111111111111"},
+		Transport:      Transport{Type: "ws", WSPath: "/edge"},
+		PublicEndpoint: PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	export, err := service.ExportByShareToken(ctx, strings.TrimPrefix(created.SharePath, "/sub/"), "127.0.0.1:19090")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(export.Body, "proxy.example.com:443") || !strings.Contains(export.Body, "path=%2Fedge") {
+		t.Fatalf("unexpected URI export: %s", export.Body)
+	}
+	clashBody, clashName, _, err := export.Render("clash")
+	if err != nil || !strings.HasSuffix(clashName, ".yaml") {
+		t.Fatalf("Render(clash) = %q, %q, %v", clashBody, clashName, err)
+	}
+	var clash map[string]any
+	if err := yaml.Unmarshal([]byte(clashBody), &clash); err != nil || clash["proxies"] == nil {
+		t.Fatalf("invalid Clash output: %v, %s", err, clashBody)
+	}
+	if clash["proxy-groups"] == nil || clash["rules"] == nil {
+		t.Fatalf("Clash output is not a complete profile: %s", clashBody)
+	}
+	if binary, lookupErr := exec.LookPath("mihomo"); lookupErr == nil {
+		directory := t.TempDir()
+		configPath := filepath.Join(directory, "clash.yaml")
+		if err := os.WriteFile(configPath, []byte(clashBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(binary, "-t", "-d", directory, "-f", configPath).CombinedOutput(); err != nil {
+			t.Fatalf("mihomo rejected Clash output: %v\n%s\n%s", err, output, clashBody)
+		}
+	}
+	if parsed, err := nodeparse.Parse([]byte(clashBody)); err != nil || len(parsed.Nodes) != 1 {
+		t.Fatalf("Clash output cannot be imported: %v, %+v", err, parsed)
+	}
+	singBoxBody, singBoxName, _, err := export.Render("sing-box")
+	if err != nil || !strings.HasSuffix(singBoxName, ".json") {
+		t.Fatalf("Render(sing-box) = %q, %q, %v", singBoxBody, singBoxName, err)
+	}
+	var singBox map[string]any
+	if err := json.Unmarshal([]byte(singBoxBody), &singBox); err != nil || singBox["outbounds"] == nil {
+		t.Fatalf("invalid sing-box output: %v, %s", err, singBoxBody)
+	}
+	if parsed, err := nodeparse.Parse([]byte(singBoxBody)); err != nil || len(parsed.Nodes) != 1 {
+		t.Fatalf("sing-box output cannot be imported: %v, %+v", err, parsed)
+	}
+	encoded, _, _, err := export.Render("v2rayn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || !strings.HasPrefix(string(decoded), "vless://") {
+		t.Fatalf("invalid v2rayN output: %v, %q", err, decoded)
+	}
+	if parsed, err := nodeparse.Parse(decoded); err != nil || len(parsed.Nodes) != 1 {
+		t.Fatalf("v2rayN output cannot be imported: %v, %+v", err, parsed)
+	}
 }
 
 func createShareTestGroup(t *testing.T, ctx context.Context, database *store.Store) string {

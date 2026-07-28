@@ -38,7 +38,7 @@ v1 必须满足以下底线：
 - [x] 支持 HTTP / HTTPS 订阅 URL。
 - [x] 支持为订阅请求配置自定义 `User-Agent`、Header 和超时。
 - [ ] 支持为订阅请求指定上游代理；当前 Fetcher 明确直连。
-- [x] 支持保存和刷新手工粘贴的 URI、Base64 和 Clash / Mihomo YAML 原始内容。
+- [x] 支持保存和刷新手工粘贴的 URI、Base64、Clash / Mihomo YAML 和 sing-box JSON 原始内容。
 - [x] 支持从本地普通文件导入订阅内容，并拒绝符号链接。
 - [x] 支持手动刷新单个订阅。
 - [x] 支持批量手动刷新全部或选定订阅，使用有界 worker pool 并返回逐订阅结果。
@@ -58,6 +58,7 @@ v1 必须满足以下底线：
 - [x] 对原始订阅执行格式识别，并将解析结果写入不可变快照摘要。
 - [ ] 支持 Mihomo 原生 Proxy Provider 展开。
 - [x] 支持 Clash / Mihomo YAML 中的 `proxies` 节点列表。
+- [x] 支持 sing-box JSON 中的 `outbounds` 节点列表，并对内置直连等非代理出站保留结构化失败原因。
 - [x] 支持 VLESS、VMess、Trojan、Shadowsocks、HTTP、SOCKS 分享 URI 和 Base64 包装 URI 列表。
 - [x] 解析器通过独立包和服务注入点接入，可继续扩展其他订阅格式。
 - [x] 导入时保留无法识别的节点及失败原因，不静默丢弃。
@@ -191,6 +192,7 @@ score = availability_score
 - [x] 一个代理组可引用多个单独节点。
 - [ ] 一个代理组可引用其他代理组，形成有限层级组合。
 - [x] 支持加入当前服务器的 `DIRECT` 直连出口。
+- [x] 管理面可不创建任何订阅，直接以当前服务器 `DIRECT` 出口创建代理服务。
 - [x] 支持按来源订阅、名称地区标签、协议、生命周期和最新延迟动态筛选、排序与 Top N；结构化 Geo、ASN、自定义标签和完整规则 Trace 仍待规则流水线补齐。
 - [ ] 禁止形成代理组循环依赖，并在保存时返回完整依赖链；当前尚未开放组嵌套。
 - [x] 代理组为空时支持 `fail-closed` 或回退到 `DIRECT`；指定节点/组回退仍未完成。
@@ -237,11 +239,11 @@ v1 将用户提出的会话需求映射为可组合策略：
 
 - [ ] 为代理组生成不可预测的订阅 Token。
 - [ ] 支持吊销、轮换和设置过期时间。
-- [ ] 支持生成 Clash / Mihomo YAML。
-- [ ] 支持生成 V2RayN 可识别的 Base64 URI 列表。
-- [ ] 支持生成 sing-box JSON。
-- [ ] 支持输出单节点 URI 和二维码所需文本数据。
-- [ ] 导出内容指向当前服务器 Listener，而不是泄露上游机场节点凭据。
+- [x] 支持生成 Clash / Mihomo YAML。
+- [x] 支持生成 V2RayN 可识别的 Base64 URI 列表。
+- [x] 支持生成 sing-box JSON。
+- [x] 支持输出单节点 URI 和二维码所需文本数据。
+- [x] 导出内容指向当前服务器 Listener，而不是泄露上游机场节点凭据。
 - [ ] 支持按客户端类型覆盖域名、端口、TLS、SNI、WS Path 和备注。
 - [ ] 订阅请求支持限速、访问日志和异常频率告警。
 
@@ -263,13 +265,13 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 
 - [x] HTTP Proxy Listener；HTTPS 目标通过 CONNECT 隧道承载。
 - [x] SOCKS5 Listener。
-- [ ] VLESS over WebSocket。
-- [ ] VMess over WebSocket。
-- [ ] Trojan over WebSocket 或 gRPC。
+- [x] VLESS over WebSocket。
+- [x] VMess over WebSocket。
+- [x] Trojan over WebSocket；gRPC 尚未开放。
 - [ ] VLESS / VMess over gRPC。
 - [ ] 可选原生 TCP Listener，直接暴露专用端口。
 - [ ] 可选 Hysteria2 / TUIC 等 UDP/QUIC Listener，但不承诺经过普通 Cloudflare 代理。
-- [ ] 所有协议由 Mihomo Listener 提供，控制面只生成、校验和管理配置。
+- [x] 所有已开放协议由 Mihomo Listener 提供，控制面只生成、校验和管理配置。
 
 ### 6.3 Cloudflare 与雷池兼容边界
 
@@ -284,12 +286,12 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
   -> DIRECT 或指定 Proxy Group
 ```
 
-- [ ] 提供 VLESS / VMess / Trojan 的 WebSocket 和 gRPC 模板。
-- [ ] 支持配置域名、SNI、Host、WS Path、gRPC Service Name 和外部 443 端口。
-- [ ] 数据面 Listener 默认仅绑定 `127.0.0.1`，由雷池转发。
+- [x] 提供 VLESS / VMess / Trojan 的 WebSocket 模板；gRPC 模板尚未开放。
+- [x] WebSocket 模板支持配置域名（同时作为 SNI/Host）、WS Path 和外部 TLS 端口；gRPC Service Name 尚未开放。
+- [x] WebSocket 数据面 Listener 强制仅绑定环回地址，由反向代理转发。
 - [ ] 管理 API 不得经过同一公开路径暴露。
 - [ ] 正确处理 WebSocket Upgrade、HTTP/2 gRPC 和真实来源 IP Header。
-- [ ] 文档明确：普通 Cloudflare 代理不转发任意原生 TCP/UDP；raw TCP/UDP 需要直连、Cloudflare Spectrum 或其他四层转发能力。
+- [x] 文档明确：普通 Cloudflare 代理不转发任意原生 TCP/UDP；raw TCP/UDP 需要直连、Cloudflare Spectrum 或其他四层转发能力。
 - [ ] 提供雷池健康检查路径，且该路径不泄露节点或版本信息。
 
 ---
@@ -298,10 +300,9 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 
 ### 7.1 统计范围
 
-- [ ] Listener 当前连接数和累计连接数。
-- [ ] Listener 上行、下行字节数。
-- [ ] 代理组流量和连接数。
-- [ ] 节点流量、连接数、成功率和失败率。
+- [x] Listener 当前连接数、累计连接数和上行、下行字节数。
+- [x] 代理组流量和连接数。
+- [x] 节点流量和连接数；成功率和失败率仍待连接结算事件支持。
 - [ ] 节点被选中次数和切换次数。
 - [ ] 订阅刷新成功率、耗时和节点数量变化。
 - [ ] 健康检测次数、耗时、错误类型和状态变化。
@@ -309,14 +310,14 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 
 ### 7.2 存储策略
 
-- [ ] 秒级计数先在内存中聚合，不为每个数据包写数据库。
-- [ ] 每分钟批量落库一次；进程退出前执行有界 Flush。
-- [ ] 近 24 小时保存 1 分钟粒度。
-- [ ] 2～7 天保存 5 分钟粒度。
-- [ ] 8～30 天保存 1 小时粒度。
-- [ ] 超过 30 天的数据由定时任务删除。
+- [x] 秒级计数先在内存中聚合，不为每个数据包写数据库。
+- [x] 每分钟批量落库一次；进程退出前执行有界 Flush。
+- [x] 近 24 小时保存 1 分钟粒度。
+- [x] 2～7 天保存 5 分钟粒度。
+- [x] 8～30 天保存 1 小时粒度。
+- [x] 超过 30 天的趋势数据由定时任务删除；累计值保留到本地实体删除。
 - [ ] SQLite 启用 WAL、busy timeout、外键和定期 checkpoint。
-- [ ] 查询接口必须限制时间范围、点数和分页大小。
+- [x] 查询接口限制为最多 30 天、500 点和每页 200 项。
 - [ ] UI 图表默认读取聚合数据，不扫描原始事件表。
 
 ---
@@ -425,6 +426,8 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 - [x] 当前执行受控重启；配置内容未变化时跳过重启。
 - [x] 重载后检查 Unix 管理 Socket 和全部 Listener 端口是否就绪。
 - [x] 启动或就绪检查失败时恢复上一版配置并尝试恢复旧进程。
+- [x] 默认绑定 Linux 主路由物理出口，避免与本机 Clash / Mihomo TUN 形成数据面回环；支持显式覆盖或关闭。
+- [x] 拒绝上游节点直接指回同地址、同端口 Listener，并限制 Mihomo 默认 CPU 调度核与滚动日志大小。
 - [ ] 保存最近若干个可用配置版本和变更摘要；当前只保留 active 与 previous 文件。
 - [ ] 控制面异常退出后，Mihomo 可继续使用最近一版配置提供代理；当前 Mihomo 是控制面子进程。
 - [ ] Mihomo 异常退出后自动监督恢复；当前状态 API 会标记失败，但尚未自动重启。
@@ -526,7 +529,7 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 - [ ] HTTP、SOCKS5、Mixed、VLESS-WS 至少各完成一次端到端测试。
 - [ ] 完成 Cloudflare / 雷池链路的 WebSocket 端到端验证。
 - [ ] 完成断电式重启、进程崩溃、订阅失败和配置回滚演练。
-- [ ] 完成 30 天统计保留逻辑的时间压缩测试。
+- [x] 完成 30 天统计保留逻辑的时间压缩测试。
 - [ ] 完成安装、升级、修复、卸载和回滚验证。
 - [ ] 发布基准测试报告，确认资源占用符合个人服务器部署目标。
 - [ ] 文档、配置样例、故障排查和安全说明完整。

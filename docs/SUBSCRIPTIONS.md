@@ -108,6 +108,13 @@ GET    /api/v1/nodes?search=&protocol=&state=&limit=&offset=
 GET    /api/v1/nodes/{id}
 ```
 
+更新时 `source_config` 可省略；此时服务端保留已加密的原来源，只修改名称、启用状态和刷新计划。
+只有显式提交新的 `source_config` 才会替换来源并重新加密。由于来源明文永不回显，管理面默认采用该
+保留语义，并要求用户主动勾选“替换加密来源”后才能修改 URL、Header、文件路径或内联内容。
+
+管理面支持把浏览器本机的 `.yaml` / `.yml` Clash 文件读取为内联订阅；文件内容仍受 4 MiB 上限约束，
+保存后需要执行刷新，且只有至少解析出一个有效节点时才会切换活动快照。
+
 更新和删除使用乐观锁版本。客户端提交陈旧版本时返回：
 
 ```text
@@ -134,6 +141,7 @@ HTTP 409 subscription_conflict
 当前解析器支持：
 
 - Clash / Mihomo YAML 中的 `proxies` 列表。
+- sing-box JSON 中的 `outbounds` 列表。
 - VLESS、VMess、Trojan、Shadowsocks、HTTP / HTTPS、SOCKS / SOCKS5 分享 URI。
 - Base64 包裹的 URI 列表。
 - 单节点解析失败结构化保存，不会静默丢弃。

@@ -65,7 +65,7 @@ func TestSubscriptionLifecycleEncryptsSourceConfiguration(t *testing.T) {
 		Version:    created.Version,
 		Name:       "primary-airport-renamed",
 		SourceType: SourceInline,
-		SourceConfig: SourceConfig{
+		SourceConfig: &SourceConfig{
 			Inline: "vless://redacted-node",
 		},
 		Enabled:                false,
@@ -77,11 +77,25 @@ func TestSubscriptionLifecycleEncryptsSourceConfiguration(t *testing.T) {
 	if updated.Version != 2 || updated.Enabled || updated.Name != "primary-airport-renamed" {
 		t.Fatalf("updated subscription = %#v", updated)
 	}
+	kept, err := service.Update(ctx, created.ID, UpdateRequest{
+		Version:                updated.Version,
+		Name:                   "metadata-only-update",
+		SourceType:             SourceInline,
+		Enabled:                true,
+		RefreshIntervalSeconds: 3600,
+	})
+	if err != nil {
+		t.Fatalf("metadata-only Update() error = %v", err)
+	}
+	keptConfig, err := service.SourceConfig(ctx, created.ID)
+	if err != nil || keptConfig.Inline != "vless://redacted-node" || kept.SourceType != SourceInline {
+		t.Fatalf("metadata-only source = %#v, subscription = %#v, error = %v", keptConfig, kept, err)
+	}
 	if _, err := service.Update(ctx, created.ID, UpdateRequest{
 		Version:                1,
 		Name:                   "stale-update",
 		SourceType:             SourceInline,
-		SourceConfig:           SourceConfig{Inline: "vmess://stale"},
+		SourceConfig:           &SourceConfig{Inline: "vmess://stale"},
 		Enabled:                true,
 		RefreshIntervalSeconds: 3600,
 	}); !errors.Is(err, ErrConflict) {
@@ -95,7 +109,7 @@ func TestSubscriptionLifecycleEncryptsSourceConfiguration(t *testing.T) {
 	if len(items) != 1 || items[0].ID != created.ID {
 		t.Fatalf("List() = %#v", items)
 	}
-	if err := service.Delete(ctx, created.ID, updated.Version); err != nil {
+	if err := service.Delete(ctx, created.ID, kept.Version); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 	if _, err := service.Get(ctx, created.ID); !errors.Is(err, ErrNotFound) {

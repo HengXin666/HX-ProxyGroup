@@ -22,6 +22,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
+	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
 	"github.com/HengXin666/HX-ProxyGroup/internal/node"
 	"github.com/HengXin666/HX-ProxyGroup/internal/overview"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
@@ -86,6 +87,12 @@ type DataPlaneService interface {
 
 type ProxyServiceService interface {
 	Create(context.Context, proxyservice.CreateRequest) (proxyservice.ServiceRecord, error)
+}
+
+type TrafficService interface {
+	Summary(context.Context, string, string) (metrics.Summary, error)
+	ListSummaries(context.Context, string, int, int) ([]metrics.Summary, error)
+	Query(context.Context, string, string, time.Time, time.Time, int) (metrics.Series, error)
 }
 
 type SettingsService interface {
@@ -165,6 +172,16 @@ func WithProxyServices(service ProxyServiceService) Option {
 	}
 }
 
+func WithTraffic(service TrafficService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("traffic service is required")
+		}
+		server.traffic = service
+		return nil
+	}
+}
+
 func WithSettings(service SettingsService) Option {
 	return func(server *Server) error {
 		if service == nil {
@@ -195,6 +212,16 @@ func WithOverview(service OverviewService) Option {
 	}
 }
 
+func WithLogs(handler http.Handler) Option {
+	return func(server *Server) error {
+		if handler == nil {
+			return errors.New("proxy log handler is required")
+		}
+		server.logs = handler
+		return nil
+	}
+}
+
 type Server struct {
 	bundles          BundleService
 	subscriptions    SubscriptionService
@@ -202,9 +229,11 @@ type Server struct {
 	proxyGroups      ProxyGroupService
 	listeners        ListenerService
 	proxyServices    ProxyServiceService
+	traffic          TrafficService
 	settings         SettingsService
 	routingRules     RoutingRulesService
 	overview         OverviewService
+	logs             http.Handler
 	dataplane        DataPlaneService
 	auth             AuthService
 	alerts           AlertService
@@ -283,6 +312,9 @@ func (s *Server) Handler() http.Handler {
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
 	}
+	if s.traffic != nil {
+		mux.HandleFunc("/api/v1/traffic", s.handleTraffic)
+	}
 	if s.settings != nil {
 		mux.HandleFunc("/api/v1/settings", s.handleSettings)
 	}
@@ -291,6 +323,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.overview != nil {
 		mux.HandleFunc("/api/v1/overview/stream", s.handleOverviewStream)
+	}
+	if s.logs != nil {
+		mux.Handle("/api/v1/logs/stream", s.logs)
 	}
 	if s.dataplane != nil {
 		mux.HandleFunc("/api/v1/dataplane/status", s.handleDataPlaneStatus)

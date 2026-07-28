@@ -275,6 +275,98 @@ UPDATE listeners SET share_token = lower(hex(randomblob(16)));
 CREATE UNIQUE INDEX listeners_share_token ON listeners(share_token);
 `,
 	},
+	{
+		version: 11,
+		name:    "websocket_listener_protocols",
+		sql: `
+ALTER TABLE listeners RENAME TO listeners_v10;
+
+CREATE TABLE listeners (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    listener_type TEXT NOT NULL,
+    bind_address TEXT NOT NULL,
+    port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    proxy_group_id TEXT NOT NULL REFERENCES proxy_groups(id) ON DELETE RESTRICT,
+    auth_policy_encrypted BLOB,
+    transport_json TEXT NOT NULL DEFAULT '{}',
+    tls_policy_encrypted BLOB,
+    limits_json TEXT NOT NULL DEFAULT '{}',
+    public_endpoint_json TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'mixed'
+        CHECK (kind IN ('http', 'socks', 'mixed', 'vless', 'vmess', 'trojan')),
+    auth_mode TEXT NOT NULL DEFAULT 'none'
+        CHECK (auth_mode IN ('none', 'userpass')),
+    auth_config_encrypted BLOB,
+    share_token TEXT NOT NULL DEFAULT '',
+    UNIQUE (bind_address, port)
+) STRICT;
+
+INSERT INTO listeners(
+    id, name, listener_type, bind_address, port, proxy_group_id,
+    auth_policy_encrypted, transport_json, tls_policy_encrypted, limits_json,
+    public_endpoint_json, enabled, version, created_at, updated_at, kind,
+    auth_mode, auth_config_encrypted, share_token
+)
+SELECT
+    id, name, listener_type, bind_address, port, proxy_group_id,
+    auth_policy_encrypted, transport_json, tls_policy_encrypted, limits_json,
+    public_endpoint_json, enabled, version, created_at, updated_at, kind,
+    auth_mode, auth_config_encrypted, share_token
+FROM listeners_v10;
+
+DROP TABLE listeners_v10;
+CREATE UNIQUE INDEX listeners_share_token ON listeners(share_token);
+`,
+	},
+	{
+		version: 12,
+		name:    "aggregated_traffic_statistics",
+		sql: `
+CREATE TABLE traffic_totals (
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('listener', 'proxy_group', 'node')),
+    resource_id TEXT NOT NULL,
+    upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK (upload_bytes >= 0),
+    download_bytes INTEGER NOT NULL DEFAULT 0 CHECK (download_bytes >= 0),
+    connection_count INTEGER NOT NULL DEFAULT 0 CHECK (connection_count >= 0),
+    active_connections INTEGER NOT NULL DEFAULT 0 CHECK (active_connections >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (resource_type, resource_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE traffic_buckets (
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('listener', 'proxy_group', 'node')),
+    resource_id TEXT NOT NULL,
+    bucket_start TEXT NOT NULL,
+    granularity_seconds INTEGER NOT NULL CHECK (granularity_seconds IN (60, 300, 3600)),
+    upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK (upload_bytes >= 0),
+    download_bytes INTEGER NOT NULL DEFAULT 0 CHECK (download_bytes >= 0),
+    connection_count INTEGER NOT NULL DEFAULT 0 CHECK (connection_count >= 0),
+    peak_active_connections INTEGER NOT NULL DEFAULT 0 CHECK (peak_active_connections >= 0),
+    PRIMARY KEY (resource_type, resource_id, bucket_start, granularity_seconds)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX traffic_buckets_time
+    ON traffic_buckets(granularity_seconds, bucket_start);
+
+CREATE TRIGGER traffic_delete_listener AFTER DELETE ON listeners BEGIN
+    DELETE FROM traffic_totals WHERE resource_type = 'listener' AND resource_id = OLD.id;
+    DELETE FROM traffic_buckets WHERE resource_type = 'listener' AND resource_id = OLD.id;
+END;
+CREATE TRIGGER traffic_delete_proxy_group AFTER DELETE ON proxy_groups BEGIN
+    DELETE FROM traffic_totals WHERE resource_type = 'proxy_group' AND resource_id = OLD.id;
+    DELETE FROM traffic_buckets WHERE resource_type = 'proxy_group' AND resource_id = OLD.id;
+END;
+CREATE TRIGGER traffic_delete_node AFTER DELETE ON nodes BEGIN
+    DELETE FROM traffic_totals WHERE resource_type = 'node' AND resource_id = OLD.id;
+    DELETE FROM traffic_buckets WHERE resource_type = 'node' AND resource_id = OLD.id;
+END;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

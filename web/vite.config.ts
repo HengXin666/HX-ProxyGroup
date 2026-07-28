@@ -28,6 +28,13 @@ export default defineConfig(({ mode }) => {
           target: backendTarget,
           changeOrigin: false,
         },
+        // Public client subscriptions are served outside the authenticated
+        // management API. Proxy them in development so copied localhost URLs
+        // return the subscription document instead of Vite's SPA fallback.
+        "/sub": {
+          target: backendTarget,
+          changeOrigin: false,
+        },
       },
     },
   }

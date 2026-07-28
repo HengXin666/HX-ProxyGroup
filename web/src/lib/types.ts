@@ -8,6 +8,7 @@ export interface Subscription {
   source_configured: boolean
   enabled: boolean
   refresh_interval_seconds: number
+  refresh_cron?: string
   last_success_snapshot_id?: string
   consecutive_failures: number
   last_refresh_attempt_at?: string
@@ -39,6 +40,17 @@ export interface CreateSubscriptionRequest {
   source_config: SourceConfig
   enabled?: boolean
   refresh_interval_seconds?: number
+  refresh_cron?: string
+}
+
+export interface UpdateSubscriptionRequest {
+  version: number
+  name: string
+  source_type: SourceType
+  source_config?: SourceConfig
+  enabled: boolean
+  refresh_interval_seconds: number
+  refresh_cron?: string
 }
 
 export interface RefreshResult {
@@ -261,7 +273,18 @@ export interface UpdateProxyGroupRequest {
   fallback_target_id?: string
 }
 
-export type ListenerKind = "http" | "socks" | "mixed"
+export type ListenerKind = "http" | "socks" | "mixed" | "vless" | "vmess" | "trojan"
+
+export interface ListenerTransport {
+  type: "ws" | ""
+  ws_path?: string
+}
+
+export interface ListenerPublicEndpoint {
+  host: string
+  port: number
+  tls: boolean
+}
 
 export interface ListenerRecord {
   id: string
@@ -271,6 +294,8 @@ export interface ListenerRecord {
   port: number
   proxy_group_id: string
   auth_configured: boolean
+  transport: ListenerTransport
+  public_endpoint: ListenerPublicEndpoint
   share_path?: string
   enabled: boolean
   version: number
@@ -292,6 +317,8 @@ export interface CreateListenerRequest {
     username: string
     password: string
   }
+  transport?: ListenerTransport
+  public_endpoint?: ListenerPublicEndpoint
   enabled?: boolean
 }
 
@@ -306,6 +333,8 @@ export interface UpdateListenerRequest {
     username: string
     password: string
   }
+  transport?: ListenerTransport
+  public_endpoint?: ListenerPublicEndpoint
   clear_auth?: boolean
   enabled: boolean
 }
@@ -344,6 +373,9 @@ export interface DataPlaneStatus {
   listener_count: number
   proxy_count: number
   active_listeners: DataPlaneEndpoint[]
+  egress_interface?: string
+  max_procs: number
+  log_max_bytes: number
 }
 
 export interface OverviewSample {
@@ -387,6 +419,16 @@ export interface TrafficSummaryList {
   items: TrafficSummary[]
   limit: number
   offset: number
+}
+
+export interface ProxyLogEvent {
+  timestamp: string
+  level: string
+  message: string
+  proxy_group_id?: string
+  proxy_group?: string
+  node_id?: string
+  node?: string
 }
 
 export interface ApiErrorPayload {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,9 +23,11 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/config"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
+	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
 	"github.com/HengXin666/HX-ProxyGroup/internal/node"
 	"github.com/HengXin666/HX-ProxyGroup/internal/nodeparse"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
+	"github.com/HengXin666/HX-ProxyGroup/internal/proxylog"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxyservice"
 	"github.com/HengXin666/HX-ProxyGroup/internal/routingrules"
 	"github.com/HengXin666/HX-ProxyGroup/internal/scheduler"
@@ -56,6 +59,10 @@ func run(logger *slog.Logger) error {
 	flag.StringVar(&cfg.RuntimeConfigPath, "runtime-config", cfg.RuntimeConfigPath, "active Mihomo configuration path")
 	flag.StringVar(&cfg.SnapshotsPath, "snapshots", cfg.SnapshotsPath, "subscription snapshot directory")
 	flag.StringVar(&cfg.MihomoBinary, "mihomo", cfg.MihomoBinary, "Mihomo executable path or command name")
+	flag.StringVar(&cfg.MihomoEgressInterface, "mihomo-egress-interface", cfg.MihomoEgressInterface, "Mihomo outbound interface: auto, off, or an interface name")
+	flag.IntVar(&cfg.MihomoMaxProcs, "mihomo-max-procs", cfg.MihomoMaxProcs, "maximum CPU threads available to Mihomo")
+	flag.Int64Var(&cfg.MihomoLogMaxBytes, "mihomo-log-max-bytes", cfg.MihomoLogMaxBytes, "maximum bytes in each Mihomo log file")
+	flag.IntVar(&cfg.MihomoLogBackups, "mihomo-log-backups", cfg.MihomoLogBackups, "number of rotated Mihomo log files to keep")
 	flag.Parse()
 
 	if err := cfg.Validate(); err != nil {
@@ -87,11 +94,23 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	egressInterface, egressErr := mihomo.ResolveEgressInterface(cfg.MihomoEgressInterface)
+	if egressErr != nil {
+		if !strings.EqualFold(strings.TrimSpace(cfg.MihomoEgressInterface), "auto") {
+			return egressErr
+		}
+		logger.Warn("automatic Mihomo egress isolation unavailable", "error", egressErr)
+	} else if egressInterface != "" {
+		logger.Info("Mihomo outbound traffic isolated from host TUN routing", "interface", egressInterface)
+	}
 	mihomoManager, err := mihomo.NewManager(
 		mihomoCompiler,
 		cfg.MihomoBinary,
 		cfg.RuntimeConfigPath,
 		logger,
+		mihomo.WithEgressInterface(egressInterface),
+		mihomo.WithProcessMaxProcs(cfg.MihomoMaxProcs),
+		mihomo.WithLogRotation(cfg.MihomoLogMaxBytes, cfg.MihomoLogBackups),
 	)
 	if err != nil {
 		return err
@@ -134,6 +153,18 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	proxyService, err := proxyservice.NewService(proxyGroupService, listenerService)
+	if err != nil {
+		return err
+	}
+	trafficService, err := metrics.NewService(database, mihomoManager, logger, metrics.Config{})
+	if err != nil {
+		return err
+	}
+	proxyLogService, err := proxylog.NewDefaultService(mihomoManager)
+	if err != nil {
+		return err
+	}
+	logHandler, err := api.NewLogHandler(proxyLogService, listenerService, proxyGroupService)
 	if err != nil {
 		return err
 	}
@@ -253,8 +284,10 @@ func run(logger *slog.Logger) error {
 		api.WithProxyGroups(proxyGroupService),
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
+		api.WithTraffic(trafficService),
 		api.WithSettings(settingsService),
 		api.WithRoutingRules(routingRulesService),
+		api.WithLogs(logHandler),
 		api.WithDataPlane(mihomoManager),
 		api.WithOverview(mihomoManager),
 		api.WithAuth(authService),
@@ -294,7 +327,7 @@ func run(logger *slog.Logger) error {
 		serverErrors <- nil
 	}()
 
-	const backgroundTasks = 3
+	const backgroundTasks = 4
 	backgroundErrors := make(chan error, backgroundTasks)
 	go func() {
 		backgroundErrors <- subscriptionScheduler.Run(ctx)
@@ -304,6 +337,9 @@ func run(logger *slog.Logger) error {
 	}()
 	go func() {
 		backgroundErrors <- alertScheduler.Run(ctx)
+	}()
+	go func() {
+		backgroundErrors <- trafficService.Run(ctx)
 	}()
 	drainBackground := func(alreadyRead int) error {
 		var joined error
@@ -364,6 +400,7 @@ func writePortableState(destination string, cfg config.Config, databaseSchemaVer
 			"artifact-verification",
 			"sqlite-wal",
 			"sqlite-online-backup",
+			"traffic-statistics",
 		},
 	}
 	encoded, err := json.MarshalIndent(state, "", "  ")

@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   CircleX,
   LogOut,
+  LayoutDashboard,
   ListFilter,
   Network,
   Radio,
@@ -22,13 +23,14 @@ import { ArtifactsPage } from "@/pages/artifacts-page"
 import { AuthPage } from "@/pages/auth-page"
 import { BlueprintPage } from "@/pages/blueprint-page"
 import { NodesPage } from "@/pages/nodes-page"
+import { OverviewPage } from "@/pages/overview-page"
 import { RoutingPage } from "@/pages/routing-page"
 import { RulesPage } from "@/pages/rules-page"
 import { SettingsPage } from "@/pages/settings-page"
 import { SubscriptionsPage } from "@/pages/subscriptions-page"
 import { TerminalPage } from "@/pages/terminal-page"
 
-type Page = "subscriptions" | "nodes" | "blueprint" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal"
+type Page = "overview" | "subscriptions" | "nodes" | "blueprint" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 
 const pages: Array<{
@@ -37,6 +39,7 @@ const pages: Array<{
   description: string
   icon: typeof Radio
 }> = [
+  { id: "overview", label: "总览", description: "流量与路由", icon: LayoutDashboard },
   { id: "subscriptions", label: "订阅", description: "来源与刷新", icon: Radio },
   { id: "nodes", label: "节点", description: "解析与生命周期", icon: Network },
   { id: "blueprint", label: "蓝图编排", description: "可视化代理链路", icon: Workflow },
@@ -50,7 +53,7 @@ const pages: Array<{
 
 function pageFromHash(): Page {
   const value = window.location.hash.replace(/^#\/?/, "")
-  return pages.some((item) => item.id === value) ? (value as Page) : "subscriptions"
+  return pages.some((item) => item.id === value) ? (value as Page) : "overview"
 }
 
 type AuthGate =
@@ -241,6 +244,7 @@ export default function App() {
             </div>
           )}
 
+          {page === "overview" && <OverviewPage onNotice={showNotice} />}
           {page === "subscriptions" && <SubscriptionsPage onNotice={showNotice} />}
           {page === "nodes" && <NodesPage onNotice={showNotice} />}
           {page === "blueprint" && <BlueprintPage onNotice={showNotice} />}

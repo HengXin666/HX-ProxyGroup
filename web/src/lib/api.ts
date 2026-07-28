@@ -446,6 +446,10 @@ export const api = {
     return request("/api/v1/dataplane/apply", { method: "POST" })
   },
 
+  overviewStreamURL(): string {
+    return "/api/v1/overview/stream"
+  },
+
   trafficSeries(resourceType: TrafficResourceType, resourceId: string, hours = 24): Promise<TrafficSeries> {
     const to = new Date()
     const from = new Date(to.getTime() - hours * 60 * 60 * 1000)

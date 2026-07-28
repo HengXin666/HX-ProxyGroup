@@ -256,6 +256,7 @@ func run(logger *slog.Logger) error {
 		api.WithSettings(settingsService),
 		api.WithRoutingRules(routingRulesService),
 		api.WithDataPlane(mihomoManager),
+		api.WithOverview(mihomoManager),
 		api.WithAuth(authService),
 		api.WithAlerts(alertService),
 		api.WithTerminal(terminalService),

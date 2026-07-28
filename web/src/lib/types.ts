@@ -346,6 +346,15 @@ export interface DataPlaneStatus {
   active_listeners: DataPlaneEndpoint[]
 }
 
+export interface OverviewSample {
+  timestamp: string
+  upload_bytes_per_second: number
+  download_bytes_per_second: number
+  active_connections: number
+  running: boolean
+  error_code?: string
+}
+
 export type TrafficResourceType = "listener" | "proxy_group" | "node"
 
 export interface TrafficSummary {

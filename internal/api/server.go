@@ -23,6 +23,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/node"
+	"github.com/HengXin666/HX-ProxyGroup/internal/overview"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxyservice"
 	"github.com/HengXin666/HX-ProxyGroup/internal/routingrules"
@@ -95,6 +96,11 @@ type SettingsService interface {
 type RoutingRulesService interface {
 	Get(context.Context) (routingrules.Config, error)
 	Update(context.Context, routingrules.Config) (routingrules.Config, error)
+}
+
+type OverviewService interface {
+	Status() mihomo.Status
+	OverviewSnapshot(context.Context) (overview.Snapshot, error)
 }
 
 type Option func(*Server) error
@@ -179,21 +185,33 @@ func WithRoutingRules(service RoutingRulesService) Option {
 	}
 }
 
+func WithOverview(service OverviewService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("overview service is required")
+		}
+		server.overview = service
+		return nil
+	}
+}
+
 type Server struct {
-	bundles       BundleService
-	subscriptions SubscriptionService
-	nodes         NodeService
-	proxyGroups   ProxyGroupService
-	listeners     ListenerService
-	proxyServices ProxyServiceService
-	settings      SettingsService
-	routingRules  RoutingRulesService
-	dataplane     DataPlaneService
-	auth          AuthService
-	alerts        AlertService
-	terminal      TerminalService
-	logger        *slog.Logger
-	ready         atomic.Bool
+	bundles          BundleService
+	subscriptions    SubscriptionService
+	nodes            NodeService
+	proxyGroups      ProxyGroupService
+	listeners        ListenerService
+	proxyServices    ProxyServiceService
+	settings         SettingsService
+	routingRules     RoutingRulesService
+	overview         OverviewService
+	dataplane        DataPlaneService
+	auth             AuthService
+	alerts           AlertService
+	terminal         TerminalService
+	logger           *slog.Logger
+	ready            atomic.Bool
+	overviewInterval time.Duration
 }
 
 type errorResponse struct {
@@ -213,7 +231,7 @@ func NewServer(bundles BundleService, logger *slog.Logger, options ...Option) (*
 	if logger == nil {
 		logger = slog.Default()
 	}
-	server := &Server{bundles: bundles, logger: logger}
+	server := &Server{bundles: bundles, logger: logger, overviewInterval: time.Second}
 	for _, option := range options {
 		if option == nil {
 			continue
@@ -270,6 +288,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.routingRules != nil {
 		mux.HandleFunc("/api/v1/routing-rules", s.handleRoutingRules)
+	}
+	if s.overview != nil {
+		mux.HandleFunc("/api/v1/overview/stream", s.handleOverviewStream)
 	}
 	if s.dataplane != nil {
 		mux.HandleFunc("/api/v1/dataplane/status", s.handleDataPlaneStatus)

@@ -26,6 +26,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxyservice"
 	"github.com/HengXin666/HX-ProxyGroup/internal/subscription"
+	"github.com/HengXin666/HX-ProxyGroup/internal/systemsettings"
 )
 
 type BundleService interface {
@@ -83,6 +84,11 @@ type DataPlaneService interface {
 
 type ProxyServiceService interface {
 	Create(context.Context, proxyservice.CreateRequest) (proxyservice.ServiceRecord, error)
+}
+
+type SettingsService interface {
+	Get(context.Context) (systemsettings.Settings, error)
+	Update(context.Context, systemsettings.Settings) (systemsettings.Settings, error)
 }
 
 type Option func(*Server) error
@@ -147,6 +153,16 @@ func WithProxyServices(service ProxyServiceService) Option {
 	}
 }
 
+func WithSettings(service SettingsService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("global settings service is required")
+		}
+		server.settings = service
+		return nil
+	}
+}
+
 type Server struct {
 	bundles       BundleService
 	subscriptions SubscriptionService
@@ -154,6 +170,7 @@ type Server struct {
 	proxyGroups   ProxyGroupService
 	listeners     ListenerService
 	proxyServices ProxyServiceService
+	settings      SettingsService
 	dataplane     DataPlaneService
 	auth          AuthService
 	alerts        AlertService
@@ -230,6 +247,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
+	}
+	if s.settings != nil {
+		mux.HandleFunc("/api/v1/settings", s.handleSettings)
 	}
 	if s.dataplane != nil {
 		mux.HandleFunc("/api/v1/dataplane/status", s.handleDataPlaneStatus)

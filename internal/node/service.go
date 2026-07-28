@@ -28,6 +28,8 @@ type Repository interface {
 	GetNode(context.Context, string) (store.NodeRecord, error)
 	GetNodeConfig(context.Context, string) (store.NodeConfigRecord, error)
 	RecordNodeQualityResult(context.Context, store.NodeQualityResult) (store.NodeRecord, error)
+	RecordNodeHealthResult(context.Context, store.NodeQualityResult) error
+	ListLatestNodeHealthResults(context.Context, []string) ([]store.NodeQualityCheckRecord, error)
 	DueNodeIDs(context.Context, time.Time, int) ([]string, error)
 	SetNodeLifecycleState(context.Context, string, string) error
 	GetMetadata(context.Context, string) (string, error)
@@ -52,28 +54,39 @@ func WithProber(prober Prober) Option {
 }
 
 type Node struct {
-	ID                       string     `json:"id"`
-	Fingerprint              string     `json:"fingerprint"`
-	DisplayName              string     `json:"display_name"`
-	Protocol                 string     `json:"protocol"`
-	LifecycleState           string     `json:"lifecycle_state"`
-	FirstSeenAt              time.Time  `json:"first_seen_at"`
-	LastSeenAt               time.Time  `json:"last_seen_at"`
-	RetiredAt                *time.Time `json:"retired_at,omitempty"`
-	LastCheckedAt            *time.Time `json:"last_checked_at,omitempty"`
-	LastLatencyMS            *int       `json:"last_latency_ms,omitempty"`
-	LastErrorCode            string     `json:"last_error_code,omitempty"`
-	LastErrorMessage         string     `json:"last_error_message,omitempty"`
-	ConsecutiveProbeFailures int        `json:"consecutive_probe_failures"`
-	Version                  int        `json:"version"`
-	SourceCount              int        `json:"source_count"`
-	Sources                  []Source   `json:"sources"`
+	ID                       string        `json:"id"`
+	Fingerprint              string        `json:"fingerprint"`
+	DisplayName              string        `json:"display_name"`
+	Protocol                 string        `json:"protocol"`
+	LifecycleState           string        `json:"lifecycle_state"`
+	FirstSeenAt              time.Time     `json:"first_seen_at"`
+	LastSeenAt               time.Time     `json:"last_seen_at"`
+	RetiredAt                *time.Time    `json:"retired_at,omitempty"`
+	LastCheckedAt            *time.Time    `json:"last_checked_at,omitempty"`
+	LastLatencyMS            *int          `json:"last_latency_ms,omitempty"`
+	LastErrorCode            string        `json:"last_error_code,omitempty"`
+	LastErrorMessage         string        `json:"last_error_message,omitempty"`
+	ConsecutiveProbeFailures int           `json:"consecutive_probe_failures"`
+	Version                  int           `json:"version"`
+	SourceCount              int           `json:"source_count"`
+	Sources                  []Source      `json:"sources"`
+	HealthChecks             []HealthCheck `json:"health_checks"`
 }
 
 type Source struct {
 	SubscriptionID   string `json:"subscription_id"`
 	SubscriptionName string `json:"subscription_name"`
 	SourceName       string `json:"source_name"`
+}
+
+type HealthCheck struct {
+	TargetID   string     `json:"target_id"`
+	TargetName string     `json:"target_name"`
+	URL        string     `json:"url"`
+	Success    bool       `json:"success"`
+	LatencyMS  *int       `json:"latency_ms,omitempty"`
+	CheckedAt  *time.Time `json:"checked_at,omitempty"`
+	ErrorCode  string     `json:"error_code,omitempty"`
 }
 
 type CheckResult struct {
@@ -156,6 +169,13 @@ func (s *Service) List(ctx context.Context, filter Filter) ([]Node, error) {
 		}
 		items = append(items, item)
 	}
+	settings, err := s.QualitySettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachHealthChecks(ctx, items, settings); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -215,7 +235,52 @@ func (s *Service) nodeWithSources(ctx context.Context, record store.NodeRecord) 
 			SourceName:       source.SourceName,
 		})
 	}
+	settings, err := s.QualitySettings(ctx)
+	if err != nil {
+		return Node{}, err
+	}
+	items := []Node{item}
+	if err := s.attachHealthChecks(ctx, items, settings); err != nil {
+		return Node{}, err
+	}
+	item = items[0]
 	return item, nil
+}
+
+func (s *Service) attachHealthChecks(ctx context.Context, items []Node, settings QualitySettings) error {
+	ids := make([]string, 0, len(items))
+	for index := range items {
+		ids = append(ids, items[index].ID)
+		items[index].HealthChecks = []HealthCheck{}
+	}
+	records, err := s.repository.ListLatestNodeHealthResults(ctx, ids)
+	if err != nil {
+		return err
+	}
+	targetsByURL := make(map[string]HealthTarget)
+	for _, target := range settings.HealthTargets {
+		if target.Enabled {
+			targetsByURL[target.URL] = target
+		}
+	}
+	checksByNode := make(map[string][]HealthCheck)
+	for _, record := range records {
+		target, exists := targetsByURL[record.TestURL]
+		if !exists {
+			continue
+		}
+		checkedAt := record.CheckedAt
+		checksByNode[record.NodeID] = append(checksByNode[record.NodeID], HealthCheck{
+			TargetID: target.ID, TargetName: target.Name, URL: target.URL,
+			Success: record.Success, LatencyMS: record.LatencyMS, CheckedAt: &checkedAt, ErrorCode: record.ErrorCode,
+		})
+	}
+	for index := range items {
+		if checks := checksByNode[items[index].ID]; checks != nil {
+			items[index].HealthChecks = checks
+		}
+	}
+	return nil
 }
 
 func (s *Service) Check(ctx context.Context, id string) (CheckResult, error) {
@@ -287,6 +352,11 @@ func (s *Service) checkPrepared(ctx context.Context, id string, settings Quality
 	if err != nil {
 		return CheckResult{}, err
 	}
+	if probeErr == nil {
+		if err := s.checkHealthTargets(ctx, config, settings, quality); err != nil {
+			return CheckResult{}, err
+		}
+	}
 	checkedNode, err := s.nodeWithSources(ctx, record)
 	if err != nil {
 		return CheckResult{}, err
@@ -301,6 +371,31 @@ func (s *Service) checkPrepared(ctx context.Context, id string, settings Quality
 		Error:     quality.ErrorMessage,
 	}
 	return result, nil
+}
+
+func (s *Service) checkHealthTargets(ctx context.Context, config store.NodeConfigRecord, settings QualitySettings, primary store.NodeQualityResult) error {
+	timeout := time.Duration(settings.TimeoutSeconds) * time.Second
+	for _, target := range settings.HealthTargets {
+		if !target.Enabled {
+			continue
+		}
+		if target.URL == primary.TestURL {
+			continue
+		}
+		checkedAt := s.now().UTC()
+		latency, probeErr := s.prober.TestProxy(ctx, config.Fingerprint, target.URL, timeout)
+		result := store.NodeQualityResult{NodeID: config.ID, CheckedAt: checkedAt, Success: probeErr == nil, TestURL: target.URL}
+		if probeErr == nil {
+			result.LatencyMS = &latency
+		} else {
+			result.ErrorCode = classifyProbeError(probeErr)
+			result.ErrorMessage = sanitizeProbeError(probeErr)
+		}
+		if err := s.repository.RecordNodeHealthResult(ctx, result); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) CheckMany(ctx context.Context, ids []string) ([]CheckResult, error) {
@@ -346,7 +441,7 @@ func (s *Service) CheckManyProgress(ctx context.Context, ids []string, notify fu
 	}
 	jobs := make(chan string)
 	results := make(chan CheckResult, len(ids))
-	workerCount := 4
+	workerCount := settings.ProbeConcurrency
 	if len(ids) < workerCount {
 		workerCount = len(ids)
 	}

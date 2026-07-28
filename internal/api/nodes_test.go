@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ type fakeNodeService struct {
 }
 
 func (service *fakeNodeService) QualitySettings(context.Context) (node.QualitySettings, error) {
-	if service.settings == (node.QualitySettings{}) {
+	if reflect.DeepEqual(service.settings, node.QualitySettings{}) {
 		return node.DefaultQualitySettings(), nil
 	}
 	return service.settings, nil

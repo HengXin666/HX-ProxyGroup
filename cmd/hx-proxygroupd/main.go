@@ -30,6 +30,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 	"github.com/HengXin666/HX-ProxyGroup/internal/subscription"
+	"github.com/HengXin666/HX-ProxyGroup/internal/systemsettings"
 	"github.com/HengXin666/HX-ProxyGroup/internal/terminal"
 	"github.com/HengXin666/HX-ProxyGroup/internal/transfer"
 )
@@ -112,6 +113,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	nodeService, err := node.NewService(database, node.WithProber(mihomoManager))
+	if err != nil {
+		return err
+	}
+	settingsService, err := systemsettings.NewService(database, mihomoManager)
 	if err != nil {
 		return err
 	}
@@ -243,6 +248,7 @@ func run(logger *slog.Logger) error {
 		api.WithProxyGroups(proxyGroupService),
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
+		api.WithSettings(settingsService),
 		api.WithDataPlane(mihomoManager),
 		api.WithAuth(authService),
 		api.WithAlerts(alertService),

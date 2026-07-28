@@ -11,6 +11,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
+	"github.com/HengXin666/HX-ProxyGroup/internal/systemsettings"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,6 +20,7 @@ type Repository interface {
 	ListListeners(context.Context) ([]store.ListenerRecord, error)
 	ListNodeConfigs(context.Context, []string) ([]store.NodeConfigRecord, error)
 	ListGroupNodeCandidates(context.Context) ([]store.GroupNodeCandidate, error)
+	GetMetadata(context.Context, string) (string, error)
 }
 
 type Cipher interface {
@@ -61,6 +63,10 @@ func (c *Compiler) setControllerSocket(path string) {
 }
 
 func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
+	settings, err := systemsettings.Load(ctx, c.repository)
+	if err != nil {
+		return Compiled{}, fmt.Errorf("load global settings: %w", err)
+	}
 	groups, err := c.repository.ListProxyGroups(ctx)
 	if err != nil {
 		return Compiled{}, err
@@ -152,26 +158,26 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 
 	document := map[string]any{
 		"mode":      "rule",
-		"log-level": "warning",
-		"ipv6":      false,
+		"log-level": settings.Performance.LogLevel,
+		"ipv6":      settings.DNS.IPv6,
 		"allow-lan": false,
-		// Without an explicit DNS section Mihomo falls back to the system
-		// resolver; a polluted system DNS silently breaks every node whose
-		// server is a domain name while IP-based nodes keep working.
 		"dns": map[string]any{
-			"enable":             true,
-			"ipv6":               false,
-			"enhanced-mode":      "normal",
-			"default-nameserver": []string{"223.5.5.5", "119.29.29.29"},
-			"nameserver": []string{
-				"https://223.5.5.5/dns-query",
-				"https://120.53.53.53/dns-query",
-			},
+			"enable":             settings.DNS.Enabled,
+			"ipv6":               settings.DNS.IPv6,
+			"enhanced-mode":      settings.DNS.EnhancedMode,
+			"default-nameserver": settings.DNS.DefaultNameserver,
+			"nameserver":         settings.DNS.Nameserver,
+			"fallback":           settings.DNS.Fallback,
 		},
-		"proxies":      proxies,
-		"proxy-groups": proxyGroups,
-		"listeners":    listenerConfigs,
-		"rules":        []string{"MATCH,DIRECT"},
+		"tcp-concurrent":      settings.Performance.TCPConcurrent,
+		"unified-delay":       settings.Performance.UnifiedDelay,
+		"keep-alive-idle":     settings.Performance.KeepAliveIdle,
+		"keep-alive-interval": settings.Performance.KeepAliveInterval,
+		"find-process-mode":   settings.Performance.FindProcessMode,
+		"proxies":             proxies,
+		"proxy-groups":        proxyGroups,
+		"listeners":           listenerConfigs,
+		"rules":               []string{"MATCH,DIRECT"},
 	}
 	if c.controllerSocket != "" {
 		document["external-controller-unix"] = c.controllerSocket

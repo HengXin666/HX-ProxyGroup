@@ -35,8 +35,6 @@ export function NodesPage({ onNotice }: NodesPageProps) {
   const [protocol, setProtocol] = useState("")
   const [state, setState] = useState("")
   const [settings, setSettings] = useState<NodeQualitySettings | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [savingSettings, setSavingSettings] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>("latency")
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc")
   const [batchProgress, setBatchProgress] = useState<{ completed: number; total: number } | null>(null)
@@ -45,20 +43,6 @@ export function NodesPage({ onNotice }: NodesPageProps) {
   useEffect(() => {
     api.nodeQualitySettings().then(setSettings).catch(() => setSettings(null))
   }, [])
-
-  async function saveSettings(next: NodeQualitySettings) {
-    setSavingSettings(true)
-    try {
-      const saved = await api.updateNodeQualitySettings(next)
-      setSettings(saved)
-      setSettingsOpen(false)
-      onNotice("质量检测设置已保存，下一轮扫描立即生效")
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : "保存检测设置失败", "error")
-    } finally {
-      setSavingSettings(false)
-    }
-  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -181,23 +165,14 @@ export function NodesPage({ onNotice }: NodesPageProps) {
             {batchProgress ? <Square /> : <Play />}
             {batchProgress ? `${batchProgress.completed}/${batchProgress.total}` : "批量测速"}
           </Button>
-          <Button variant="outline" onClick={() => setSettingsOpen((open) => !open)}>
-            <Settings2 />检测设置
+          <Button variant="outline" onClick={() => { window.location.hash = "/settings" }}>
+            <Settings2 />全局配置
           </Button>
           <Button variant="outline" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={loading ? "animate-spin" : ""} />刷新
           </Button>
         </div>
       </div>
-
-      {settingsOpen && (
-        <QualitySettingsForm
-          initial={settings}
-          saving={savingSettings}
-          onCancel={() => setSettingsOpen(false)}
-          onSave={(next) => void saveSettings(next)}
-        />
-      )}
 
       <div className="grid overflow-hidden rounded-lg border bg-white sm:grid-cols-4">
         <Metric label="健康" value={metrics.healthy} helper="最近测试成功且延迟正常" />
@@ -255,7 +230,7 @@ function NodeSubscriptionGroup({ name, sourceType, nodes, traffic, open, onToggl
     <Button variant="ghost" className="h-auto w-full justify-start rounded-none px-3 py-3 text-left" onClick={onToggle}>
       {open ? <ChevronDown /> : <ChevronRight />}<span className="flex size-8 items-center justify-center rounded-md border bg-white"><Radio className="size-4" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{name}</span><span className="block text-[11px] font-normal text-muted-foreground">{sourceType === "remote" ? "远程订阅" : sourceType === "file" ? "服务器文件" : "内联 / 自定义"}</span></span><Badge variant="secondary">{nodes.length} 个节点</Badge><Badge variant={healthy ? "success" : "secondary"}>{healthy} 健康</Badge>
     </Button>
-    {open && <div className="overflow-x-auto border-t"><table className="w-full min-w-[1080px] border-collapse text-left"><thead className="bg-muted text-xs text-muted-foreground"><tr><Th>节点</Th><Th>协议</Th><Th>状态</Th><Th>延迟</Th><Th>累计流量</Th><Th>失败次数</Th><Th>最近检测</Th><Th>指纹</Th><Th align="right">操作</Th></tr></thead><tbody className="divide-y">{nodes.length ? nodes.map((item) => <NodeRow key={item.id} item={item} traffic={traffic.get(item.id)} checking={Boolean(checking[item.id])} onCheck={() => void onCheck(item)} onToggle={() => void onToggleNode(item)} />) : <tr><td colSpan={9} className="px-4 py-8 text-center text-xs text-muted-foreground">该订阅当前没有匹配节点</td></tr>}</tbody></table></div>}
+    {open && <div className="overflow-x-auto border-t"><table className="w-full min-w-[1220px] border-collapse text-left"><thead className="bg-muted text-xs text-muted-foreground"><tr><Th>节点</Th><Th>协议</Th><Th>状态</Th><Th>延迟</Th><Th>站点健康</Th><Th>累计流量</Th><Th>失败次数</Th><Th>最近检测</Th><Th>指纹</Th><Th align="right">操作</Th></tr></thead><tbody className="divide-y">{nodes.length ? nodes.map((item) => <NodeRow key={item.id} item={item} traffic={traffic.get(item.id)} checking={Boolean(checking[item.id])} onCheck={() => void onCheck(item)} onToggle={() => void onToggleNode(item)} />) : <tr><td colSpan={10} className="px-4 py-8 text-center text-xs text-muted-foreground">该订阅当前没有匹配节点</td></tr>}</tbody></table></div>}
   </section>
 }
 
@@ -275,7 +250,11 @@ function errorCodeLabel(code?: string): string {
 }
 
 function normalizeNode(node: NodeRecord): NodeRecord {
-  return { ...node, sources: Array.isArray(node.sources) ? node.sources : [] }
+  return {
+    ...node,
+    sources: Array.isArray(node.sources) ? node.sources : [],
+    health_checks: Array.isArray(node.health_checks) ? node.health_checks : [],
+  }
 }
 
 function mergeCheckedNode(previous: NodeRecord, checked: NodeRecord): NodeRecord {
@@ -323,82 +302,6 @@ function formatInterval(seconds: number): string {
   return `${seconds} 秒`
 }
 
-const defaultSettings: NodeQualitySettings = {
-  check_interval_seconds: 600,
-  timeout_seconds: 8,
-  batch_size: 20,
-  test_url: "https://www.gstatic.com/generate_204",
-}
-
-function QualitySettingsForm({ initial, saving, onCancel, onSave }: {
-  initial: NodeQualitySettings | null
-  saving: boolean
-  onCancel: () => void
-  onSave: (next: NodeQualitySettings) => void
-}) {
-  const [form, setForm] = useState<NodeQualitySettings>(initial ?? defaultSettings)
-  useEffect(() => {
-    if (initial) setForm(initial)
-  }, [initial])
-  return (
-    <section className="rounded-lg border bg-white">
-      <div className="border-b bg-[#f6f8fa] px-4 py-2.5 text-sm font-medium">质量检测设置</div>
-      <div className="grid gap-3 px-4 py-3 sm:grid-cols-2 lg:grid-cols-4">
-        <SettingsField label="复测间隔（秒）" helper="节点上次检测超过该时长后自动复测，60–86400">
-          <Input
-            type="number"
-            min={60}
-            max={86400}
-            value={form.check_interval_seconds}
-            onChange={(event) => setForm({ ...form, check_interval_seconds: Number(event.target.value) })}
-          />
-        </SettingsField>
-        <SettingsField label="单次超时（秒）" helper="经代理访问测试 URL 的最长等待时间，1–30">
-          <Input
-            type="number"
-            min={1}
-            max={30}
-            value={form.timeout_seconds}
-            onChange={(event) => setForm({ ...form, timeout_seconds: Number(event.target.value) })}
-          />
-        </SettingsField>
-        <SettingsField label="每轮批量" helper="一次调度最多复测的节点数，1–200">
-          <Input
-            type="number"
-            min={1}
-            max={200}
-            value={form.batch_size}
-            onChange={(event) => setForm({ ...form, batch_size: Number(event.target.value) })}
-          />
-        </SettingsField>
-        <SettingsField label="测试 URL" helper="建议返回 204 的地址，如 gstatic / cloudflare">
-          <Input
-            value={form.test_url}
-            onChange={(event) => setForm({ ...form, test_url: event.target.value })}
-            placeholder="https://www.gstatic.com/generate_204"
-          />
-        </SettingsField>
-      </div>
-      <div className="flex items-center justify-end gap-2 border-t px-4 py-2.5">
-        <Button variant="ghost" onClick={onCancel} disabled={saving}>取消</Button>
-        <Button onClick={() => onSave(form)} disabled={saving}>
-          {saving && <LoaderCircle className="animate-spin" />}保存设置
-        </Button>
-      </div>
-    </section>
-  )
-}
-
-function SettingsField({ label, helper, children }: { label: string; helper: string; children: React.ReactNode }) {
-  return (
-    <label className="block text-xs">
-      <span className="font-medium text-foreground">{label}</span>
-      <div className="mt-1">{children}</div>
-      <span className="mt-1 block text-[11px] leading-4 text-muted-foreground">{helper}</span>
-    </label>
-  )
-}
-
 function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRecord; traffic?: TrafficSummary; checking: boolean; onCheck: () => void; onToggle: () => void }) {
   const state = stateMeta[item.lifecycle_state]
   const unavailable = item.lifecycle_state === "disabled" || item.lifecycle_state === "retired"
@@ -421,6 +324,7 @@ function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRec
       </div>
     </Td>
     <Td>{item.last_latency_ms == null ? "—" : <span className="inline-flex items-center gap-1 tabular-nums"><Gauge className="size-3.5" />{item.last_latency_ms} ms</span>}</Td>
+    <Td><div className="flex max-w-[260px] flex-wrap gap-1">{item.health_checks.length === 0 ? <span className="text-muted-foreground">—</span> : item.health_checks.map((check) => <Badge key={check.target_id} variant={check.success ? "success" : "destructive"} title={check.latency_ms == null ? check.url : `${check.url} · ${check.latency_ms} ms`}>{check.target_name}{check.latency_ms == null ? "" : ` ${check.latency_ms}ms`}</Badge>)}</div></Td>
     <Td><span className="tabular-nums" title={`下载 ${formatBytes(traffic?.download_bytes ?? 0)} / 上传 ${formatBytes(traffic?.upload_bytes ?? 0)}`}>{formatBytes((traffic?.download_bytes ?? 0) + (traffic?.upload_bytes ?? 0))}</span></Td>
     <Td><span className={cn("tabular-nums", item.consecutive_probe_failures > 0 && "text-[#a40e26]")}>{item.consecutive_probe_failures}</span></Td>
     <Td>{formatDate(item.last_checked_at)}</Td>

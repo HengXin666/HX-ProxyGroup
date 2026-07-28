@@ -115,6 +115,17 @@ export interface NodeRecord {
     subscription_name: string
     source_name: string
   }>
+  health_checks: NodeHealthCheck[]
+}
+
+export interface NodeHealthCheck {
+  target_id: string
+  target_name: string
+  url: string
+  success: boolean
+  latency_ms?: number
+  checked_at?: string
+  error_code?: string
 }
 
 export interface NodeCheckResult {
@@ -142,6 +153,40 @@ export interface NodeCheckProgress {
   total: number
   node_id: string
   result: NodeCheckResult
+}
+
+export interface HealthTarget {
+  id: string
+  name: string
+  url: string
+  enabled: boolean
+}
+
+export interface GlobalSettings {
+  quality: {
+    check_interval_seconds: number
+    timeout_seconds: number
+    batch_size: number
+    probe_concurrency: number
+    test_url: string
+    health_targets: HealthTarget[]
+  }
+  dns: {
+    enabled: boolean
+    ipv6: boolean
+    enhanced_mode: "normal" | "fake-ip" | "redir-host"
+    default_nameserver: string[]
+    nameserver: string[]
+    fallback: string[]
+  }
+  performance: {
+    tcp_concurrent: boolean
+    unified_delay: boolean
+    keep_alive_idle_seconds: number
+    keep_alive_interval_seconds: number
+    find_process_mode: "off" | "strict" | "always"
+    log_level: "silent" | "error" | "warning" | "info" | "debug"
+  }
 }
 
 export type ProxyGroupStrategy = "manual" | "url-test" | "fallback" | "round-robin" | "consistent-hashing" | "sticky-sessions"

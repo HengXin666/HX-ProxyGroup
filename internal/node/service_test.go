@@ -17,6 +17,7 @@ type fakeProber struct {
 	latency int
 	err     error
 	applies int
+	urls    []string
 }
 
 func (prober *fakeProber) Apply(context.Context) error {
@@ -24,7 +25,8 @@ func (prober *fakeProber) Apply(context.Context) error {
 	return nil
 }
 
-func (prober *fakeProber) TestProxy(context.Context, string, string, time.Duration) (int, error) {
+func (prober *fakeProber) TestProxy(_ context.Context, _ string, url string, _ time.Duration) (int, error) {
+	prober.urls = append(prober.urls, url)
 	return prober.latency, prober.err
 }
 
@@ -100,6 +102,36 @@ func TestCheckResultKeepsNodeSources(t *testing.T) {
 	}
 	if len(result.Node.Sources) != 1 || result.Node.Sources[0].SubscriptionID == "" {
 		t.Fatalf("sources = %+v, want active subscription source", result.Node.Sources)
+	}
+}
+
+func TestCheckRecordsConfiguredSiteHealthWithoutChangingPrimaryState(t *testing.T) {
+	ctx := context.Background()
+	database, nodeID := createCandidateNode(t, ctx)
+	defer database.Close()
+	prober := &fakeProber{latency: 55}
+	service, err := NewService(database, WithProber(prober))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := DefaultQualitySettings()
+	settings.HealthTargets = []HealthTarget{{ID: "github", Name: "GitHub", URL: "https://github.com/", Enabled: true}}
+	if _, err := service.UpdateQualitySettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Check(ctx, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Node.LifecycleState != "healthy" || len(result.Node.HealthChecks) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	check := result.Node.HealthChecks[0]
+	if check.TargetID != "github" || !check.Success || check.LatencyMS == nil || *check.LatencyMS != 55 {
+		t.Fatalf("health check = %+v", check)
+	}
+	if len(prober.urls) != 2 || prober.urls[1] != "https://github.com/" {
+		t.Fatalf("probe URLs = %v", prober.urls)
 	}
 }
 

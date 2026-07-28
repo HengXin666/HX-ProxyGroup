@@ -8,6 +8,7 @@ import {
   Network,
   Radio,
   Route,
+  Settings2,
   TerminalSquare,
   Workflow,
   X,
@@ -21,10 +22,11 @@ import { AuthPage } from "@/pages/auth-page"
 import { BlueprintPage } from "@/pages/blueprint-page"
 import { NodesPage } from "@/pages/nodes-page"
 import { RoutingPage } from "@/pages/routing-page"
+import { SettingsPage } from "@/pages/settings-page"
 import { SubscriptionsPage } from "@/pages/subscriptions-page"
 import { TerminalPage } from "@/pages/terminal-page"
 
-type Page = "subscriptions" | "nodes" | "blueprint" | "routing" | "alerts" | "artifacts" | "terminal"
+type Page = "subscriptions" | "nodes" | "blueprint" | "routing" | "settings" | "alerts" | "artifacts" | "terminal"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 
 const pages: Array<{
@@ -37,6 +39,7 @@ const pages: Array<{
   { id: "nodes", label: "节点", description: "解析与生命周期", icon: Network },
   { id: "blueprint", label: "蓝图编排", description: "可视化代理链路", icon: Workflow },
   { id: "routing", label: "代理服务", description: "代理组与 Listener", icon: Route },
+  { id: "settings", label: "全局配置", description: "测速、DNS 与性能", icon: Settings2 },
   { id: "alerts", label: "告警", description: "状态与邮件通知", icon: BellRing },
   { id: "artifacts", label: "备份", description: "Backup 与 Export", icon: Archive },
   { id: "terminal", label: "终端", description: "v2 · 服务器 Shell", icon: TerminalSquare },
@@ -239,6 +242,7 @@ export default function App() {
           {page === "nodes" && <NodesPage onNotice={showNotice} />}
           {page === "blueprint" && <BlueprintPage onNotice={showNotice} />}
           {page === "routing" && <RoutingPage onNotice={showNotice} />}
+          {page === "settings" && <SettingsPage onNotice={showNotice} />}
           {page === "alerts" && <AlertsPage onNotice={showNotice} />}
           {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
           {page === "terminal" && <TerminalPage onNotice={showNotice} />}

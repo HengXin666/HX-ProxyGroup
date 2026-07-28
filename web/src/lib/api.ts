@@ -9,6 +9,7 @@ import type {
   CreateProxyServiceRequest,
   CreateSubscriptionRequest,
   DataPlaneStatus,
+  GlobalSettings,
   ListenerList,
   ListenerRecord,
   NodeCheckResult,
@@ -141,7 +142,9 @@ export type NodeQualitySettings = {
   check_interval_seconds: number
   timeout_seconds: number
   batch_size: number
+  probe_concurrency: number
   test_url: string
+  health_targets: GlobalSettings["quality"]["health_targets"]
 }
 
 export type AuthStatus = {
@@ -283,6 +286,17 @@ export const api = {
 
   updateNodeQualitySettings(payload: NodeQualitySettings): Promise<NodeQualitySettings> {
     return request("/api/v1/node-settings", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  globalSettings(): Promise<GlobalSettings> {
+    return request("/api/v1/settings")
+  },
+
+  updateGlobalSettings(payload: GlobalSettings): Promise<GlobalSettings> {
+    return request("/api/v1/settings", {
       method: "PUT",
       body: JSON.stringify(payload),
     })

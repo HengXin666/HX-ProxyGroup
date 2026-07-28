@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,83 @@ type NodeQualityResult struct {
 	TestURL      string
 	ErrorCode    string
 	ErrorMessage string
+}
+
+type NodeQualityCheckRecord struct {
+	NodeQualityResult
+	ID int64
+}
+
+func (s *Store) RecordNodeHealthResult(ctx context.Context, result NodeQualityResult) error {
+	var latency any
+	if result.LatencyMS != nil {
+		latency = *result.LatencyMS
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO node_quality_checks(
+    node_id, checked_at, success, latency_ms, test_url, error_code, error_message
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+`, result.NodeID, result.CheckedAt.UTC().Format(time.RFC3339Nano), boolToInteger(result.Success), latency, result.TestURL, result.ErrorCode, result.ErrorMessage)
+	if isForeignKeyConstraint(err) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("insert node health result: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListLatestNodeHealthResults(ctx context.Context, nodeIDs []string) ([]NodeQualityCheckRecord, error) {
+	if len(nodeIDs) == 0 {
+		return []NodeQualityCheckRecord{}, nil
+	}
+	if len(nodeIDs) > 1000 {
+		return nil, errors.New("at most 1000 node health result sets can be listed")
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(nodeIDs)), ",")
+	arguments := make([]any, len(nodeIDs))
+	for index, id := range nodeIDs {
+		arguments[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT q.id, q.node_id, q.checked_at, q.success, q.latency_ms, q.test_url, q.error_code, q.error_message
+FROM node_quality_checks q
+WHERE q.node_id IN (`+placeholders+`)
+  AND NOT EXISTS (
+      SELECT 1 FROM node_quality_checks newer
+      WHERE newer.node_id = q.node_id AND newer.test_url = q.test_url
+        AND (newer.checked_at > q.checked_at OR (newer.checked_at = q.checked_at AND newer.id > q.id))
+  )
+ORDER BY q.node_id, q.test_url
+`, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("list latest node health results: %w", err)
+	}
+	defer rows.Close()
+	records := make([]NodeQualityCheckRecord, 0)
+	for rows.Next() {
+		var record NodeQualityCheckRecord
+		var checkedAt string
+		var success int
+		var latency sql.NullInt64
+		if err := rows.Scan(&record.ID, &record.NodeID, &checkedAt, &success, &latency, &record.TestURL, &record.ErrorCode, &record.ErrorMessage); err != nil {
+			return nil, fmt.Errorf("scan latest node health result: %w", err)
+		}
+		record.Success = success == 1
+		if latency.Valid {
+			value := int(latency.Int64)
+			record.LatencyMS = &value
+		}
+		record.CheckedAt, err = time.Parse(time.RFC3339Nano, checkedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse latest node health result time: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate latest node health results: %w", err)
+	}
+	return records, nil
 }
 
 func (s *Store) RecordNodeQualityResult(ctx context.Context, result NodeQualityResult) (NodeRecord, error) {

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -20,7 +21,7 @@ func TestQualitySettingsDefaultsAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QualitySettings() error = %v", err)
 	}
-	if settings != DefaultQualitySettings() {
+	if !reflect.DeepEqual(settings, DefaultQualitySettings()) {
 		t.Fatalf("initial settings = %+v, want defaults", settings)
 	}
 
@@ -41,7 +42,7 @@ func TestQualitySettingsDefaultsAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded != updated {
+	if !reflect.DeepEqual(reloaded, updated) {
 		t.Fatalf("reloaded settings = %+v, want %+v", reloaded, updated)
 	}
 }

@@ -19,7 +19,7 @@ var (
 	ErrInvalid  = errors.New("invalid proxy group")
 )
 
-const defaultTestURL = "https://www.gstatic.com/generate_204"
+const defaultTestURL = "http://cp.cloudflare.com/generate_204"
 
 type Repository interface {
 	CreateProxyGroup(context.Context, store.ProxyGroupRecord) (store.ProxyGroupRecord, error)

@@ -119,7 +119,7 @@ export function TerminalPage({
           <div className="font-medium">终端功能未启用</div>
           <p className="mt-1 text-xs leading-5">
             浏览器终端默认关闭。请在服务端以环境变量{" "}
-            <code className="rounded bg-white/60 px-1">HX_PROXYGROUP_TERMINAL=1</code>{" "}
+            <code className="rounded bg-card/60 px-1">HX_PROXYGROUP_TERMINAL=1</code>{" "}
             启动控制面后刷新本页。启用后仍需管理员登录才能连接。
           </p>
         </div>
@@ -140,10 +140,10 @@ export function TerminalPage({
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-md border bg-white">
-        <header className="flex items-center justify-between gap-2 border-b bg-[#f6f8fa] px-3 py-2">
+      <section className="overflow-hidden rounded-md border bg-card">
+        <header className="flex items-center justify-between gap-2 border-b bg-muted/60 px-3 py-2">
           <div className="flex items-center gap-2 text-sm font-medium">
-            <TerminalSquare className="size-4 text-[#57606a]" />
+            <TerminalSquare className="size-4 text-muted-foreground" />
             服务器终端
             <ConnectionBadge state={connection} />
           </div>
@@ -152,7 +152,7 @@ export function TerminalPage({
               <button
                 type="button"
                 onClick={disconnect}
-                className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs hover:bg-white"
+                className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs hover:bg-card"
               >
                 <Square className="size-3.5" />
                 断开
@@ -170,7 +170,7 @@ export function TerminalPage({
             )}
           </div>
         </header>
-        <div ref={containerRef} className="h-[480px] w-full bg-white p-2" />
+        <div ref={containerRef} className="h-[480px] w-full bg-card p-2" />
       </section>
     </div>
   )
@@ -189,10 +189,10 @@ function PageHeader() {
 
 function ConnectionBadge({ state }: { state: ConnectionState }) {
   const meta: Record<ConnectionState, { label: string; className: string }> = {
-    idle: { label: "未连接", className: "border-[#d0d7de] bg-white text-[#57606a]" },
+    idle: { label: "未连接", className: "border-[#d0d7de] bg-card text-muted-foreground" },
     connecting: { label: "连接中", className: "border-[#d4a72c66] bg-[#fff8c5] text-[#7d4e00]" },
     connected: { label: "已连接", className: "border-[#aceebb] bg-[#dafbe1] text-[#116329]" },
-    closed: { label: "已断开", className: "border-[#d0d7de] bg-[#f6f8fa] text-[#57606a]" },
+    closed: { label: "已断开", className: "border-[#d0d7de] bg-muted/60 text-muted-foreground" },
   }
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] ${meta[state].className}`}>

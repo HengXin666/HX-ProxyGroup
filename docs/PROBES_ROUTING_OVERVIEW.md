@@ -1,6 +1,6 @@
-# 节点检测、路由规则与实时总览
+# 节点检测、站点别名与实时总览
 
-本文记录节点检测、全局运行配置、路由规则集和实时总览的当前实现边界。HX-ProxyGroup 仍是控制面；所有代理转发、规则匹配和连接计数由 Mihomo 数据面完成。
+本文记录节点检测、全局运行配置、站点别名、代理组独立路由和实时总览的当前实现边界。HX-ProxyGroup 仍是控制面；所有代理转发、规则匹配和连接计数由 Mihomo 数据面完成。
 
 ## 1. 节点检测
 
@@ -11,13 +11,14 @@
 - `POST /api/v1/nodes?stream=1` 返回 NDJSON；每完成一个节点立即返回一次进度。
 - 前端逐个填充延迟、健康站点结果和错误状态，并按当前排序选项重新排序。
 - 单击节点行只检测该节点；离开页面或开始新一轮批量检测会取消旧请求。
-- 节点页的速度值是经指定代理执行 HTTP 探测得到的延迟，单位为毫秒，不代表下载吞吐量。
+- 节点页的数值是经指定代理执行 HTTP 探测得到的 URL 延迟，单位为毫秒，不代表下载吞吐量，也不是 ICMP ping。
+- 默认口径与 Clash Verge Rev 一致：`http://cp.cloudflare.com/generate_204`、10 秒超时。旧版未自定义的 Google 204/8 秒默认值会自动迁移。
 
 复测响应中的 `sources` 和 `health_checks` 始终按空数组处理，避免空值导致页面崩溃。流量统计接口不可用时，节点列表仍可独立加载。
 
 ### 1.2 健康站点
 
-全局配置页提供 ChatGPT、Claude、GitHub、Google、Telegram 默认目标，也允许新增自定义 HTTP/HTTPS URL。附加站点探测只记录站点健康度，不改变节点的主生命周期结果。
+全局配置页提供 ChatGPT、Claude、GitHub、Google、Telegram 默认目标，也允许新增自定义 HTTP/HTTPS URL。页面显示目标站点 favicon，并可手工对全部已启用站点执行节点 URL Test，汇总每个站点的成功节点数。附加站点探测只记录站点健康度，不改变节点的主生命周期结果。
 
 为降低 SSRF 风险，配置拒绝指向字面量私网、环回、链路本地和其他特殊用途 IP 的探测地址。域名解析、重定向目标变化和 DNS Rebinding 仍需在后续版本中加入逐跳解析校验。
 
@@ -31,9 +32,9 @@
 
 配置保存在 SQLite Desired State 中。更新时先校验完整候选配置，再调用 Mihomo Apply；应用失败会恢复旧设置并重新应用上一版。编译器使用结构化对象生成 YAML，不通过字符串拼接配置。
 
-## 3. 路由规则集
+## 3. 站点别名与代理组路由
 
-`GET /api/v1/routing-rules` 和 `PUT /api/v1/routing-rules` 管理可复用的全局规则集。规则集具有稳定 ID、优先级、启用状态、目标动作和适用代理组。
+`GET /api/v1/routing-rules` 和 `PUT /api/v1/routing-rules` 管理可复用的全局站点别名。别名具有稳定 ID、优先级、启用状态和网页匹配项。
 
 支持的规则类型：
 
@@ -41,7 +42,7 @@
 - `ip_cidr`、`geoip`、`geosite`
 - `process_name`、`network`、`dst_port`
 
-动作可以是 `REJECT`、`DIRECT` 或指定 Proxy Group。空的 `applied_group_ids` 表示全局规则；指定代理组时，编译器根据该组的 Listener 生成 Mihomo `IN-NAME` 条件。广告和垃圾域名应使用 `REJECT`，无需启动不存在的本地网站，也不会让控制面处理被拒绝的流量。
+动作不在全局页面配置。每个代理组的“路由策略”标签页独立决定是否引用某个站点别名，并选择 `REJECT`、`DIRECT` 或指定 Proxy Group。同一个别名可以在不同代理组使用不同动作。编译器根据该组 Listener 生成 Mihomo `IN-NAME` 条件；旧版全局动作配置仍可读取，并在首次从代理组保存时转换为逐组绑定。
 
 保存流程会校验规则值、动作引用和代理组引用，生成稳定优先级顺序的完整候选配置，并在 Mihomo Apply 失败时回滚。最终兜底规则固定为 `MATCH,DIRECT`。
 

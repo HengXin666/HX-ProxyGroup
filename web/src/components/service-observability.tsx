@@ -45,13 +45,13 @@ export function TrafficPanel({ listenerId, groupId, nodes }: { listenerId: strin
 
   const summary = listener?.summary
   return <div className="space-y-3">
-    <div className="grid overflow-hidden rounded-md border bg-white sm:grid-cols-4">
+    <div className="grid overflow-hidden rounded-md border bg-card sm:grid-cols-4">
       <TrafficMetric icon={ArrowDownToLine} label="下载" value={formatBytes(summary?.download_bytes ?? 0)} />
       <TrafficMetric icon={ArrowUpFromLine} label="上传" value={formatBytes(summary?.upload_bytes ?? 0)} border />
       <TrafficMetric icon={Activity} label="累计连接" value={String(summary?.connection_count ?? 0)} border />
       <TrafficMetric icon={CirclePlay} label="活动连接" value={String(summary?.active_connections ?? 0)} border />
     </div>
-    <div className="rounded-md border bg-white px-3 py-3">
+    <div className="rounded-md border bg-card px-3 py-3">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div><div className="text-xs font-semibold">最近 24 小时</div><div className="mt-0.5 text-[11px] text-muted-foreground">每分钟聚合，15 秒自动刷新</div></div>
         <Button variant="ghost" size="icon" onClick={() => void load()} aria-label="刷新流量统计"><RefreshCw className="size-3.5" /></Button>
@@ -59,7 +59,7 @@ export function TrafficPanel({ listenerId, groupId, nodes }: { listenerId: strin
       <TrafficBars points={listener?.points ?? []} />
       <div className="mt-2 text-[11px] text-muted-foreground">最近持久化：{formatDate(summary?.updated_at)}{group && ` · 代理组累计 ${formatBytes(group.summary.upload_bytes + group.summary.download_bytes)}`}</div>
     </div>
-    <div className="overflow-x-auto rounded-md border bg-white">
+    <div className="overflow-x-auto rounded-md border bg-card">
       <table className="w-full min-w-[680px] text-left text-xs">
         <thead className="bg-muted text-muted-foreground"><tr><Th>节点</Th><Th>下载</Th><Th>上传</Th><Th>连接</Th><Th>最后统计</Th></tr></thead>
         <tbody className="divide-y">{nodes.length ? nodes.map((node) => {
@@ -117,11 +117,11 @@ export function LiveLogsPanel({ listenerId }: { listenerId: string }) {
   return <div className="overflow-hidden rounded-md border bg-[#101816] text-[#d8e5e1]">
     <div className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-[#16211e] px-3 py-2">
       <Badge variant={status === "connected" ? "success" : "warning"}>{status === "connected" ? "实时连接" : status === "connecting" ? "正在连接" : "正在重连"}</Badge>
-      <div className="w-32"><Select value={level} onValueChange={setLevel}><SelectTrigger className="border-white/15 bg-white/5 text-[#d8e5e1]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部级别</SelectItem><SelectItem value="info">Info 及以上</SelectItem><SelectItem value="warning">Warning 及以上</SelectItem><SelectItem value="error">仅 Error</SelectItem></SelectContent></Select></div>
+      <div className="w-32"><Select value={level} onValueChange={setLevel}><SelectTrigger className="border-white/15 bg-card/5 text-[#d8e5e1]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部级别</SelectItem><SelectItem value="info">Info 及以上</SelectItem><SelectItem value="warning">Warning 及以上</SelectItem><SelectItem value="error">仅 Error</SelectItem></SelectContent></Select></div>
       <span className="text-[11px] text-[#8fa39d]">保留最近 {events.length}/200 条</span>
       <div className="ml-auto flex gap-1">
-        <Button variant="ghost" size="sm" className="text-[#d8e5e1] hover:bg-white/10 hover:text-white" onClick={() => setPaused((value) => !value)}>{paused ? <CirclePlay /> : <CirclePause />}{paused ? "继续" : "暂停"}</Button>
-        <Button variant="ghost" size="sm" className="text-[#d8e5e1] hover:bg-white/10 hover:text-white" onClick={() => setEvents([])}><Eraser />清空</Button>
+        <Button variant="ghost" size="sm" className="text-[#d8e5e1] hover:bg-card/10 hover:text-white" onClick={() => setPaused((value) => !value)}>{paused ? <CirclePlay /> : <CirclePause />}{paused ? "继续" : "暂停"}</Button>
+        <Button variant="ghost" size="sm" className="text-[#d8e5e1] hover:bg-card/10 hover:text-white" onClick={() => setEvents([])}><Eraser />清空</Button>
       </div>
     </div>
     <div className="h-72 overflow-auto p-3 font-mono text-[11px] leading-5">

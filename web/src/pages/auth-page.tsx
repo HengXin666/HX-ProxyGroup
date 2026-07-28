@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from "react"
-import { KeyRound, Network, ShieldCheck } from "lucide-react"
+import { KeyRound, LoaderCircle, Network, ShieldCheck } from "lucide-react"
 
+import { ThemeToggle } from "@/components/theme-toggle"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { ApiError, api } from "@/lib/api"
 
 export function AuthPage({
@@ -40,6 +43,7 @@ export function AuthPage({
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="fixed right-4 top-4"><ThemeToggle /></div>
       <div className="w-full max-w-sm">
         <div className="mb-5 flex items-center justify-center gap-2.5">
           <div className="flex size-9 items-center justify-center rounded-md bg-[#24292f] text-white">
@@ -53,7 +57,7 @@ export function AuthPage({
 
         <form
           onSubmit={submit}
-          className="space-y-3 rounded-md border bg-white p-4 shadow-[0_1px_0_rgba(31,35,40,0.04)]"
+          className="space-y-3 rounded-md border bg-card p-4 shadow-[0_1px_0_rgba(31,35,40,0.04)]"
         >
           <div className="flex items-center gap-2 text-sm font-medium">
             {configured ? (
@@ -67,18 +71,18 @@ export function AuthPage({
           {!configured && (
             <>
               <p className="text-xs leading-5 text-muted-foreground">
-                服务尚未配置管理员。请粘贴数据目录中 <code className="rounded bg-[#f6f8fa] px-1">admin-setup-token</code>{" "}
+                服务尚未配置管理员。请粘贴数据目录中 <code className="rounded bg-muted/60 px-1">admin-setup-token</code>{" "}
                 文件的内容完成初始化。初始化前管理 API 仅监听环回地址。
               </p>
               <label className="block text-xs font-medium">
                 一次性初始化 Token
-                <input
+                <Input
                   type="password"
                   value={setupToken}
                   onChange={(event) => setSetupToken(event.target.value)}
                   required
                   autoComplete="off"
-                  className="mt-1 w-full rounded-md border px-2.5 py-1.5 text-sm focus:border-[#0969da] focus:outline-none"
+                  className="mt-1"
                 />
               </label>
             </>
@@ -86,7 +90,7 @@ export function AuthPage({
 
           <label className="block text-xs font-medium">
             用户名
-            <input
+            <Input
               type="text"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
@@ -94,13 +98,13 @@ export function AuthPage({
               minLength={3}
               maxLength={64}
               autoComplete="username"
-              className="mt-1 w-full rounded-md border px-2.5 py-1.5 text-sm focus:border-[#0969da] focus:outline-none"
+              className="mt-1"
             />
           </label>
 
           <label className="block text-xs font-medium">
             密码
-            <input
+            <Input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -108,7 +112,7 @@ export function AuthPage({
               minLength={configured ? 1 : 10}
               maxLength={128}
               autoComplete={configured ? "current-password" : "new-password"}
-              className="mt-1 w-full rounded-md border px-2.5 py-1.5 text-sm focus:border-[#0969da] focus:outline-none"
+              className="mt-1"
             />
           </label>
           {!configured && (
@@ -121,13 +125,13 @@ export function AuthPage({
             </div>
           )}
 
-          <button
+          <Button
             type="submit"
             disabled={busy}
-            className="w-full rounded-md bg-[#1f883d] px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#1a7f37] disabled:opacity-60"
+            className="w-full"
           >
-            {busy ? "处理中…" : configured ? "登录" : "初始化并登录"}
-          </button>
+            {busy && <LoaderCircle className="animate-spin" />}{busy ? "处理中…" : configured ? "登录" : "初始化并登录"}
+          </Button>
         </form>
       </div>
     </div>

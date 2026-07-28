@@ -207,7 +207,7 @@ score = availability_score
 - [x] `sticky-sessions`：使用 Mihomo Load Balance 会话粘滞策略。
 - [ ] `random`：当前 Mihomo 版本未在本控制面开放该策略。
 - [x] 策略变更经过完整配置编译、`mihomo -t` 校验、原子发布、就绪检查和失败回滚。
-- [x] 支持可复用的全局或代理组作用域路由规则集，并路由到 `REJECT`、`DIRECT` 或指定 Proxy Group。
+- [x] 支持全局站点别名与逐 Proxy Group 独立路由动作，并路由到 `REJECT`、`DIRECT` 或指定 Proxy Group。
 
 ### 5.3 会话模式
 

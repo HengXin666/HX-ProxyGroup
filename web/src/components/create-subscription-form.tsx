@@ -117,7 +117,7 @@ export function CreateSubscriptionForm({ subscription, onSaved, onCancel, onErro
             <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
               <Field label="订阅名称"><Input value={name} onChange={(event) => setName(event.target.value)} maxLength={128} autoFocus required /></Field>
               <Field label="运行状态">
-                <label className="flex h-8 items-center gap-2 rounded-md border bg-white px-2.5 text-xs"><Checkbox checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />启用自动刷新</label>
+                <label className="flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-xs"><Checkbox checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />启用自动刷新</label>
               </Field>
             </div>
 

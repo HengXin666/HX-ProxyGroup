@@ -41,13 +41,25 @@ type Action struct {
 	ProxyGroupID string `json:"proxy_group_id,omitempty"`
 }
 
+// GroupRoute assigns one reusable site alias to one proxy group's inbound
+// traffic. The action belongs to the group assignment, not the global alias,
+// so the same site group can be DIRECT in one proxy group and rejected or
+// forwarded to another proxy group elsewhere.
+type GroupRoute struct {
+	ProxyGroupID string `json:"proxy_group_id"`
+	Action       Action `json:"action"`
+}
+
 type RuleSet struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Enabled         bool     `json:"enabled"`
-	Priority        int      `json:"priority"`
-	AppliedGroupIDs []string `json:"applied_group_ids"`
-	Action          Action   `json:"action"`
+	ID       string       `json:"id"`
+	Name     string       `json:"name"`
+	Enabled  bool         `json:"enabled"`
+	Priority int          `json:"priority"`
+	Routes   []GroupRoute `json:"routes,omitempty"`
+	// AppliedGroupIDs and Action are retained for reading v1 configurations.
+	// New clients use Routes so actions can vary per proxy group.
+	AppliedGroupIDs []string `json:"applied_group_ids,omitempty"`
+	Action          Action   `json:"action,omitempty"`
 	Rules           []Rule   `json:"rules"`
 }
 
@@ -155,18 +167,40 @@ func Validate(config Config, groups []store.ProxyGroupRecord) error {
 				return fmt.Errorf("%w: rule set %q references missing applied group", ErrInvalid, set.ID)
 			}
 		}
-		if set.Action.Type != "reject" && set.Action.Type != "direct" && set.Action.Type != "proxy_group" {
-			return fmt.Errorf("%w: rule set %q action is invalid", ErrInvalid, set.ID)
+		if len(set.Routes) == 0 && set.Action.Type != "" {
+			if err := validateAction(set.ID, set.Action, groupIDs); err != nil {
+				return err
+			}
 		}
-		if set.Action.Type == "proxy_group" {
-			if _, exists := groupIDs[set.Action.ProxyGroupID]; !exists {
-				return fmt.Errorf("%w: rule set %q target group is missing", ErrInvalid, set.ID)
+		routeGroups := make(map[string]struct{}, len(set.Routes))
+		for _, route := range set.Routes {
+			if _, exists := groupIDs[route.ProxyGroupID]; !exists {
+				return fmt.Errorf("%w: rule set %q references missing proxy group", ErrInvalid, set.ID)
+			}
+			if _, duplicate := routeGroups[route.ProxyGroupID]; duplicate {
+				return fmt.Errorf("%w: rule set %q has duplicate proxy group routes", ErrInvalid, set.ID)
+			}
+			routeGroups[route.ProxyGroupID] = struct{}{}
+			if err := validateAction(set.ID, route.Action, groupIDs); err != nil {
+				return err
 			}
 		}
 		for _, rule := range set.Rules {
 			if err := validateRule(rule); err != nil {
 				return fmt.Errorf("%w: rule set %q: %v", ErrInvalid, set.ID, err)
 			}
+		}
+	}
+	return nil
+}
+
+func validateAction(setID string, action Action, groups map[string]struct{}) error {
+	if action.Type != "reject" && action.Type != "direct" && action.Type != "proxy_group" {
+		return fmt.Errorf("%w: rule set %q action is invalid", ErrInvalid, setID)
+	}
+	if action.Type == "proxy_group" {
+		if _, exists := groups[action.ProxyGroupID]; !exists {
+			return fmt.Errorf("%w: rule set %q target group is missing", ErrInvalid, setID)
 		}
 	}
 	return nil
@@ -188,6 +222,20 @@ func Compile(config Config, groups []store.ProxyGroupRecord, listeners []store.L
 	compiled := make([]string, 0)
 	for _, set := range config.RuleSets {
 		if !set.Enabled {
+			continue
+		}
+		if len(set.Routes) > 0 {
+			for _, route := range set.Routes {
+				action := actionName(route.Action, groupNames)
+				for _, inbound := range inboundNames([]string{route.ProxyGroupID}, listeners, listenerName) {
+					for _, rule := range set.Rules {
+						compiled = append(compiled, "AND,((IN-NAME,"+inbound+"),("+matcherText(rule)+")),"+action)
+					}
+				}
+			}
+			continue
+		}
+		if set.Action.Type == "" {
 			continue
 		}
 		action := actionName(set.Action, groupNames)
@@ -276,6 +324,14 @@ func normalize(config *Config) {
 		set.Action.Type = strings.ToLower(strings.TrimSpace(set.Action.Type))
 		set.Action.ProxyGroupID = strings.TrimSpace(set.Action.ProxyGroupID)
 		set.AppliedGroupIDs = uniqueSorted(set.AppliedGroupIDs)
+		for routeIndex := range set.Routes {
+			set.Routes[routeIndex].ProxyGroupID = strings.TrimSpace(set.Routes[routeIndex].ProxyGroupID)
+			set.Routes[routeIndex].Action.Type = strings.ToLower(strings.TrimSpace(set.Routes[routeIndex].Action.Type))
+			set.Routes[routeIndex].Action.ProxyGroupID = strings.TrimSpace(set.Routes[routeIndex].Action.ProxyGroupID)
+		}
+		sort.Slice(set.Routes, func(left, right int) bool {
+			return set.Routes[left].ProxyGroupID < set.Routes[right].ProxyGroupID
+		})
 		for ruleIndex := range set.Rules {
 			set.Rules[ruleIndex].Type = strings.ToLower(strings.TrimSpace(set.Rules[ruleIndex].Type))
 			set.Rules[ruleIndex].Value = strings.TrimSpace(set.Rules[ruleIndex].Value)

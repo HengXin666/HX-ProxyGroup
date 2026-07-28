@@ -95,13 +95,13 @@ export function ArtifactsPage({ onNotice }: ArtifactsPageProps) {
         </Button>
       </div>
 
-      <div className="inline-flex overflow-hidden rounded-md border bg-white">
+      <div className="inline-flex overflow-hidden rounded-md border bg-card">
         <KindTab active={kind === "backup"} onClick={() => setKind("backup")} icon={Archive}>Backup</KindTab>
         <KindTab active={kind === "export"} onClick={() => setKind("export")} icon={FileArchive} border>Portable Export</KindTab>
       </div>
 
-      <section className="rounded-lg border bg-white">
-        <div className="border-b bg-[#f6f8fa] px-3 py-2.5">
+      <section className="rounded-lg border bg-card">
+        <div className="border-b bg-muted/60 px-3 py-2.5">
           <div className="text-sm font-semibold">创建 {kind === "backup" ? "Backup" : "Portable Export"}</div>
           <div className="mt-0.5 text-[11px] text-muted-foreground">
             {kind === "backup"
@@ -123,8 +123,8 @@ export function ArtifactsPage({ onNotice }: ArtifactsPageProps) {
         </div>
       </section>
 
-      <section className="overflow-hidden rounded-lg border bg-white">
-        <div className="flex items-center justify-between border-b bg-[#f6f8fa] px-3 py-2.5">
+      <section className="overflow-hidden rounded-lg border bg-card">
+        <div className="flex items-center justify-between border-b bg-muted/60 px-3 py-2.5">
           <div>
             <div className="text-sm font-semibold">归档列表</div>
             <div className="mt-0.5 text-[11px] text-muted-foreground">SHA-256 元数据、内嵌 Manifest、原子发布</div>
@@ -146,7 +146,7 @@ export function ArtifactsPage({ onNotice }: ArtifactsPageProps) {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[940px] border-collapse text-left">
-              <thead className="bg-[#f6f8fa] text-xs text-muted-foreground">
+              <thead className="bg-muted/60 text-xs text-muted-foreground">
                 <tr>
                   <Th>归档</Th>
                   <Th>创建时间</Th>
@@ -187,7 +187,7 @@ export function ArtifactsPage({ onNotice }: ArtifactsPageProps) {
 
 function ArtifactRow({ item, kind, busy, onVerify, onDelete }: { item: ArtifactRecord; kind: ArtifactKind; busy: boolean; onVerify: () => void; onDelete: () => void }) {
   return (
-    <tr className="hover:bg-[#f6f8fa]">
+    <tr className="hover:bg-muted/60">
       <Td>
         <div className="max-w-[360px] truncate font-medium text-foreground" title={item.filename}>{item.filename}</div>
         <div className="mt-0.5 max-w-[360px] truncate text-[11px] text-muted-foreground" title={item.description || item.id}>
@@ -227,7 +227,7 @@ function KindTab({ active, onClick, icon: Icon, border = false, children }: { ac
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#57606a] hover:bg-[#f6f8fa]",
+        "inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/60",
         border && "border-l",
         active && "bg-[#ddf4ff] text-[#0550ae] hover:bg-[#ddf4ff]",
       )}
@@ -243,5 +243,5 @@ function Th({ children, align = "left" }: { children: React.ReactNode; align?: "
 }
 
 function Td({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) {
-  return <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs text-[#57606a]", align === "right" && "text-right")}>{children}</td>
+  return <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs text-muted-foreground", align === "right" && "text-right")}>{children}</td>
 }

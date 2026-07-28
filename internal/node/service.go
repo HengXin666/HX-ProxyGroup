@@ -18,8 +18,8 @@ var (
 )
 
 const (
-	defaultTestURL     = "https://www.gstatic.com/generate_204"
-	defaultTestTimeout = 8 * time.Second
+	defaultTestURL     = "http://cp.cloudflare.com/generate_204"
+	defaultTestTimeout = 10 * time.Second
 )
 
 type Repository interface {

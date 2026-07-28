@@ -15,6 +15,8 @@ import (
 const (
 	MetadataKey      = "global_settings"
 	legacyQualityKey = "node_quality_settings"
+	legacyTestURL    = "https://www.gstatic.com/generate_204"
+	defaultTestURL   = "http://cp.cloudflare.com/generate_204"
 )
 
 var ErrInvalid = errors.New("invalid global settings")
@@ -76,10 +78,10 @@ func Default() Settings {
 	return Settings{
 		Quality: QualitySettings{
 			CheckIntervalSeconds: 600,
-			TimeoutSeconds:       8,
+			TimeoutSeconds:       10,
 			BatchSize:            20,
 			ProbeConcurrency:     4,
-			TestURL:              "https://www.gstatic.com/generate_204",
+			TestURL:              defaultTestURL,
 			HealthTargets: []HealthTarget{
 				{ID: "chatgpt", Name: "ChatGPT", URL: "https://chatgpt.com/", Enabled: false},
 				{ID: "claude", Name: "Claude", URL: "https://claude.ai/", Enabled: false},
@@ -127,6 +129,7 @@ func Load(ctx context.Context, repository Reader) (Settings, error) {
 		if settings.Quality.HealthTargets == nil {
 			settings.Quality.HealthTargets = Default().Quality.HealthTargets
 		}
+		migrateLegacyProbeDefaults(&settings)
 		if err := Validate(settings); err != nil {
 			return Settings{}, err
 		}
@@ -139,10 +142,21 @@ func Load(ctx context.Context, repository Reader) (Settings, error) {
 	if err := json.Unmarshal([]byte(value), &settings); err != nil {
 		return Settings{}, fmt.Errorf("decode global settings: %w", err)
 	}
+	migrateLegacyProbeDefaults(&settings)
 	if err := Validate(settings); err != nil {
 		return Settings{}, err
 	}
 	return settings, nil
+}
+
+// migrateLegacyProbeDefaults aligns installs that still carry the original
+// project defaults with Clash Verge's Mihomo URL-test defaults. A customized
+// timeout or URL is left untouched.
+func migrateLegacyProbeDefaults(settings *Settings) {
+	if settings.Quality.TestURL == legacyTestURL && settings.Quality.TimeoutSeconds == 8 {
+		settings.Quality.TestURL = defaultTestURL
+		settings.Quality.TimeoutSeconds = 10
+	}
 }
 
 func Save(ctx context.Context, repository Repository, settings Settings) error {

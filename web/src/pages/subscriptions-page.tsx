@@ -6,8 +6,8 @@ import { CreateSubscriptionForm } from "@/components/create-subscription-form"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
-import type { NodeRecord, SourceType, Subscription } from "@/lib/types"
-import { cn, compactId, formatDate } from "@/lib/utils"
+import type { NodeRecord, SourceType, Subscription, TrafficSummary } from "@/lib/types"
+import { cn, compactId, formatBytes, formatDate } from "@/lib/utils"
 
 interface SubscriptionsPageProps {
   onNotice: (message: string, tone?: "success" | "error") => void
@@ -22,6 +22,7 @@ const sourceMeta: Record<SourceType, { label: string; icon: typeof Globe2 }> = {
 export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
   const [items, setItems] = useState<Subscription[]>([])
   const [nodes, setNodes] = useState<NodeRecord[]>([])
+  const [traffic, setTraffic] = useState<Map<string, TrafficSummary>>(new Map())
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [editTarget, setEditTarget] = useState<Subscription | null>(null)
@@ -32,9 +33,10 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [subscriptions, nodeResult] = await Promise.all([api.listSubscriptions(), api.listNodes()])
+      const [subscriptions, nodeResult, trafficResult] = await Promise.all([api.listSubscriptions(), api.listNodes(), api.trafficSummaries("node")])
       setItems(subscriptions.items)
       setNodes(nodeResult.items)
+      setTraffic(new Map(trafficResult.items.map((item) => [item.resource_id, item])))
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "加载订阅失败", "error")
     } finally {
@@ -50,8 +52,9 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
     const enabled = items.filter((item) => item.enabled).length
     const snapshots = items.filter((item) => item.last_success_snapshot_id).length
     const failing = items.filter((item) => item.consecutive_failures > 0).length
-    return { enabled, snapshots, failing }
-  }, [items])
+    const totalTraffic = Array.from(traffic.values()).reduce((total, item) => total + item.upload_bytes + item.download_bytes, 0)
+    return { enabled, snapshots, failing, totalTraffic }
+  }, [items, traffic])
 
   const nodesBySubscription = useMemo(() => {
     const grouped = new Map<string, NodeRecord[]>()
@@ -162,14 +165,15 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
         </div>
       </div>
 
-      <div className="grid overflow-hidden rounded-lg border bg-white sm:grid-cols-3">
+      <div className="grid overflow-hidden rounded-lg border bg-card sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="启用订阅" value={metrics.enabled} helper={`总计 ${items.length} 条`} />
         <Metric label="已有成功快照" value={metrics.snapshots} helper="失败刷新不会覆盖成功版本" border />
         <Metric label="连续失败" value={metrics.failing} helper={metrics.failing ? "按指数退避等待重试" : "当前没有失败订阅"} border warning={metrics.failing > 0} />
+        <Metric label="节点累计流量" value={formatBytes(metrics.totalTraffic)} helper="所有去重节点的上传与下载总和" border />
       </div>
 
-      <section className="overflow-hidden rounded-lg border bg-white">
-        <div className="flex items-center justify-between border-b bg-[#f6f8fa] px-3 py-2.5">
+      <section className="overflow-hidden rounded-lg border bg-card">
+        <div className="flex items-center justify-between border-b bg-muted/60 px-3 py-2.5">
           <div>
             <div className="text-sm font-semibold">订阅列表</div>
             <div className="mt-0.5 text-[11px] text-muted-foreground">来源配置已加密，页面与 API 均不回显原文</div>
@@ -197,7 +201,7 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1020px] border-collapse text-left">
-              <thead className="bg-[#f6f8fa] text-xs text-muted-foreground">
+              <thead className="bg-muted/60 text-xs text-muted-foreground">
                 <tr>
                   <Th>订阅</Th>
                   <Th>来源</Th>
@@ -206,6 +210,7 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
                   <Th>下次刷新</Th>
                   <Th>成功快照</Th>
                   <Th>周期</Th>
+                  <Th>累计流量</Th>
                   <Th align="right">操作</Th>
                 </tr>
               </thead>
@@ -215,6 +220,7 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
                     key={item.id}
                     item={item}
                     nodes={nodesBySubscription.get(item.id) || []}
+                    traffic={traffic}
                     expanded={expanded.has(item.id)}
                     busy={Boolean(busy[item.id])}
                     testing={Boolean(busy[`test:${item.id}`])}
@@ -276,6 +282,7 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
 function SubscriptionRow({
   item,
   nodes,
+  traffic,
   expanded,
   busy,
   testing,
@@ -287,6 +294,7 @@ function SubscriptionRow({
 }: {
   item: Subscription
   nodes: NodeRecord[]
+  traffic: Map<string, TrafficSummary>
   expanded: boolean
   busy: boolean
   testing: boolean
@@ -300,13 +308,13 @@ function SubscriptionRow({
   const SourceIcon = source.icon
   return (
     <>
-    <tr className="cursor-pointer hover:bg-[#f6f8fa]" onClick={onEdit} title="点击查看与编辑订阅">
+    <tr className="cursor-pointer hover:bg-muted/60" onClick={onEdit} title="点击查看与编辑订阅">
       <Td>
         <div className="flex min-w-0 items-center gap-2.5">
           <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={`${expanded ? "收起" : "展开"} ${item.name}`} className="size-7">
             {expanded ? <ChevronDown /> : <ChevronRight />}
           </Button>
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-white text-[#57606a]">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground">
             <SourceIcon className="size-3.5" />
           </div>
           <div className="min-w-0">
@@ -330,6 +338,7 @@ function SubscriptionRow({
         </span>
       </Td>
       <Td><span className="tabular-nums">{item.refresh_interval_seconds}s</span></Td>
+      <Td><span className="tabular-nums" title="该订阅活动节点的累计上传与下载">{formatBytes(nodes.reduce((total, node) => { const value = traffic.get(node.id); return total + (value?.upload_bytes ?? 0) + (value?.download_bytes ?? 0) }, 0))}</span></Td>
       <Td align="right">
         <div className="flex justify-end gap-1.5">
           <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onEdit() }} aria-label={`编辑 ${item.name}`}><Pencil /></Button>
@@ -349,12 +358,12 @@ function SubscriptionRow({
     </tr>
     {expanded && (
       <tr>
-        <td colSpan={8} className="border-t bg-[#f6f8fa] px-4 py-3">
+        <td colSpan={9} className="border-t bg-muted/60 px-4 py-3">
           {nodes.length === 0 ? (
             <div className="py-3 text-center text-xs text-muted-foreground">该订阅尚无活动节点，请先刷新订阅。</div>
           ) : (
-            <div className="ml-7 overflow-hidden rounded-md border bg-white">
-              {nodes.map((node, index) => <SubscriptionNode key={node.id} node={node} last={index === nodes.length - 1} />)}
+            <div className="ml-7 overflow-hidden rounded-md border bg-card">
+              {nodes.map((node, index) => <SubscriptionNode key={node.id} node={node} traffic={traffic.get(node.id)} last={index === nodes.length - 1} />)}
             </div>
           )}
         </td>
@@ -364,9 +373,9 @@ function SubscriptionRow({
   )
 }
 
-function SubscriptionNode({ node, last }: { node: NodeRecord; last: boolean }) {
+function SubscriptionNode({ node, traffic, last }: { node: NodeRecord; traffic?: TrafficSummary; last: boolean }) {
   return (
-    <div className={cn("grid min-w-[760px] grid-cols-[minmax(220px,1fr)_100px_120px_120px] items-center gap-3 px-3 py-2 text-xs", !last && "border-b")}>
+    <div className={cn("grid min-w-[1040px] grid-cols-[minmax(220px,1fr)_90px_110px_100px_minmax(180px,1fr)_110px] items-center gap-3 px-3 py-2 text-xs", !last && "border-b")}>
       <div className="flex min-w-0 items-center gap-2">
         <span className="text-muted-foreground">└</span>
         <span className="truncate font-medium text-foreground" title={node.display_name}>{node.display_name}</span>
@@ -374,11 +383,13 @@ function SubscriptionNode({ node, last }: { node: NodeRecord; last: boolean }) {
       <Badge variant="outline">{node.protocol.toUpperCase()}</Badge>
       <Badge variant={node.lifecycle_state === "healthy" ? "success" : node.lifecycle_state === "quarantined" ? "warning" : "secondary"}>{node.lifecycle_state}</Badge>
       <span className="tabular-nums text-muted-foreground">{node.last_latency_ms == null ? "未测试" : `${node.last_latency_ms} ms`}</span>
+      <div className="flex flex-wrap gap-1">{node.health_checks.length ? node.health_checks.map((check) => <Badge key={check.target_id} variant={check.success ? "success" : "destructive"}>{check.target_name}{check.latency_ms == null ? "" : ` ${check.latency_ms}ms`}</Badge>) : <span className="text-muted-foreground">未测试站点</span>}</div>
+      <span className="tabular-nums text-muted-foreground">{formatBytes((traffic?.upload_bytes ?? 0) + (traffic?.download_bytes ?? 0))}</span>
     </div>
   )
 }
 
-function Metric({ label, value, helper, border = false, warning = false }: { label: string; value: number; helper: string; border?: boolean; warning?: boolean }) {
+function Metric({ label, value, helper, border = false, warning = false }: { label: string; value: number | string; helper: string; border?: boolean; warning?: boolean }) {
   return (
     <div className={cn("px-4 py-3", border && "border-t sm:border-l sm:border-t-0")}>
       <div className="text-xs text-muted-foreground">{label}</div>
@@ -393,5 +404,5 @@ function Th({ children, align = "left" }: { children: React.ReactNode; align?: "
 }
 
 function Td({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) {
-  return <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs text-[#57606a]", align === "right" && "text-right")}>{children}</td>
+  return <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs text-muted-foreground", align === "right" && "text-right")}>{children}</td>
 }

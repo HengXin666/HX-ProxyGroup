@@ -2,6 +2,7 @@ package systemsettings
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -36,6 +37,25 @@ func TestSettingsLoadLegacyQualityConfiguration(t *testing.T) {
 	}
 	if settings.Quality.CheckIntervalSeconds != 120 || settings.Quality.ProbeConcurrency != 4 || len(settings.Quality.HealthTargets) != 5 {
 		t.Fatalf("migrated settings = %+v", settings.Quality)
+	}
+}
+
+func TestSettingsLoadMigratesOriginalProbeDefaults(t *testing.T) {
+	legacy := Default()
+	legacy.Quality.TestURL = legacyTestURL
+	legacy.Quality.TimeoutSeconds = 8
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &memoryRepository{values: map[string]string{MetadataKey: string(encoded)}}
+
+	settings, err := Load(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Quality.TestURL != defaultTestURL || settings.Quality.TimeoutSeconds != 10 {
+		t.Fatalf("quality settings = %+v", settings.Quality)
 	}
 }
 

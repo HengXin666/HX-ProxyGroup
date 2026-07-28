@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react"
 import { BellRing, CheckCheck, History, Mail, RefreshCw, Send } from "lucide-react"
 
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   ApiError,
   api,
@@ -65,14 +69,14 @@ export function AlertsPage({
         <button
           type="button"
           onClick={() => void reload()}
-          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-[#f3f4f6]"
+          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
         >
           <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
           刷新
         </button>
       </div>
 
-      <section className="rounded-md border bg-white">
+      <section className="rounded-md border bg-card">
         <header className="flex items-center gap-2 border-b px-4 py-2.5 text-sm font-medium">
           <BellRing className="size-4 text-[#cf222e]" />
           当前告警（{firing.length}）
@@ -102,7 +106,7 @@ export function AlertsPage({
                   <button
                     type="button"
                     onClick={() => void acknowledge(item.id)}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-[#f3f4f6]"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-muted"
                   >
                     <CheckCheck className="size-3.5" />
                     确认
@@ -114,9 +118,9 @@ export function AlertsPage({
         )}
       </section>
 
-      <section className="rounded-md border bg-white">
+      <section className="rounded-md border bg-card">
         <header className="flex items-center gap-2 border-b px-4 py-2.5 text-sm font-medium">
-          <History className="size-4 text-[#57606a]" />
+          <History className="size-4 text-muted-foreground" />
           历史（最近 {history.length} 条已恢复）
         </header>
         {history.length === 0 ? (
@@ -204,91 +208,78 @@ function SettingsCard({
     }
   }
 
-  const inputClass =
-    "mt-1 w-full rounded-md border px-2.5 py-1.5 text-sm focus:border-[#0969da] focus:outline-none"
-
   return (
-    <section className="rounded-md border bg-white">
+    <section className="rounded-md border bg-card">
       <header className="flex items-center gap-2 border-b px-4 py-2.5 text-sm font-medium">
         <Mail className="size-4 text-[#0969da]" />
         邮件通道（SMTP）
       </header>
       <form onSubmit={save} className="grid gap-3 p-4 sm:grid-cols-2">
         <label className="flex items-center gap-2 text-sm sm:col-span-2">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(event) => setEnabled(event.target.checked)}
-            className="size-4 rounded border"
-          />
+          <Checkbox checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />
           启用邮件通知
         </label>
         <label className="block text-xs font-medium">
           SMTP 服务器
-          <input value={host} onChange={(e) => setHost(e.target.value)} required className={inputClass} placeholder="smtp.example.com" />
+          <Input value={host} onChange={(e) => setHost(e.target.value)} required className="mt-1" placeholder="smtp.example.com" />
         </label>
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-xs font-medium">
             端口
-            <input
+            <Input
               type="number"
               min={1}
               max={65535}
               value={port}
               onChange={(e) => setPort(Number(e.target.value))}
               required
-              className={inputClass}
+              className="mt-1"
             />
           </label>
           <label className="block text-xs font-medium">
             加密
-            <select value={security} onChange={(e) => setSecurity(e.target.value)} className={inputClass}>
-              <option value="starttls">STARTTLS</option>
-              <option value="tls">SMTPS（隐式 TLS）</option>
-              <option value="none">无（仅内网）</option>
-            </select>
+            <Select value={security} onValueChange={setSecurity}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="starttls">STARTTLS</SelectItem><SelectItem value="tls">SMTPS（隐式 TLS）</SelectItem><SelectItem value="none">无（仅内网）</SelectItem></SelectContent></Select>
           </label>
         </div>
         <label className="block text-xs font-medium">
           用户名
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" className={inputClass} />
+          <Input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" className="mt-1" />
         </label>
         <label className="block text-xs font-medium">
           密码
-          <input
+          <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
             placeholder={settings.has_password ? "留空保持不变" : ""}
-            className={inputClass}
+            className="mt-1"
           />
         </label>
         <label className="block text-xs font-medium">
           发件人
-          <input value={from} onChange={(e) => setFrom(e.target.value)} required className={inputClass} placeholder="alerts@example.com" />
+          <Input value={from} onChange={(e) => setFrom(e.target.value)} required className="mt-1" placeholder="alerts@example.com" />
         </label>
         <label className="block text-xs font-medium">
           收件人（逗号分隔）
-          <input value={to} onChange={(e) => setTo(e.target.value)} required className={inputClass} placeholder="admin@example.com" />
+          <Input value={to} onChange={(e) => setTo(e.target.value)} required className="mt-1" placeholder="admin@example.com" />
         </label>
         <div className="flex items-center gap-2 sm:col-span-2">
-          <button
+          <Button
             type="submit"
             disabled={busy}
-            className="rounded-md bg-[#1f883d] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#1a7f37] disabled:opacity-60"
           >
             保存设置
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             onClick={() => void sendTest()}
             disabled={busy || !settings.configured}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-[#f3f4f6] disabled:opacity-60"
+            variant="outline"
           >
             <Send className="size-3.5" />
             发送测试邮件
-          </button>
+          </Button>
         </div>
       </form>
     </section>
@@ -301,7 +292,7 @@ function SeverityBadge({ severity, muted }: { severity: "warning" | "critical"; 
       className={cn(
         "mt-0.5 inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium",
         muted
-          ? "border-[#d0d7de] bg-[#f6f8fa] text-[#57606a]"
+          ? "border-[#d0d7de] bg-muted/60 text-muted-foreground"
           : severity === "critical"
             ? "border-[#ff8182] bg-[#ffebe9] text-[#a40e26]"
             : "border-[#d4a72c66] bg-[#fff8c5] text-[#7d4e00]",

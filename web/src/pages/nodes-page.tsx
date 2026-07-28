@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Activity, ArrowUpDown, Ban, ChevronDown, ChevronRight, CircleDot, CirclePlay, Filter, Gauge, LoaderCircle, Network, Play, Radio, RefreshCw, Search, Settings2, Square } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { SiteIcon } from "@/components/site-icon"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api, type NodeQualitySettings } from "@/lib/api"
 import type { NodeRecord, Subscription, TrafficSummary } from "@/lib/types"
 import { cn, compactId, formatBytes, formatDate } from "@/lib/utils"
@@ -140,7 +142,8 @@ export function NodesPage({ onNotice }: NodesPageProps) {
     degraded: items.filter((item) => item.lifecycle_state === "degraded").length,
     quarantined: items.filter((item) => item.lifecycle_state === "quarantined").length,
     unchecked: items.filter((item) => item.lifecycle_state === "candidate").length,
-  }), [items])
+    totalTraffic: Array.from(traffic.values()).reduce((total, item) => total + item.upload_bytes + item.download_bytes, 0),
+  }), [items, traffic])
   const groups = useMemo(() => {
     const bySubscription = subscriptions.map((subscription) => ({
       subscription,
@@ -157,7 +160,7 @@ export function NodesPage({ onNotice }: NodesPageProps) {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">节点</h1>
           <p className="mt-1 max-w-3xl text-sm leading-5 text-muted-foreground">
-            节点按稳定指纹去重。质量检测由 Mihomo 经指定节点访问测试 URL，不以服务器端口可连接代替代理可用性。
+            节点按稳定指纹去重。URL 延迟测试与 Clash Verge 一样由 Mihomo 经指定节点访问测试目标，不是 ICMP ping。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -174,15 +177,16 @@ export function NodesPage({ onNotice }: NodesPageProps) {
         </div>
       </div>
 
-      <div className="grid overflow-hidden rounded-lg border bg-white sm:grid-cols-4">
+      <div className="grid overflow-hidden rounded-lg border bg-card sm:grid-cols-2 xl:grid-cols-5">
         <Metric label="健康" value={metrics.healthy} helper="最近测试成功且延迟正常" />
         <Metric label="降级" value={metrics.degraded} helper="高延迟或近期检测失败" border />
         <Metric label="隔离" value={metrics.quarantined} helper="连续失败三次" border />
         <Metric label="未检测" value={metrics.unchecked} helper="等待自动或手工检测" border />
+        <Metric label="累计流量" value={formatBytes(metrics.totalTraffic)} helper="节点上传与下载总和" border />
       </div>
 
-      <section className="overflow-hidden rounded-lg border bg-white">
-        <div className="flex flex-col gap-3 border-b bg-[#f6f8fa] px-3 py-3 lg:flex-row lg:items-center">
+      <section className="overflow-hidden rounded-lg border bg-card">
+        <div className="flex flex-col gap-3 border-b bg-muted/60 px-3 py-3 lg:flex-row lg:items-center">
           <div className="relative w-full max-w-md">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#8c959f]" />
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点名称或指纹" className="pl-8" />
@@ -196,13 +200,7 @@ export function NodesPage({ onNotice }: NodesPageProps) {
             {states.map((value) => <FilterChip key={value || "all"} active={state === value} onClick={() => setState(value)}>{value ? stateMeta[value].label : "全部状态"}</FilterChip>)}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)} className="h-8 w-[118px] rounded-md border bg-white px-2.5 text-xs" aria-label="节点排序字段">
-              <option value="latency">按延迟</option>
-              <option value="name">按名称</option>
-              <option value="state">按状态</option>
-              <option value="protocol">按协议</option>
-              <option value="checked">按检测时间</option>
-            </select>
+            <Select value={sortKey} onValueChange={(value) => setSortKey(value as SortKey)}><SelectTrigger className="w-[124px]" aria-label="节点排序字段"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="latency">按延迟</SelectItem><SelectItem value="name">按名称</SelectItem><SelectItem value="state">按状态</SelectItem><SelectItem value="protocol">按协议</SelectItem><SelectItem value="checked">按检测时间</SelectItem></SelectContent></Select>
             <Button variant="outline" size="icon" title={sortDirection === "asc" ? "切换为降序" : "切换为升序"} aria-label={sortDirection === "asc" ? "切换为降序" : "切换为升序"} onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}>
               <ArrowUpDown />
             </Button>
@@ -228,7 +226,7 @@ function NodeSubscriptionGroup({ name, sourceType, nodes, traffic, open, onToggl
   const healthy = nodes.filter((node) => node.lifecycle_state === "healthy").length
   return <section>
     <Button variant="ghost" className="h-auto w-full justify-start rounded-none px-3 py-3 text-left" onClick={onToggle}>
-      {open ? <ChevronDown /> : <ChevronRight />}<span className="flex size-8 items-center justify-center rounded-md border bg-white"><Radio className="size-4" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{name}</span><span className="block text-[11px] font-normal text-muted-foreground">{sourceType === "remote" ? "远程订阅" : sourceType === "file" ? "服务器文件" : "内联 / 自定义"}</span></span><Badge variant="secondary">{nodes.length} 个节点</Badge><Badge variant={healthy ? "success" : "secondary"}>{healthy} 健康</Badge>
+      {open ? <ChevronDown /> : <ChevronRight />}<span className="flex size-8 items-center justify-center rounded-md border bg-card"><Radio className="size-4" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{name}</span><span className="block text-[11px] font-normal text-muted-foreground">{sourceType === "remote" ? "远程订阅" : sourceType === "file" ? "服务器文件" : "内联 / 自定义"}</span></span><Badge variant="secondary">{nodes.length} 个节点</Badge><Badge variant={healthy ? "success" : "secondary"}>{healthy} 健康</Badge>
     </Button>
     {open && <div className="overflow-x-auto border-t"><table className="w-full min-w-[1220px] border-collapse text-left"><thead className="bg-muted text-xs text-muted-foreground"><tr><Th>节点</Th><Th>协议</Th><Th>状态</Th><Th>延迟</Th><Th>站点健康</Th><Th>累计流量</Th><Th>失败次数</Th><Th>最近检测</Th><Th>指纹</Th><Th align="right">操作</Th></tr></thead><tbody className="divide-y">{nodes.length ? nodes.map((item) => <NodeRow key={item.id} item={item} traffic={traffic.get(item.id)} checking={Boolean(checking[item.id])} onCheck={() => void onCheck(item)} onToggle={() => void onToggleNode(item)} />) : <tr><td colSpan={10} className="px-4 py-8 text-center text-xs text-muted-foreground">该订阅当前没有匹配节点</td></tr>}</tbody></table></div>}
   </section>
@@ -307,8 +305,8 @@ function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRec
   const unavailable = item.lifecycle_state === "disabled" || item.lifecycle_state === "retired"
   const disabled = item.lifecycle_state === "disabled"
   const retired = item.lifecycle_state === "retired"
-  return <tr className="hover:bg-[#f6f8fa]">
-    <Td><div className="flex min-w-0 items-center gap-2.5"><div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-white text-[#57606a]"><CircleDot className="size-3.5" /></div><div className="min-w-0"><button type="button" className="block max-w-[300px] truncate font-medium text-foreground hover:text-primary hover:underline disabled:no-underline disabled:opacity-60" title={`${item.display_name} - 单击测速`} onClick={onCheck} disabled={checking || unavailable}>{item.display_name}</button><div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{compactId(item.id)}</div></div></div></Td>
+  return <tr className="hover:bg-muted/60">
+    <Td><div className="flex min-w-0 items-center gap-2.5"><div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground"><CircleDot className="size-3.5" /></div><div className="min-w-0"><button type="button" className="block max-w-[300px] truncate font-medium text-foreground hover:text-primary hover:underline disabled:no-underline disabled:opacity-60" title={`${item.display_name} - 单击测速`} onClick={onCheck} disabled={checking || unavailable}>{item.display_name}</button><div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{compactId(item.id)}</div></div></div></Td>
     <Td><Badge variant="outline">{item.protocol.toUpperCase()}</Badge></Td>
     <Td>
       <div className="flex items-center gap-1.5">
@@ -324,7 +322,7 @@ function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRec
       </div>
     </Td>
     <Td>{item.last_latency_ms == null ? "—" : <span className="inline-flex items-center gap-1 tabular-nums"><Gauge className="size-3.5" />{item.last_latency_ms} ms</span>}</Td>
-    <Td><div className="flex max-w-[260px] flex-wrap gap-1">{item.health_checks.length === 0 ? <span className="text-muted-foreground">—</span> : item.health_checks.map((check) => <Badge key={check.target_id} variant={check.success ? "success" : "destructive"} title={check.latency_ms == null ? check.url : `${check.url} · ${check.latency_ms} ms`}>{check.target_name}{check.latency_ms == null ? "" : ` ${check.latency_ms}ms`}</Badge>)}</div></Td>
+    <Td><div className="flex max-w-[280px] flex-wrap gap-1">{item.health_checks.length === 0 ? <span className="text-muted-foreground">—</span> : item.health_checks.map((check) => <Badge key={check.target_id} variant={check.success ? "success" : "destructive"} title={check.latency_ms == null ? check.url : `${check.url} · ${check.latency_ms} ms`}><SiteIcon url={check.url} compact />{check.target_name}{check.latency_ms == null ? "" : ` ${check.latency_ms}ms`}</Badge>)}</div></Td>
     <Td><span className="tabular-nums" title={`下载 ${formatBytes(traffic?.download_bytes ?? 0)} / 上传 ${formatBytes(traffic?.upload_bytes ?? 0)}`}>{formatBytes((traffic?.download_bytes ?? 0) + (traffic?.upload_bytes ?? 0))}</span></Td>
     <Td><span className={cn("tabular-nums", item.consecutive_probe_failures > 0 && "text-[#a40e26]")}>{item.consecutive_probe_failures}</span></Td>
     <Td>{formatDate(item.last_checked_at)}</Td>
@@ -335,7 +333,7 @@ function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRec
 
 function Loading() { return <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />正在加载节点</div> }
 function Empty() { return <div className="flex min-h-56 flex-col items-center justify-center px-6 text-center"><Network className="mb-3 size-8 text-[#8c959f]" /><div className="font-medium">没有匹配的节点</div><p className="mt-1 max-w-lg text-xs leading-5 text-muted-foreground">刷新一条可解析的订阅后，节点会进入库存并自动开始质量检测。</p></div> }
-function Metric({ label, value, helper, border = false }: { label: string; value: number; helper: string; border?: boolean }) { return <div className={cn("px-4 py-3", border && "border-t sm:border-l sm:border-t-0")}><div className="text-xs text-muted-foreground">{label}</div><div className="mt-0.5 text-xl font-semibold tabular-nums">{value}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{helper}</div></div> }
+function Metric({ label, value, helper, border = false }: { label: string; value: number | string; helper: string; border?: boolean }) { return <div className={cn("px-4 py-3", border && "border-t sm:border-l sm:border-t-0")}><div className="text-xs text-muted-foreground">{label}</div><div className="mt-0.5 text-xl font-semibold tabular-nums">{value}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{helper}</div></div> }
 function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) { return <Button type="button" size="sm" variant={active ? "default" : "outline"} onClick={onClick} className="h-7 shrink-0 rounded-full px-2.5 text-[11px]">{children}</Button> }
 function Th({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) { return <th className={cn("whitespace-nowrap border-b px-3 py-2 font-medium", align === "right" && "text-right")}>{children}</th> }
-function Td({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) { return <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs text-[#57606a]", align === "right" && "text-right")}>{children}</td> }
+function Td({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) { return <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs text-muted-foreground", align === "right" && "text-right")}>{children}</td> }

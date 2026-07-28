@@ -188,6 +188,11 @@ export const api = {
     setCsrfToken("")
   },
 
+  async logoutAll(): Promise<void> {
+    await request("/api/v1/auth/logout-all", { method: "POST" })
+    setCsrfToken("")
+  },
+
   changePassword(currentPassword: string, newPassword: string): Promise<void> {
     return request("/api/v1/auth/password", {
       method: "PUT",
@@ -472,9 +477,16 @@ export const api = {
     return request(`/api/v1/traffic?${query.toString()}`)
   },
 
-  trafficSummaries(resourceType: TrafficResourceType): Promise<TrafficSummaryList> {
-    const query = new URLSearchParams({ resource_type: resourceType, limit: "200", offset: "0" })
-    return request(`/api/v1/traffic?${query.toString()}`)
+  async trafficSummaries(resourceType: TrafficResourceType): Promise<TrafficSummaryList> {
+    const items: TrafficSummaryList["items"] = []
+    const pageSize = 200
+    for (let offset = 0; offset < 1000; offset += pageSize) {
+      const query = new URLSearchParams({ resource_type: resourceType, limit: String(pageSize), offset: String(offset) })
+      const page = await request<TrafficSummaryList>(`/api/v1/traffic?${query.toString()}`)
+      items.push(...page.items)
+      if (page.items.length < pageSize) break
+    }
+    return { items, limit: pageSize, offset: 0 }
   },
 
   proxyLogURL(filters: { listenerId?: string; proxyGroupId?: string; nodeId?: string; level?: string }): string {

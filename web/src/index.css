@@ -24,6 +24,29 @@
   --radius: 0.5rem;
 }
 
+.dark {
+  color-scheme: dark;
+  --background: #0f1413;
+  --foreground: #e7eeeb;
+  --card: #171d1b;
+  --card-foreground: #e7eeeb;
+  --popover: #1b2320;
+  --popover-foreground: #e7eeeb;
+  --primary: #35b8aa;
+  --primary-foreground: #071312;
+  --secondary: #242d2a;
+  --secondary-foreground: #e2eae7;
+  --muted: #202825;
+  --muted-foreground: #9eaaa6;
+  --accent: #173647;
+  --accent-foreground: #a8ddf7;
+  --destructive: #f26d78;
+  --destructive-foreground: #180507;
+  --border: #303a37;
+  --input: #3a4642;
+  --ring: #35b8aa;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -113,7 +136,7 @@ textarea:focus-visible {
 }
 
 ::selection {
-  background: #b6e3ff;
+  background: color-mix(in srgb, var(--primary) 35%, transparent);
 }
 
 ::-webkit-scrollbar {

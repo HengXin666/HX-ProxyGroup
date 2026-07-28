@@ -211,9 +211,20 @@ export interface RoutingRuleSet {
   name: string
   enabled: boolean
   priority: number
-  applied_group_ids: string[]
-  action: { type: "reject" | "direct" | "proxy_group"; proxy_group_id?: string }
+  routes?: RoutingGroupRoute[]
+  applied_group_ids?: string[]
+  action?: RoutingAction
   rules: RoutingRule[]
+}
+
+export interface RoutingAction {
+  type: "reject" | "direct" | "proxy_group"
+  proxy_group_id?: string
+}
+
+export interface RoutingGroupRoute {
+  proxy_group_id: string
+  action: RoutingAction
 }
 
 export interface RoutingRulesConfig {

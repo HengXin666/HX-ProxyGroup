@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react"
 
+import { ThemeToggle } from "@/components/theme-toggle"
 import { api, setCsrfToken, setUnauthenticatedHandler } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { AlertsPage } from "@/pages/alerts-page"
@@ -41,7 +42,7 @@ const pages: Array<{
   { id: "subscriptions", label: "订阅", description: "来源与刷新", icon: Radio },
   { id: "nodes", label: "节点", description: "解析与生命周期", icon: Network },
   { id: "routing", label: "代理服务", description: "代理组与 Listener", icon: Route },
-  { id: "rules", label: "路由规则", description: "分流与规则集", icon: ListFilter },
+  { id: "rules", label: "站点别名", description: "可复用网页组", icon: ListFilter },
   { id: "settings", label: "全局配置", description: "测速、DNS 与性能", icon: Settings2 },
   { id: "alerts", label: "告警", description: "状态与邮件通知", icon: BellRing },
   { id: "artifacts", label: "备份", description: "Backup 与 Export", icon: Archive },
@@ -137,6 +138,11 @@ export default function App() {
     }
   }, [])
 
+  const requireLogin = useCallback(() => {
+    setCsrfToken("")
+    setAuthGate({ phase: "required", configured: true })
+  }, [])
+
   if (authGate.phase === "checking") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
@@ -151,7 +157,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background lg:grid lg:grid-cols-[228px_minmax(0,1fr)]">
-      <aside className="hidden min-h-screen border-r bg-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
+      <aside className="hidden min-h-screen border-r bg-card lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
         <div className="flex h-14 items-center gap-2.5 border-b px-4">
           <div className="flex size-7 items-center justify-center rounded-md bg-[#24292f] text-white">
             <Network className="size-4" />
@@ -160,6 +166,7 @@ export default function App() {
             <div className="truncate text-sm font-semibold">HX-ProxyGroup</div>
             <div className="text-[11px] text-muted-foreground">Control Plane</div>
           </div>
+          <div className="ml-auto"><ThemeToggle /></div>
         </div>
 
         <nav className="space-y-1 p-2">
@@ -174,7 +181,7 @@ export default function App() {
         </nav>
 
         <div className="mt-auto border-t p-3">
-          <div className="rounded-md border bg-[#f6f8fa] px-3 py-2.5">
+          <div className="rounded-md border bg-muted/60 px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium">后端状态</span>
               <StatusDot healthy={healthy} />
@@ -187,7 +194,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => void handleLogout()}
-              className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-[#57606a] transition-colors hover:bg-[#f3f4f6] hover:text-foreground"
+              className="mt-2 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               <LogOut className="size-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate">退出登录（{authGate.username}）</span>
@@ -197,15 +204,13 @@ export default function App() {
       </aside>
 
       <div className="min-w-0">
-        <header className="sticky top-0 z-40 border-b bg-white lg:hidden">
+        <header className="sticky top-0 z-40 border-b bg-card lg:hidden">
           <div className="flex h-13 items-center gap-2 px-3">
             <div className="flex size-7 items-center justify-center rounded-md bg-[#24292f] text-white">
               <Network className="size-4" />
             </div>
             <span className="font-semibold">HX-ProxyGroup</span>
-            <div className="ml-auto">
-              <StatusDot healthy={healthy} />
-            </div>
+            <div className="ml-auto flex items-center gap-1"><ThemeToggle /><StatusDot healthy={healthy} /></div>
           </div>
           <nav className="flex gap-1 overflow-x-auto border-t px-2 py-1.5">
             {pages.map((item) => {
@@ -246,7 +251,7 @@ export default function App() {
           {page === "nodes" && <NodesPage onNotice={showNotice} />}
           {page === "routing" && <RoutingPage onNotice={showNotice} />}
           {page === "rules" && <RulesPage onNotice={showNotice} />}
-          {page === "settings" && <SettingsPage onNotice={showNotice} />}
+          {page === "settings" && <SettingsPage onNotice={showNotice} username={authGate.username} onSignedOut={requireLogin} />}
           {page === "alerts" && <AlertsPage onNotice={showNotice} />}
           {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
           {page === "terminal" && <TerminalPage onNotice={showNotice} />}
@@ -254,7 +259,7 @@ export default function App() {
       </div>
 
       {notice && (
-        <div className="toast-enter fixed bottom-4 right-4 z-[90] flex max-w-sm items-start gap-2.5 rounded-md border bg-white px-3 py-2.5 shadow-[0_12px_32px_rgba(23,33,31,0.16)]">
+        <div className="toast-enter fixed bottom-4 right-4 z-[90] flex max-w-sm items-start gap-2.5 rounded-md border bg-card px-3 py-2.5 shadow-[0_12px_32px_rgba(23,33,31,0.16)]">
           {notice.tone === "success" ? (
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[#1a7f37]" />
           ) : (
@@ -264,7 +269,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setNotice(null)}
-            className="ml-1 rounded p-0.5 text-muted-foreground hover:bg-[#f3f4f6] hover:text-foreground"
+            className="ml-1 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             aria-label="关闭提示"
           >
             <X className="size-3.5" />
@@ -290,7 +295,7 @@ function SidebarItem({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm text-[#57606a] transition-colors hover:bg-[#f3f4f6] hover:text-foreground",
+        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
         active && "bg-accent font-medium text-accent-foreground",
       )}
     >
@@ -307,7 +312,7 @@ function StatusDot({ healthy }: { healthy: boolean | null }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border bg-white px-2 py-0.5 text-[11px] text-muted-foreground",
+        "inline-flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 text-[11px] text-muted-foreground",
         healthy === true && "border-[#aceebb] bg-[#dafbe1] text-[#116329]",
         healthy === false && "border-[#ff8182] bg-[#ffebe9] text-[#a40e26]",
       )}

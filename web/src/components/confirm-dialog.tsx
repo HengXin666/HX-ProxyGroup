@@ -25,7 +25,7 @@ export function ConfirmDialog({
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-[#1f2328]/35 p-4">
-      <div className="w-full max-w-md rounded-lg border bg-white shadow-[0_12px_36px_rgba(31,35,40,0.18)]">
+      <div className="w-full max-w-md rounded-lg border bg-card shadow-[0_12px_36px_rgba(31,35,40,0.18)]">
         <div className="flex items-start justify-between border-b px-4 py-3">
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="size-4 text-[#bf8700]" />
@@ -36,7 +36,7 @@ export function ConfirmDialog({
           </Button>
         </div>
         <div className="px-4 py-4 text-sm leading-6 text-muted-foreground">{description}</div>
-        <div className="flex justify-end gap-2 border-t bg-[#f6f8fa] px-4 py-3">
+        <div className="flex justify-end gap-2 border-t bg-muted/60 px-4 py-3">
           <Button variant="outline" onClick={onCancel} disabled={busy}>
             取消
           </Button>

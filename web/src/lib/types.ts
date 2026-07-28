@@ -189,6 +189,25 @@ export interface GlobalSettings {
   }
 }
 
+export interface RoutingRule {
+  type: "domain" | "domain_suffix" | "domain_keyword" | "ip_cidr" | "geoip" | "geosite" | "process_name" | "network" | "dst_port"
+  value: string
+}
+
+export interface RoutingRuleSet {
+  id: string
+  name: string
+  enabled: boolean
+  priority: number
+  applied_group_ids: string[]
+  action: { type: "reject" | "direct" | "proxy_group"; proxy_group_id?: string }
+  rules: RoutingRule[]
+}
+
+export interface RoutingRulesConfig {
+  rule_sets: RoutingRuleSet[]
+}
+
 export type ProxyGroupStrategy = "manual" | "url-test" | "fallback" | "round-robin" | "consistent-hashing" | "sticky-sessions"
 
 export interface ProxyGroupSourceSpec {

@@ -20,6 +20,7 @@ import type {
   ProxyGroup,
   ProxyGroupList,
   ProxyServiceRecord,
+  RoutingRulesConfig,
   RefreshResult,
   Subscription,
   SubscriptionList,
@@ -297,6 +298,17 @@ export const api = {
 
   updateGlobalSettings(payload: GlobalSettings): Promise<GlobalSettings> {
     return request("/api/v1/settings", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  routingRules(): Promise<RoutingRulesConfig> {
+    return request("/api/v1/routing-rules")
+  },
+
+  updateRoutingRules(payload: RoutingRulesConfig): Promise<RoutingRulesConfig> {
+    return request("/api/v1/routing-rules", {
       method: "PUT",
       body: JSON.stringify(payload),
     })

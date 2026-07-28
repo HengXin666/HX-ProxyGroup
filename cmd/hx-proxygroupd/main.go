@@ -26,6 +26,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/nodeparse"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxyservice"
+	"github.com/HengXin666/HX-ProxyGroup/internal/routingrules"
 	"github.com/HengXin666/HX-ProxyGroup/internal/scheduler"
 	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
@@ -117,6 +118,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	settingsService, err := systemsettings.NewService(database, mihomoManager)
+	if err != nil {
+		return err
+	}
+	routingRulesService, err := routingrules.NewService(database, mihomoManager)
 	if err != nil {
 		return err
 	}
@@ -249,6 +254,7 @@ func run(logger *slog.Logger) error {
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
 		api.WithSettings(settingsService),
+		api.WithRoutingRules(routingRulesService),
 		api.WithDataPlane(mihomoManager),
 		api.WithAuth(authService),
 		api.WithAlerts(alertService),

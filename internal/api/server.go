@@ -25,6 +25,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/node"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxyservice"
+	"github.com/HengXin666/HX-ProxyGroup/internal/routingrules"
 	"github.com/HengXin666/HX-ProxyGroup/internal/subscription"
 	"github.com/HengXin666/HX-ProxyGroup/internal/systemsettings"
 )
@@ -89,6 +90,11 @@ type ProxyServiceService interface {
 type SettingsService interface {
 	Get(context.Context) (systemsettings.Settings, error)
 	Update(context.Context, systemsettings.Settings) (systemsettings.Settings, error)
+}
+
+type RoutingRulesService interface {
+	Get(context.Context) (routingrules.Config, error)
+	Update(context.Context, routingrules.Config) (routingrules.Config, error)
 }
 
 type Option func(*Server) error
@@ -163,6 +169,16 @@ func WithSettings(service SettingsService) Option {
 	}
 }
 
+func WithRoutingRules(service RoutingRulesService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("routing rules service is required")
+		}
+		server.routingRules = service
+		return nil
+	}
+}
+
 type Server struct {
 	bundles       BundleService
 	subscriptions SubscriptionService
@@ -171,6 +187,7 @@ type Server struct {
 	listeners     ListenerService
 	proxyServices ProxyServiceService
 	settings      SettingsService
+	routingRules  RoutingRulesService
 	dataplane     DataPlaneService
 	auth          AuthService
 	alerts        AlertService
@@ -250,6 +267,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.settings != nil {
 		mux.HandleFunc("/api/v1/settings", s.handleSettings)
+	}
+	if s.routingRules != nil {
+		mux.HandleFunc("/api/v1/routing-rules", s.handleRoutingRules)
 	}
 	if s.dataplane != nil {
 		mux.HandleFunc("/api/v1/dataplane/status", s.handleDataPlaneStatus)
@@ -463,7 +483,7 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "secret_export_disabled", err.Error())
 	case errors.Is(err, node.ErrInvalidSettings):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
-	case errors.Is(err, proxygroup.ErrInvalid), errors.Is(err, listener.ErrInvalid):
+	case errors.Is(err, proxygroup.ErrInvalid), errors.Is(err, listener.ErrInvalid), errors.Is(err, routingrules.ErrInvalid):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, listener.ErrShareDisabled):
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "resource not found")

@@ -10,6 +10,7 @@ import (
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
+	"github.com/HengXin666/HX-ProxyGroup/internal/routingrules"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 	"github.com/HengXin666/HX-ProxyGroup/internal/systemsettings"
 	"gopkg.in/yaml.v3"
@@ -66,6 +67,10 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	settings, err := systemsettings.Load(ctx, c.repository)
 	if err != nil {
 		return Compiled{}, fmt.Errorf("load global settings: %w", err)
+	}
+	routeConfig, err := routingrules.Load(ctx, c.repository)
+	if err != nil {
+		return Compiled{}, fmt.Errorf("load routing rules: %w", err)
 	}
 	groups, err := c.repository.ListProxyGroups(ctx)
 	if err != nil {
@@ -156,6 +161,8 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 		})
 	}
 
+	compiledRules := routingrules.Compile(routeConfig, groups, listeners, listenerConfigName)
+	compiledRules = append(compiledRules, "MATCH,DIRECT")
 	document := map[string]any{
 		"mode":      "rule",
 		"log-level": settings.Performance.LogLevel,
@@ -177,7 +184,7 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 		"proxies":             proxies,
 		"proxy-groups":        proxyGroups,
 		"listeners":           listenerConfigs,
-		"rules":               []string{"MATCH,DIRECT"},
+		"rules":               compiledRules,
 	}
 	if c.controllerSocket != "" {
 		document["external-controller-unix"] = c.controllerSocket

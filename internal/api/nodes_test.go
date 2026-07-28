@@ -121,6 +121,19 @@ func (service *fakeNodeService) CheckMany(ctx context.Context, ids []string) ([]
 	return results, nil
 }
 
+func (service *fakeNodeService) CheckManyProgress(ctx context.Context, ids []string, notify func(node.CheckProgress) error) error {
+	results, err := service.CheckMany(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for index, result := range results {
+		if err := notify(node.CheckProgress{Completed: index + 1, Total: len(results), NodeID: result.Node.ID, Result: result}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestNodeAPIExposesMetadataWithoutCanonicalConfig(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -209,6 +222,28 @@ func TestNodeAPIChecksSelectedNodesInOneRequest(t *testing.T) {
 	}
 	if len(response.Items) != 1 || response.Items[0].Node.ID != "node-b" {
 		t.Fatalf("items = %+v", response.Items)
+	}
+}
+
+func TestNodeAPIStreamsEachCompletedCheck(t *testing.T) {
+	t.Parallel()
+	server := newNodeTestServer(t, []node.Node{{ID: "node-a"}, {ID: "node-b"}})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/nodes?stream=1", strings.NewReader(`{"node_ids":["node-a","node-b"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	decoder := json.NewDecoder(recorder.Body)
+	for completed := 1; completed <= 2; completed++ {
+		var progress node.CheckProgress
+		if err := decoder.Decode(&progress); err != nil {
+			t.Fatal(err)
+		}
+		if progress.Completed != completed || progress.Total != 2 || progress.NodeID == "" {
+			t.Fatalf("progress = %+v", progress)
+		}
 	}
 }
 

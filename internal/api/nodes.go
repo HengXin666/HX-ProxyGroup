@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -15,6 +16,10 @@ func (s *Server) handleNodes(writer http.ResponseWriter, request *http.Request) 
 		}
 		if err := decodeJSONBody(writer, request, &checkRequest); err != nil {
 			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if request.URL.Query().Get("stream") == "1" {
+			s.streamNodeChecks(writer, request, checkRequest.NodeIDs)
 			return
 		}
 		results, err := s.nodes.CheckMany(request.Context(), checkRequest.NodeIDs)
@@ -55,6 +60,33 @@ func (s *Server) handleNodes(writer http.ResponseWriter, request *http.Request) 
 		"limit":  limit,
 		"offset": offset,
 	})
+}
+
+func (s *Server) streamNodeChecks(writer http.ResponseWriter, request *http.Request, ids []string) {
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		s.writeAPIError(writer, request, http.StatusInternalServerError, "stream_unavailable", "streaming is unavailable")
+		return
+	}
+	writer.Header().Set("Content-Type", "application/x-ndjson")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	encoder := json.NewEncoder(writer)
+	started := false
+	err := s.nodes.CheckManyProgress(request.Context(), ids, func(progress node.CheckProgress) error {
+		if !started {
+			writer.WriteHeader(http.StatusOK)
+			started = true
+		}
+		if err := encoder.Encode(progress); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
+	if err != nil && !started {
+		s.handleError(writer, request, err)
+	}
 }
 
 func (s *Server) handleNodeSettings(writer http.ResponseWriter, request *http.Request) {

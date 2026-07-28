@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
@@ -82,6 +84,13 @@ type CheckResult struct {
 	TestURL   string    `json:"test_url"`
 	ErrorCode string    `json:"error_code,omitempty"`
 	Error     string    `json:"error,omitempty"`
+}
+
+type CheckProgress struct {
+	Completed int         `json:"completed"`
+	Total     int         `json:"total"`
+	NodeID    string      `json:"node_id"`
+	Result    CheckResult `json:"result"`
 }
 
 type Filter struct {
@@ -189,7 +198,24 @@ func (s *Service) Get(ctx context.Context, id string) (Node, error) {
 	if err != nil {
 		return Node{}, err
 	}
-	return fromRecord(record), nil
+	return s.nodeWithSources(ctx, record)
+}
+
+func (s *Service) nodeWithSources(ctx context.Context, record store.NodeRecord) (Node, error) {
+	item := fromRecord(record)
+	item.Sources = []Source{}
+	records, err := s.repository.ListActiveNodeSources(ctx, []string{record.ID})
+	if err != nil {
+		return Node{}, err
+	}
+	for _, source := range records {
+		item.Sources = append(item.Sources, Source{
+			SubscriptionID:   source.SubscriptionID,
+			SubscriptionName: source.SubscriptionName,
+			SourceName:       source.SourceName,
+		})
+	}
+	return item, nil
 }
 
 func (s *Service) Check(ctx context.Context, id string) (CheckResult, error) {
@@ -261,8 +287,12 @@ func (s *Service) checkPrepared(ctx context.Context, id string, settings Quality
 	if err != nil {
 		return CheckResult{}, err
 	}
+	checkedNode, err := s.nodeWithSources(ctx, record)
+	if err != nil {
+		return CheckResult{}, err
+	}
 	result := CheckResult{
-		Node:      fromRecord(record),
+		Node:      checkedNode,
 		Success:   probeErr == nil,
 		LatencyMS: quality.LatencyMS,
 		CheckedAt: checkedAt,
@@ -274,14 +304,29 @@ func (s *Service) checkPrepared(ctx context.Context, id string, settings Quality
 }
 
 func (s *Service) CheckMany(ctx context.Context, ids []string) ([]CheckResult, error) {
+	results := make([]CheckResult, 0)
+	err := s.CheckManyProgress(ctx, ids, func(progress CheckProgress) error {
+		results = append(results, progress.Result)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(results, func(left, right int) bool {
+		return indexOfID(ids, results[left].Node.ID) < indexOfID(ids, results[right].Node.ID)
+	})
+	return results, nil
+}
+
+func (s *Service) CheckManyProgress(ctx context.Context, ids []string, notify func(CheckProgress) error) error {
 	if s.prober == nil {
-		return nil, ErrCheckUnavailable
+		return ErrCheckUnavailable
 	}
 	ids = deduplicateIDs(ids)
 	if len(ids) == 0 {
 		records, err := s.repository.ListNodes(ctx, store.NodeFilter{Limit: 100})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, record := range records {
 			if record.LifecycleState != "disabled" && record.LifecycleState != "retired" {
@@ -289,57 +334,80 @@ func (s *Service) CheckMany(ctx context.Context, ids []string) ([]CheckResult, e
 			}
 		}
 	}
-	if len(ids) > 100 {
-		return nil, fmt.Errorf("at most 100 nodes can be checked at once")
+	if len(ids) > 1000 {
+		return fmt.Errorf("at most 1000 nodes can be checked at once")
 	}
 	if err := s.prober.Apply(ctx); err != nil {
-		return nil, fmt.Errorf("prepare Mihomo for node checks: %w", err)
+		return fmt.Errorf("prepare Mihomo for node checks: %w", err)
 	}
 	settings, err := s.QualitySettings(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	type indexedResult struct {
-		index  int
-		result CheckResult
-	}
-	jobs := make(chan int)
-	results := make(chan indexedResult, len(ids))
+	jobs := make(chan string)
+	results := make(chan CheckResult, len(ids))
 	workerCount := 4
 	if len(ids) < workerCount {
 		workerCount = len(ids)
 	}
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
 	for range workerCount {
 		go func() {
-			for index := range jobs {
-				result, err := s.checkPrepared(ctx, ids[index], settings)
+			defer workers.Done()
+			for id := range jobs {
+				result, err := s.checkPrepared(ctx, id, settings)
 				if err != nil {
-					result = CheckResult{Success: false, CheckedAt: s.now().UTC(), ErrorCode: classifyProbeError(err), Error: sanitizeProbeError(err)}
+					result = CheckResult{Node: Node{ID: id, Sources: []Source{}}, Success: false, CheckedAt: s.now().UTC(), ErrorCode: classifyProbeError(err), Error: sanitizeProbeError(err)}
 				}
-				results <- indexedResult{index: index, result: result}
+				select {
+				case results <- result:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}()
 	}
 	go func() {
 		defer close(jobs)
-		for index := range ids {
+		for _, id := range ids {
 			select {
-			case jobs <- index:
+			case jobs <- id:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
-	ordered := make([]CheckResult, len(ids))
-	for range ids {
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+	completed := 0
+	for {
 		select {
-		case item := <-results:
-			ordered[item.index] = item.result
+		case result, ok := <-results:
+			if !ok {
+				return nil
+			}
+			completed++
+			if notify != nil {
+				if err := notify(CheckProgress{Completed: completed, Total: len(ids), NodeID: result.Node.ID, Result: result}); err != nil {
+					return err
+				}
+			}
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
 	}
-	return ordered, nil
+}
+
+func indexOfID(ids []string, id string) int {
+	for index, candidate := range ids {
+		if candidate == id {
+			return index
+		}
+	}
+	return len(ids)
 }
 
 func deduplicateIDs(ids []string) []string {

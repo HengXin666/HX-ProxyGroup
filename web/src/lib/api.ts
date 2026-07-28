@@ -13,6 +13,7 @@ import type {
   ListenerRecord,
   NodeCheckResult,
   NodeCheckList,
+  NodeCheckProgress,
   NodeList,
   NodeRecord,
   ProxyGroup,
@@ -21,6 +22,9 @@ import type {
   RefreshResult,
   Subscription,
   SubscriptionList,
+  TrafficResourceType,
+  TrafficSeries,
+  TrafficSummaryList,
   UpdateListenerRequest,
   UpdateProxyGroupRequest,
   VerifyResult,
@@ -291,6 +295,51 @@ export const api = {
     })
   },
 
+  async streamNodeChecks(
+    nodeIds: string[],
+    onProgress: (progress: NodeCheckProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const headers = new Headers({ "Content-Type": "application/json", Accept: "application/x-ndjson" })
+    if (csrfToken) headers.set("X-CSRF-Token", csrfToken)
+    const response = await fetch("/api/v1/nodes?stream=1", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ node_ids: nodeIds }),
+      signal,
+    })
+    if (response.status === 401) onUnauthenticated?.()
+    if (!response.ok) {
+      let payload: ApiErrorPayload | undefined
+      try {
+        payload = (await response.json()) as ApiErrorPayload
+      } catch {
+        payload = undefined
+      }
+      throw new ApiError(
+        payload?.error?.message || `请求失败：HTTP ${response.status}`,
+        response.status,
+        payload?.error?.code,
+        payload?.error?.request_id,
+      )
+    }
+    if (!response.body) throw new ApiError("测速进度响应不可读", response.status)
+
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+    let buffer = ""
+    for (;;) {
+      const { value, done } = await reader.read()
+      buffer += value ?? ""
+      const lines = buffer.split("\n")
+      buffer = lines.pop() ?? ""
+      for (const line of lines) {
+        if (line.trim()) onProgress(JSON.parse(line) as NodeCheckProgress)
+      }
+      if (done) break
+    }
+    if (buffer.trim()) onProgress(JSON.parse(buffer) as NodeCheckProgress)
+  },
+
   deleteSubscription(id: string, version: number): Promise<void> {
     return request(
       `/api/v1/subscriptions/${encodeURIComponent(id)}?version=${encodeURIComponent(version)}`,
@@ -369,6 +418,24 @@ export const api = {
 
   applyDataPlane(): Promise<DataPlaneStatus> {
     return request("/api/v1/dataplane/apply", { method: "POST" })
+  },
+
+  trafficSeries(resourceType: TrafficResourceType, resourceId: string, hours = 24): Promise<TrafficSeries> {
+    const to = new Date()
+    const from = new Date(to.getTime() - hours * 60 * 60 * 1000)
+    const query = new URLSearchParams({
+      resource_type: resourceType,
+      resource_id: resourceId,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      max_points: "96",
+    })
+    return request(`/api/v1/traffic?${query.toString()}`)
+  },
+
+  trafficSummaries(resourceType: TrafficResourceType): Promise<TrafficSummaryList> {
+    const query = new URLSearchParams({ resource_type: resourceType, limit: "200", offset: "0" })
+    return request(`/api/v1/traffic?${query.toString()}`)
   },
 
   listArtifacts(kind: ArtifactKind): Promise<ArtifactList> {

@@ -137,6 +137,13 @@ export interface NodeCheckList {
   items: NodeCheckResult[]
 }
 
+export interface NodeCheckProgress {
+  completed: number
+  total: number
+  node_id: string
+  result: NodeCheckResult
+}
+
 export type ProxyGroupStrategy = "manual" | "url-test" | "fallback" | "round-robin" | "consistent-hashing" | "sticky-sessions"
 
 export interface ProxyGroupSourceSpec {
@@ -273,6 +280,40 @@ export interface DataPlaneStatus {
   listener_count: number
   proxy_count: number
   active_listeners: DataPlaneEndpoint[]
+}
+
+export type TrafficResourceType = "listener" | "proxy_group" | "node"
+
+export interface TrafficSummary {
+  resource_type: TrafficResourceType
+  resource_id: string
+  upload_bytes: number
+  download_bytes: number
+  connection_count: number
+  active_connections: number
+  updated_at?: string
+}
+
+export interface TrafficPoint {
+  time: string
+  upload_bytes: number
+  download_bytes: number
+  connection_count: number
+  peak_active_connections: number
+}
+
+export interface TrafficSeries {
+  summary: TrafficSummary
+  from: string
+  to: string
+  resolution_seconds: number
+  points: TrafficPoint[]
+}
+
+export interface TrafficSummaryList {
+  items: TrafficSummary[]
+  limit: number
+  offset: number
 }
 
 export interface ApiErrorPayload {

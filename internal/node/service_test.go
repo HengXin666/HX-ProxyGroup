@@ -86,6 +86,23 @@ func TestCheckUpdatesNodeLifecycle(t *testing.T) {
 	}
 }
 
+func TestCheckResultKeepsNodeSources(t *testing.T) {
+	ctx := context.Background()
+	database, nodeID := createCandidateNode(t, ctx)
+	defer database.Close()
+	service, err := NewService(database, WithProber(&fakeProber{latency: 42}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Check(ctx, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Node.Sources) != 1 || result.Node.Sources[0].SubscriptionID == "" {
+		t.Fatalf("sources = %+v, want active subscription source", result.Node.Sources)
+	}
+}
+
 func createCandidateNode(t *testing.T, ctx context.Context) (*store.Store, string) {
 	t.Helper()
 	directory := t.TempDir()

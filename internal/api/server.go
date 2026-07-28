@@ -51,6 +51,7 @@ type NodeService interface {
 	Get(context.Context, string) (node.Node, error)
 	Check(context.Context, string) (node.CheckResult, error)
 	CheckMany(context.Context, []string) ([]node.CheckResult, error)
+	CheckManyProgress(context.Context, []string, func(node.CheckProgress) error) error
 	Disable(context.Context, string) (node.Node, error)
 	Enable(context.Context, string) (node.Node, error)
 	QualitySettings(context.Context) (node.QualitySettings, error)

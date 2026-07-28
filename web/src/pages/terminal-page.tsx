@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import "@xterm/xterm/css/xterm.css"
 
 import { ApiError, api, type TerminalStatus } from "@/lib/api"
+import { subscribeTheme } from "@/lib/theme"
 
 type ConnectionState = "idle" | "connecting" | "connected" | "closed"
 
@@ -50,7 +51,7 @@ export function TerminalPage({
         cursorBlink: true,
         fontSize: 13,
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-        theme: { background: "#ffffff", foreground: "#1f2328", cursor: "#1f2328" },
+        theme: terminalTheme(),
       })
       const fit = new FitAddon()
       terminal.loadAddon(fit)
@@ -110,12 +111,15 @@ export function TerminalPage({
   }, [onNotice])
 
   useEffect(() => () => disconnect(), [disconnect])
+  useEffect(() => subscribeTheme(() => {
+    if (terminalRef.current) terminalRef.current.options.theme = terminalTheme()
+  }), [])
 
   if (status && !status.enabled) {
     return (
       <div className="space-y-4">
         <PageHeader />
-        <div className="rounded-md border border-[#d4a72c66] bg-[#fff8c5] px-4 py-3 text-sm text-[#7d4e00]">
+        <div className="rounded-md border border-warning-border bg-warning-muted px-4 py-3 text-sm text-warning-foreground">
           <div className="font-medium">终端功能未启用</div>
           <p className="mt-1 text-xs leading-5">
             浏览器终端默认关闭。请在服务端以环境变量{" "}
@@ -131,7 +135,7 @@ export function TerminalPage({
     <div className="space-y-4">
       <PageHeader />
 
-      <div className="flex items-start gap-2.5 rounded-md border border-[#ff8182] bg-[#ffebe9] px-3 py-2.5 text-xs leading-5 text-[#a40e26]">
+      <div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs leading-5 text-destructive">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
         <div>
           <span className="font-medium">高风险操作提示：</span>
@@ -162,7 +166,7 @@ export function TerminalPage({
                 type="button"
                 onClick={connect}
                 disabled={connection === "connecting"}
-                className="inline-flex items-center gap-1.5 rounded-md bg-[#1f883d] px-3 py-1 text-xs font-medium text-white hover:bg-[#1a7f37] disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
               >
                 <Play className="size-3.5" />
                 {connection === "connecting" ? "连接中…" : "连接"}
@@ -170,7 +174,7 @@ export function TerminalPage({
             )}
           </div>
         </header>
-        <div ref={containerRef} className="h-[480px] w-full bg-card p-2" />
+        <div ref={containerRef} className="h-[480px] w-full bg-background p-2" />
       </section>
     </div>
   )
@@ -189,14 +193,20 @@ function PageHeader() {
 
 function ConnectionBadge({ state }: { state: ConnectionState }) {
   const meta: Record<ConnectionState, { label: string; className: string }> = {
-    idle: { label: "未连接", className: "border-[#d0d7de] bg-card text-muted-foreground" },
-    connecting: { label: "连接中", className: "border-[#d4a72c66] bg-[#fff8c5] text-[#7d4e00]" },
-    connected: { label: "已连接", className: "border-[#aceebb] bg-[#dafbe1] text-[#116329]" },
-    closed: { label: "已断开", className: "border-[#d0d7de] bg-muted/60 text-muted-foreground" },
+    idle: { label: "未连接", className: "border-border bg-card text-muted-foreground" },
+    connecting: { label: "连接中", className: "border-warning-border bg-warning-muted text-warning-foreground" },
+    connected: { label: "已连接", className: "border-success-border bg-success-muted text-success-foreground" },
+    closed: { label: "已断开", className: "border-border bg-muted/60 text-muted-foreground" },
   }
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] ${meta[state].className}`}>
       {meta[state].label}
     </span>
   )
+}
+
+function terminalTheme() {
+  const styles = getComputedStyle(document.documentElement)
+  const color = (name: string) => styles.getPropertyValue(name).trim()
+  return { background: color("--background"), foreground: color("--foreground"), cursor: color("--foreground"), selectionBackground: color("--accent") }
 }

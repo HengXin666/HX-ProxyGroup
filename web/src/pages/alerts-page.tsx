@@ -78,7 +78,7 @@ export function AlertsPage({
 
       <section className="rounded-md border bg-card">
         <header className="flex items-center gap-2 border-b px-4 py-2.5 text-sm font-medium">
-          <BellRing className="size-4 text-[#cf222e]" />
+          <BellRing className="size-4 text-destructive" />
           当前告警（{firing.length}）
         </header>
         {firing.length === 0 ? (
@@ -96,7 +96,7 @@ export function AlertsPage({
                     <span className="ml-2 font-normal text-muted-foreground">{item.target_name}</span>
                   </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">{item.message}</div>
-                  <div className="mt-1 text-[11px] text-[#8c959f]">
+                  <div className="mt-1 text-[11px] text-muted-foreground">
                     触发于 {new Date(item.fired_at).toLocaleString()}
                     {item.notify_count > 0 && ` · 已通知 ${item.notify_count} 次`}
                     {item.acknowledged && " · 已确认"}
@@ -135,7 +135,7 @@ export function AlertsPage({
                     {item.rule}
                     <span className="ml-2 text-muted-foreground">{item.target_name}</span>
                   </div>
-                  <div className="mt-0.5 text-[11px] text-[#8c959f]">
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
                     {new Date(item.fired_at).toLocaleString()} 触发
                     {item.resolved_at && ` · ${new Date(item.resolved_at).toLocaleString()} 恢复`}
                   </div>
@@ -211,7 +211,7 @@ function SettingsCard({
   return (
     <section className="rounded-md border bg-card">
       <header className="flex items-center gap-2 border-b px-4 py-2.5 text-sm font-medium">
-        <Mail className="size-4 text-[#0969da]" />
+        <Mail className="size-4 text-info" />
         邮件通道（SMTP）
       </header>
       <form onSubmit={save} className="grid gap-3 p-4 sm:grid-cols-2">
@@ -292,10 +292,10 @@ function SeverityBadge({ severity, muted }: { severity: "warning" | "critical"; 
       className={cn(
         "mt-0.5 inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium",
         muted
-          ? "border-[#d0d7de] bg-muted/60 text-muted-foreground"
+          ? "border-border bg-muted/60 text-muted-foreground"
           : severity === "critical"
-            ? "border-[#ff8182] bg-[#ffebe9] text-[#a40e26]"
-            : "border-[#d4a72c66] bg-[#fff8c5] text-[#7d4e00]",
+            ? "border-destructive/40 bg-destructive/10 text-destructive"
+            : "border-warning-border bg-warning-muted text-warning-foreground",
       )}
     >
       {severity === "critical" ? "严重" : "警告"}

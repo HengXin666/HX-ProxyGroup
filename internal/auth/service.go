@@ -26,6 +26,7 @@ var (
 	ErrInvalidSetupToken  = errors.New("invalid setup token")
 	ErrSessionExpired     = errors.New("session is missing or expired")
 	ErrLockedOut          = errors.New("too many failed logins, retry later")
+	ErrInvalidUsername    = errors.New("username must contain 3 to 64 characters")
 	ErrWeakPassword       = errors.New("password must contain 10 to 128 characters")
 )
 
@@ -39,6 +40,7 @@ type Repository interface {
 	GetAdminAccount(context.Context) (store.AdminAccountRecord, error)
 	CreateAdminAccount(context.Context, store.AdminAccountRecord) error
 	UpdateAdminPassword(context.Context, string, time.Time) (int, error)
+	UpdateAdminUsername(context.Context, string, time.Time) (int, error)
 	CreateAdminSession(context.Context, store.AdminSessionRecord) error
 	GetAdminSession(context.Context, string) (store.AdminSessionRecord, error)
 	TouchAdminSession(context.Context, string, time.Time) error
@@ -137,9 +139,9 @@ func (s *Service) Setup(ctx context.Context, setupToken, username, password stri
 	if expected == "" || subtle.ConstantTimeCompare([]byte(expected), []byte(strings.TrimSpace(setupToken))) != 1 {
 		return ErrInvalidSetupToken
 	}
-	username = strings.TrimSpace(username)
-	if len(username) < 3 || len(username) > 64 {
-		return errors.New("username must contain 3 to 64 characters")
+	username, err = validateUsername(username)
+	if err != nil {
+		return err
 	}
 	if err := validatePassword(password); err != nil {
 		return err
@@ -292,6 +294,45 @@ func (s *Service) ChangePassword(ctx context.Context, currentPassword, newPasswo
 	}
 	s.logger.Info("administrator password changed; all sessions revoked")
 	return nil
+}
+
+// ChangeUsername verifies the current password, updates the login name and
+// revokes every session so the new identity is required immediately.
+func (s *Service) ChangeUsername(ctx context.Context, currentPassword, newUsername string) error {
+	account, err := s.repository.GetAdminAccount(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		return ErrNotConfigured
+	}
+	if err != nil {
+		return err
+	}
+	ok, err := VerifyPassword(account.PasswordHash, currentPassword)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrInvalidCredentials
+	}
+	newUsername, err = validateUsername(newUsername)
+	if err != nil {
+		return err
+	}
+	if _, err := s.repository.UpdateAdminUsername(ctx, newUsername, s.now()); err != nil {
+		return err
+	}
+	if err := s.repository.DeleteAllAdminSessions(ctx); err != nil {
+		return err
+	}
+	s.logger.Info("administrator username changed; all sessions revoked", "username", newUsername)
+	return nil
+}
+
+func validateUsername(username string) (string, error) {
+	username = strings.TrimSpace(username)
+	if len(username) < 3 || len(username) > 64 {
+		return "", ErrInvalidUsername
+	}
+	return username, nil
 }
 
 func validatePassword(password string) error {

@@ -16,10 +16,10 @@
 - [x] 实现 Clash/Mihomo YAML 与常见分享 URI 解析、稳定指纹去重和节点生命周期持久化
 - [ ] 补齐剩余订阅协议兼容、Provider 展开与解析兼容矩阵
 - [x] 接入 Mihomo 配置编译、校验、进程管理、Listener 就绪检查与失败回滚
-- [x] 创建订阅、节点、代理服务、Backup / Export 的明暗主题 React 管理面板
+- [x] 创建合并的订阅与节点库存、代理服务、Backup / Export 管理面板，并支持全站明亮、黑夜与跟随系统主题
 - [x] 实现跨订阅动态 Proxy Group、入口与账号聚合编排、HTTP/SOCKS/Mixed Listener，以及单节点/批量延迟检测
 - [x] 实现固定阶段规则流水线（Normalize→Enrich→Predicate→Score→Bucket→Sort→Limit）与可解释评分
-- [x] 实现管理员认证（Argon2id、Session、CSRF、登录限速与锁定、改密全体注销）
+- [x] 实现管理员认证（Argon2id、Session、CSRF、登录限速与锁定、账号或密码变更后全体注销）
 - [x] 实现告警状态机（冷却、恢复通知、确认、重启不重复轰炸）与 SMTP 邮件通道
 - [x] 订阅调度增强：Cron 表达式、重试随机抖动与快速重试上限、结构化失败原因持久化、节点管理员禁用
 - [x] v2：浏览器内终端（PTY + WebSocket + xterm.js，默认关闭、强制认证、空闲超时、审计）
@@ -55,7 +55,7 @@ bash run.sh
 
 `run.sh` 仅在项目目录下构建并启动进程，不要求 root，不注册 systemd，也不会写入 `/usr/local`、`/etc` 或 `/var/lib`。本地状态默认保存在 `./.tmp/run-data`，按 `Ctrl+C` 会统一停止后端和前端子进程。
 
-`run.sh` 会自动识别 npm / pnpm / yarn / bun，并同时启动 Go 后端和 Vite 前端。首次运行若缺少 `web/node_modules`，脚本会优先根据锁文件自动安装依赖。前端默认地址为 `http://127.0.0.1:5173`，节点页为 `http://127.0.0.1:5173/#/nodes`。前端通过 Vite 代理访问后端，因此无需额外开放 CORS。管理面板支持明亮、黑夜和跟随系统三种主题。
+`run.sh` 会自动识别 npm / pnpm / yarn / bun，并同时启动 Go 后端和 Vite 前端。首次运行若缺少 `web/node_modules`，脚本会优先根据锁文件自动安装依赖。前端默认地址为 `http://127.0.0.1:5173`，订阅与节点库存页为 `http://127.0.0.1:5173/#/subscriptions`（旧 `#/nodes` 地址仍会打开该页的节点标签）。前端通过 Vite 代理访问后端，因此无需额外开放 CORS。管理面板支持在全局配置的主题标签中选择明亮、黑夜和跟随系统三种模式，并通过颜色画板、HEX 输入或预设色自定义全站主题色。
 
 受管 Mihomo 默认从 Linux 主路由表选择物理出口网卡，并将 `interface-name` 写入运行配置。这使 HX 与 Clash Verge、Mihomo Party 等 TUN 客户端在同一台机器运行时，HX 的上游拨号不会再次进入宿主机 TUN。默认还将 Mihomo 的 `GOMAXPROCS` 限制为最多 4，并把 `runtime/mihomo.log` 限制为单文件 8 MiB、保留 2 份。
 

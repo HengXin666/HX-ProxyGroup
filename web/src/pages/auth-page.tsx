@@ -61,9 +61,9 @@ export function AuthPage({
         >
           <div className="flex items-center gap-2 text-sm font-medium">
             {configured ? (
-              <KeyRound className="size-4 text-[#0969da]" />
+              <KeyRound className="size-4 text-info" />
             ) : (
-              <ShieldCheck className="size-4 text-[#1a7f37]" />
+              <ShieldCheck className="size-4 text-success" />
             )}
             {configured ? "管理员登录" : "初始化管理员账户"}
           </div>
@@ -120,7 +120,7 @@ export function AuthPage({
           )}
 
           {error && (
-            <div className="rounded-md border border-[#ff8182] bg-[#ffebe9] px-2.5 py-2 text-xs text-[#a40e26]">
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
               {error}
             </div>
           )}

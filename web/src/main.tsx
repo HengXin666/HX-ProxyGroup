@@ -3,10 +3,10 @@ import { createRoot } from "react-dom/client"
 
 import App from "@/App"
 import "@/index.css"
+import { applyTheme, applyThemeColor, savedTheme, savedThemeColor } from "@/lib/theme"
 
-const storedTheme = localStorage.getItem("hx-theme")
-const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
-document.documentElement.classList.toggle("dark", storedTheme === "dark" || (storedTheme !== "light" && prefersDark))
+applyThemeColor(savedThemeColor())
+applyTheme(savedTheme())
 
 const root = document.getElementById("root")
 if (!root) {

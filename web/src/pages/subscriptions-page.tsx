@@ -11,6 +11,7 @@ import { cn, compactId, formatBytes, formatDate } from "@/lib/utils"
 
 interface SubscriptionsPageProps {
   onNotice: (message: string, tone?: "success" | "error") => void
+  embedded?: boolean
 }
 
 const sourceMeta: Record<SourceType, { label: string; icon: typeof Globe2 }> = {
@@ -19,7 +20,7 @@ const sourceMeta: Record<SourceType, { label: string; icon: typeof Globe2 }> = {
   file: { label: "本地文件", icon: FileText },
 }
 
-export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
+export function SubscriptionsPage({ onNotice, embedded = false }: SubscriptionsPageProps) {
   const [items, setItems] = useState<Subscription[]>([])
   const [nodes, setNodes] = useState<NodeRecord[]>([])
   const [traffic, setTraffic] = useState<Map<string, TrafficSummary>>(new Map())
@@ -139,13 +140,13 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
+        {!embedded && <div>
           <h1 className="text-xl font-semibold tracking-tight">订阅</h1>
           <p className="mt-1 max-w-3xl text-sm leading-5 text-muted-foreground">
             管理加密订阅来源、持久化刷新计划和最近成功快照。刷新成功后会解析并更新节点库存。
           </p>
-        </div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:shrink-0">
+        </div>}
+        <div className={cn("grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:shrink-0", embedded && "sm:ml-auto")}>
           <Button variant="outline" onClick={() => void checkNodes()} disabled={loading || Boolean(busy["test:all"])}>
             {busy["test:all"] ? <LoaderCircle className="animate-spin" /> : <Gauge />}
             测试节点
@@ -188,7 +189,7 @@ export function SubscriptionsPage({ onNotice }: SubscriptionsPageProps) {
           </div>
         ) : items.length === 0 ? (
           <div className="flex min-h-56 flex-col items-center justify-center px-6 text-center">
-            <Radio className="mb-3 size-8 text-[#8c959f]" />
+            <Radio className="mb-3 size-8 text-muted-foreground" />
             <div className="font-medium">还没有订阅</div>
             <p className="mt-1 max-w-md text-xs leading-5 text-muted-foreground">
               可添加远程 URL、内联 URI/Base64/YAML，或服务器上的普通文件。创建后执行刷新即可生成节点库存。
@@ -393,7 +394,7 @@ function Metric({ label, value, helper, border = false, warning = false }: { lab
   return (
     <div className={cn("px-4 py-3", border && "border-t sm:border-l sm:border-t-0")}>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={cn("mt-0.5 text-xl font-semibold tabular-nums", warning && "text-[#9a6700]")}>{value}</div>
+      <div className={cn("mt-0.5 text-xl font-semibold tabular-nums", warning && "text-warning")}>{value}</div>
       <div className="mt-0.5 text-[11px] text-muted-foreground">{helper}</div>
     </div>
   )

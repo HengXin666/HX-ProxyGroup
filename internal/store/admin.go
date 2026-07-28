@@ -89,6 +89,24 @@ RETURNING password_version
 	return version, nil
 }
 
+// UpdateAdminUsername replaces the login name and bumps password_version so
+// sessions created for the previous identity become invalid.
+func (s *Store) UpdateAdminUsername(ctx context.Context, username string, now time.Time) (int, error) {
+	row := s.db.QueryRowContext(ctx, `
+UPDATE admin_account
+SET username = ?, password_version = password_version + 1, updated_at = ?
+WHERE id = 1
+RETURNING password_version
+`, username, now.UTC().Format(time.RFC3339Nano))
+	var version int
+	if err := row.Scan(&version); errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	} else if err != nil {
+		return 0, fmt.Errorf("update admin username: %w", err)
+	}
+	return version, nil
+}
+
 func (s *Store) CreateAdminSession(ctx context.Context, record AdminSessionRecord) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO admin_sessions (token_hash, csrf_token, password_version, created_at, last_used_at, expires_at)

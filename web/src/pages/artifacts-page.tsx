@@ -139,7 +139,7 @@ export function ArtifactsPage({ onNotice }: ArtifactsPageProps) {
           </div>
         ) : items.length === 0 ? (
           <div className="flex min-h-52 flex-col items-center justify-center px-6 text-center">
-            {kind === "backup" ? <Archive className="mb-3 size-8 text-[#8c959f]" /> : <FileArchive className="mb-3 size-8 text-[#8c959f]" />}
+            {kind === "backup" ? <Archive className="mb-3 size-8 text-muted-foreground" /> : <FileArchive className="mb-3 size-8 text-muted-foreground" />}
             <div className="font-medium">当前没有 {kind === "backup" ? "Backup" : "Portable Export"}</div>
             <p className="mt-1 text-xs text-muted-foreground">创建后可下载、执行完整性校验或删除。</p>
           </div>
@@ -229,7 +229,7 @@ function KindTab({ active, onClick, icon: Icon, border = false, children }: { ac
       className={cn(
         "inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/60",
         border && "border-l",
-        active && "bg-[#ddf4ff] text-[#0550ae] hover:bg-[#ddf4ff]",
+        active && "bg-accent text-accent-foreground hover:bg-accent",
       )}
     >
       <Icon className="size-3.5" />

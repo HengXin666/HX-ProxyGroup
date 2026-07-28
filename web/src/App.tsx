@@ -21,15 +21,14 @@ import { cn } from "@/lib/utils"
 import { AlertsPage } from "@/pages/alerts-page"
 import { ArtifactsPage } from "@/pages/artifacts-page"
 import { AuthPage } from "@/pages/auth-page"
-import { NodesPage } from "@/pages/nodes-page"
+import { InventoryPage } from "@/pages/inventory-page"
 import { OverviewPage } from "@/pages/overview-page"
 import { RoutingPage } from "@/pages/routing-page"
 import { RulesPage } from "@/pages/rules-page"
 import { SettingsPage } from "@/pages/settings-page"
-import { SubscriptionsPage } from "@/pages/subscriptions-page"
 import { TerminalPage } from "@/pages/terminal-page"
 
-type Page = "overview" | "subscriptions" | "nodes" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal"
+type Page = "overview" | "subscriptions" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 
 const pages: Array<{
@@ -39,8 +38,7 @@ const pages: Array<{
   icon: typeof Radio
 }> = [
   { id: "overview", label: "总览", description: "流量与路由", icon: LayoutDashboard },
-  { id: "subscriptions", label: "订阅", description: "来源与刷新", icon: Radio },
-  { id: "nodes", label: "节点", description: "解析与生命周期", icon: Network },
+  { id: "subscriptions", label: "订阅与节点", description: "来源、刷新与质量", icon: Radio },
   { id: "routing", label: "代理服务", description: "代理组与 Listener", icon: Route },
   { id: "rules", label: "站点别名", description: "可复用网页组", icon: ListFilter },
   { id: "settings", label: "全局配置", description: "测速、DNS 与性能", icon: Settings2 },
@@ -51,6 +49,7 @@ const pages: Array<{
 
 function pageFromHash(): Page {
   const value = window.location.hash.replace(/^#\/?/, "")
+  if (value === "nodes") return "subscriptions"
   return pages.some((item) => item.id === value) ? (value as Page) : "overview"
 }
 
@@ -156,7 +155,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background lg:grid lg:grid-cols-[228px_minmax(0,1fr)]">
+    <div className="min-h-screen bg-background lg:grid lg:h-screen lg:grid-cols-[228px_minmax(0,1fr)] lg:overflow-hidden">
       <aside className="hidden min-h-screen border-r bg-card lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
         <div className="flex h-14 items-center gap-2.5 border-b px-4">
           <div className="flex size-7 items-center justify-center rounded-md bg-[#24292f] text-white">
@@ -203,7 +202,7 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="min-w-0">
+      <div className={cn("min-w-0 lg:h-screen", page === "routing" ? "lg:overflow-hidden" : "lg:overflow-y-auto")}>
         <header className="sticky top-0 z-40 border-b bg-card lg:hidden">
           <div className="flex h-13 items-center gap-2 px-3">
             <div className="flex size-7 items-center justify-center rounded-md bg-[#24292f] text-white">
@@ -233,9 +232,9 @@ export default function App() {
           </nav>
         </header>
 
-        <main key={page} className="page-enter mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+        <main key={page} className={cn("page-enter mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7", page === "routing" && "lg:h-full lg:max-w-none lg:overflow-hidden")}>
           {healthy === false && (
-            <div className="mb-4 flex items-start gap-2.5 rounded-md border border-[#ff8182] bg-[#ffebe9] px-3 py-2.5 text-sm text-[#a40e26]">
+            <div className="mb-4 flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
               <CircleX className="mt-0.5 size-4 shrink-0" />
               <div>
                 <div className="font-medium">无法连接 Go 控制面</div>
@@ -247,8 +246,7 @@ export default function App() {
           )}
 
           {page === "overview" && <OverviewPage onNotice={showNotice} />}
-          {page === "subscriptions" && <SubscriptionsPage onNotice={showNotice} />}
-          {page === "nodes" && <NodesPage onNotice={showNotice} />}
+          {page === "subscriptions" && <InventoryPage initialView={window.location.hash.includes("nodes") ? "nodes" : "subscriptions"} onNotice={showNotice} />}
           {page === "routing" && <RoutingPage onNotice={showNotice} />}
           {page === "rules" && <RulesPage onNotice={showNotice} />}
           {page === "settings" && <SettingsPage onNotice={showNotice} username={authGate.username} onSignedOut={requireLogin} />}
@@ -261,9 +259,9 @@ export default function App() {
       {notice && (
         <div className="toast-enter fixed bottom-4 right-4 z-[90] flex max-w-sm items-start gap-2.5 rounded-md border bg-card px-3 py-2.5 shadow-[0_12px_32px_rgba(23,33,31,0.16)]">
           {notice.tone === "success" ? (
-            <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[#1a7f37]" />
+            <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
           ) : (
-            <CircleX className="mt-0.5 size-4 shrink-0 text-[#cf222e]" />
+            <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />
           )}
           <div className="min-w-0 text-sm leading-5">{notice.message}</div>
           <button
@@ -313,15 +311,15 @@ function StatusDot({ healthy }: { healthy: boolean | null }) {
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 text-[11px] text-muted-foreground",
-        healthy === true && "border-[#aceebb] bg-[#dafbe1] text-[#116329]",
-        healthy === false && "border-[#ff8182] bg-[#ffebe9] text-[#a40e26]",
+        healthy === true && "border-success-border bg-success-muted text-success-foreground",
+        healthy === false && "border-destructive/40 bg-destructive/10 text-destructive",
       )}
     >
       <span
         className={cn(
-          "size-1.5 rounded-full bg-[#8c959f]",
-          healthy === true && "bg-[#1a7f37]",
-          healthy === false && "bg-[#cf222e]",
+          "size-1.5 rounded-full bg-muted-foreground",
+          healthy === true && "bg-success",
+          healthy === false && "bg-destructive",
         )}
       />
       {healthy === null ? "检测中" : healthy ? "就绪" : "离线"}

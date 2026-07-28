@@ -20,6 +20,7 @@ type AuthService interface {
 	Logout(ctx context.Context, token string) error
 	LogoutAll(ctx context.Context) error
 	ChangePassword(ctx context.Context, currentPassword, newPassword string) error
+	ChangeUsername(ctx context.Context, currentPassword, newUsername string) error
 }
 
 func WithAuth(service AuthService) Option {
@@ -39,6 +40,7 @@ func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("/api/v1/auth/logout-all", s.handleAuthLogoutAll)
 	mux.HandleFunc("/api/v1/auth/password", s.handleAuthPassword)
+	mux.HandleFunc("/api/v1/auth/username", s.handleAuthUsername)
 }
 
 // requireAuth guards /api/v1/* once the administrator account exists.
@@ -194,6 +196,27 @@ func (s *Server) handleAuthPassword(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	if err := s.auth.ChangePassword(request.Context(), body.CurrentPassword, body.NewPassword); err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	http.SetCookie(writer, sessionCookie(request, "", -1))
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAuthUsername(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPut {
+		methodNotAllowed(writer, request, http.MethodPut)
+		return
+	}
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewUsername     string `json:"new_username"`
+	}
+	if err := decodeJSONBody(writer, request, &body); err != nil {
+		s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.auth.ChangeUsername(request.Context(), body.CurrentPassword, body.NewUsername); err != nil {
 		s.handleError(writer, request, err)
 		return
 	}

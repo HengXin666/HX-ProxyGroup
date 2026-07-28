@@ -93,8 +93,8 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <div className="space-y-4 lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:gap-4 lg:space-y-0">
+      <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold">代理服务</h1>
           <p className="mt-1 max-w-3xl text-sm leading-5 text-muted-foreground">每项服务同时定义入口 IP、端口、登录账号，以及它可以使用的跨订阅节点规则。</p>
@@ -105,12 +105,12 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
         </div>
       </div>
 
-      <DataPlaneBand status={status} loading={loading} />
+      <div className="shrink-0"><DataPlaneBand status={status} loading={loading} /></div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(390px,0.8fr)]">
-        <section className="overflow-hidden rounded-lg border bg-card">
+      <div className="grid gap-4 lg:min-h-0 lg:flex-1 xl:grid-cols-[minmax(0,1.2fr)_minmax(390px,0.8fr)]">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card">
           <PanelHeader title="服务列表" description="入口与节点策略保持一一对应" count={listeners.length} />
-          {listeners.length === 0 ? <EmptyState /> : <div className="divide-y">{listeners.map((listener) => {
+          {listeners.length === 0 ? <EmptyState /> : <div className="min-h-0 flex-1 divide-y overflow-y-auto">{listeners.map((listener) => {
             const group = groups.find((item) => item.id === listener.proxy_group_id)
             return <ServiceRow key={listener.id} listener={listener} group={group} groups={groups} routingRules={routingRules} nodes={resolveServiceNodes(group, nodes)} subscriptions={subscriptions} allNodes={nodes} expanded={expanded.has(listener.id)} editing={editing === listener.id} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(listener.id)) next.delete(listener.id); else next.add(listener.id); return next })} onEdit={() => { setExpanded((current) => new Set(current).add(listener.id)); setEditing(listener.id) }} onCloseEdit={() => setEditing(null)} onRoutingChanged={setRoutingRules} onChanged={async () => { setEditing(null); await load() }} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
           })}</div>}
@@ -316,16 +316,16 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
     if (next === "direct") setStrategy("manual")
   }
   return (
-    <form onSubmit={submit} className="overflow-hidden rounded-lg border bg-card">
+    <form onSubmit={submit} className="overflow-hidden rounded-lg border bg-card lg:min-h-0 lg:overflow-y-auto">
       <PanelHeader title="新建代理服务" description="入口与聚合规则一次创建" />
       <div className="space-y-4 p-3">
         <Field label="服务名称"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：日本低延迟出口" required /></Field>
         <Field label="节点来源"><ChipSet values={[{ value: "direct", label: "服务器直连" }, { value: "rule", label: "跨订阅规则" }, { value: "manual", label: "固定节点" }]} current={sourceMode} onChange={changeSourceMode} /></Field>
-        {sourceMode === "direct" ? <div className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Server className="size-4 text-[#1a7f37]" />流量使用当前服务器网络出口</div> : sourceMode === "rule" ? <>
+        {sourceMode === "direct" ? <div className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Server className="size-4 text-success" />流量使用当前服务器网络出口</div> : sourceMode === "rule" ? <>
           <Field label={`订阅（已选 ${selectedSubscriptions.length}）`}><CheckList items={subscriptions.map((item) => ({ id: item.id, label: item.name }))} selected={selectedSubscriptions} onChange={setSelectedSubscriptions} empty="暂无已启用订阅" /></Field>
           <Field label="地区"><MultiChipSet values={regions} current={selectedRegions} onChange={setSelectedRegions} /></Field>
           <div className="grid grid-cols-2 gap-2"><Field label="最多节点"><Input type="number" min={1} max={500} value={limit} onChange={(event) => setLimit(Number(event.target.value))} /></Field><Field label="最大延迟 ms"><Input type="number" min={1} max={60000} value={maxLatency} onChange={(event) => setMaxLatency(Number(event.target.value))} /></Field></div>
-          <div className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Gauge className="size-4 text-[#0969da]" />当前指标预计命中 {estimated} 个节点</div>
+          <div className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Gauge className="size-4 text-info" />当前指标预计命中 {estimated} 个节点</div>
         </> : <Field label={`固定节点（已选 ${selectedNodes.length}）`}><CheckList items={nodes.map((item) => ({ id: item.id, label: `${item.display_name} · ${item.last_latency_ms == null ? "未测试" : `${item.last_latency_ms}ms`}` }))} selected={selectedNodes} onChange={setSelectedNodes} empty="暂无活动节点" /></Field>}
         <Field label="出站策略"><ChipSet values={strategies} current={strategy} onChange={setStrategy} /></Field>
         <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} required /></Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/hx-proxy" required /></Field></div>}{!advanced && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={authEnabled} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用用户名密码认证</label>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
@@ -337,7 +337,7 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
 
 function DataPlaneBand({ status, loading }: { status: DataPlaneStatus | null; loading: boolean }) {
   const running = status?.running === true
-  return <section className="grid overflow-hidden rounded-lg border bg-card md:grid-cols-[220px_1fr]"><div className={cn("flex items-center gap-3 px-4 py-4", running ? "bg-[#dafbe1]" : status?.state === "failed" ? "bg-[#ffebe9]" : "bg-muted/60")}>{loading ? <LoaderCircle className="size-5 animate-spin" /> : running ? <CheckCircle2 className="size-5 text-[#1a7f37]" /> : <CircleAlert className="size-5 text-[#bf8700]" />}<div><div className="font-semibold">{loading ? "检测中" : running ? "Mihomo 运行中" : status?.available ? "Mihomo 空闲" : "Mihomo 不可用"}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{status?.listener_count ?? 0} 个活动入口</div></div></div><div className="grid gap-2 px-4 py-3 text-xs sm:grid-cols-3"><Info label="进程" value={status?.pid ? `PID ${status.pid}` : "—"} /><Info label="最近应用" value={formatDate(status?.last_apply_at)} /><Info label="版本" value={status?.version || "—"} /></div></section>
+  return <section className="grid overflow-hidden rounded-lg border bg-card md:grid-cols-[220px_1fr]"><div className={cn("flex items-center gap-3 px-4 py-4", running ? "bg-success-muted" : status?.state === "failed" ? "bg-destructive/10" : "bg-muted/60")}>{loading ? <LoaderCircle className="size-5 animate-spin" /> : running ? <CheckCircle2 className="size-5 text-success" /> : <CircleAlert className="size-5 text-warning" />}<div><div className="font-semibold">{loading ? "检测中" : running ? "Mihomo 运行中" : status?.available ? "Mihomo 空闲" : "Mihomo 不可用"}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{status?.listener_count ?? 0} 个活动入口</div></div></div><div className="grid gap-2 px-4 py-3 text-xs sm:grid-cols-3"><Info label="进程" value={status?.pid ? `PID ${status.pid}` : "—"} /><Info label="最近应用" value={formatDate(status?.last_apply_at)} /><Info label="版本" value={status?.version || "—"} /></div></section>
 }
 
 function CheckList({ items, selected, onChange, empty }: { items: Array<{ id: string; label: string }>; selected: string[]; onChange: (ids: string[]) => void; empty: string }) {
@@ -345,7 +345,7 @@ function CheckList({ items, selected, onChange, empty }: { items: Array<{ id: st
 }
 
 function PanelHeader({ title, description, count }: { title: string; description: string; count?: number }) { return <div className="flex items-center justify-between border-b bg-muted/60 px-3 py-2.5"><div><div className="text-sm font-semibold">{title}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{description}</div></div>{count != null && <Badge variant="secondary">{count}</Badge>}</div> }
-function EmptyState() { return <div className="flex min-h-48 flex-col items-center justify-center px-4 text-center"><Cable className="mb-2 size-7 text-[#8c959f]" /><div className="text-sm font-medium">还没有代理服务</div><div className="mt-1 text-xs text-muted-foreground">创建入口并绑定跨订阅节点规则。</div></div> }
+function EmptyState() { return <div className="flex min-h-48 flex-col items-center justify-center px-4 text-center"><Cable className="mb-2 size-7 text-muted-foreground" /><div className="text-sm font-medium">还没有代理服务</div><div className="mt-1 text-xs text-muted-foreground">创建入口并绑定跨订阅节点规则。</div></div> }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block space-y-1.5"><span className="text-xs font-medium">{label}</span>{children}</label> }
 function Info({ label, value }: { label: string; value: string }) { return <div className="min-w-0"><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-0.5 block truncate" title={value}>{value}</div></div> }
 function Choice({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) { return <Button type="button" size="sm" variant={active ? "default" : "outline"} onClick={onClick}>{children}</Button> }

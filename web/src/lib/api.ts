@@ -200,6 +200,13 @@ export const api = {
     })
   },
 
+  changeUsername(currentPassword: string, newUsername: string): Promise<void> {
+    return request("/api/v1/auth/username", {
+      method: "PUT",
+      body: JSON.stringify({ current_password: currentPassword, new_username: newUsername }),
+    })
+  },
+
   listAlerts(status?: "firing" | "resolved"): Promise<AlertList> {
     const query = new URLSearchParams({ limit: "200" })
     if (status) query.set("status", status)

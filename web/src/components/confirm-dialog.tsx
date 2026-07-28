@@ -24,11 +24,11 @@ export function ConfirmDialog({
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-[#1f2328]/35 p-4">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-foreground/35 p-4">
       <div className="w-full max-w-md rounded-lg border bg-card shadow-[0_12px_36px_rgba(31,35,40,0.18)]">
         <div className="flex items-start justify-between border-b px-4 py-3">
           <div className="flex items-center gap-2 font-semibold">
-            <AlertTriangle className="size-4 text-[#bf8700]" />
+            <AlertTriangle className="size-4 text-warning" />
             {title}
           </div>
           <Button variant="ghost" size="icon" onClick={onCancel} disabled={busy} aria-label="关闭">

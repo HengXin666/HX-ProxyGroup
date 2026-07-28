@@ -12,6 +12,7 @@ import { cn, compactId, formatBytes, formatDate } from "@/lib/utils"
 
 interface NodesPageProps {
   onNotice: (message: string, tone?: "success" | "error") => void
+  embedded?: boolean
 }
 
 const states = ["", "candidate", "healthy", "degraded", "quarantined", "disabled", "retired"] as const
@@ -26,7 +27,7 @@ const stateMeta: Record<NodeRecord["lifecycle_state"], { label: string; variant:
   retired: { label: "已退役", variant: "secondary" },
 }
 
-export function NodesPage({ onNotice }: NodesPageProps) {
+export function NodesPage({ onNotice, embedded = false }: NodesPageProps) {
   const [items, setItems] = useState<NodeRecord[]>([])
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
   const [traffic, setTraffic] = useState<Map<string, TrafficSummary>>(new Map())
@@ -157,13 +158,13 @@ export function NodesPage({ onNotice }: NodesPageProps) {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
+        {!embedded && <div>
           <h1 className="text-xl font-semibold tracking-tight">节点</h1>
           <p className="mt-1 max-w-3xl text-sm leading-5 text-muted-foreground">
             节点按稳定指纹去重。URL 延迟测试与 Clash Verge 一样由 Mihomo 经指定节点访问测试目标，不是 ICMP ping。
           </p>
-        </div>
-        <div className="flex items-center gap-2">
+        </div>}
+        <div className={cn("flex items-center gap-2", embedded && "sm:ml-auto")}>
           <Button onClick={() => batchProgress ? batchController.current?.abort() : void checkVisibleNodes()} disabled={loading || items.length === 0}>
             {batchProgress ? <Square /> : <Play />}
             {batchProgress ? `${batchProgress.completed}/${batchProgress.total}` : "批量测速"}
@@ -188,7 +189,7 @@ export function NodesPage({ onNotice }: NodesPageProps) {
       <section className="overflow-hidden rounded-lg border bg-card">
         <div className="flex flex-col gap-3 border-b bg-muted/60 px-3 py-3 lg:flex-row lg:items-center">
           <div className="relative w-full max-w-md">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#8c959f]" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点名称或指纹" className="pl-8" />
           </div>
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -213,7 +214,7 @@ export function NodesPage({ onNotice }: NodesPageProps) {
         </div>}
       </section>
 
-      <div className="rounded-md border border-[#b6d8ff] bg-[#ddf4ff] px-3 py-2 text-xs leading-5 text-[#0550ae]">
+      <div className="rounded-md border border-info-border bg-info-muted px-3 py-2 text-xs leading-5 text-info-foreground">
         自动检测每分钟扫描一次，到期节点复测间隔
         {settings ? `为 ${formatInterval(settings.check_interval_seconds)}（可在「检测设置」中调整）` : "默认 10 分钟"}
         ；成功延迟超过 1500 ms 标记为降级，连续失败三次进入隔离，后续成功会自动恢复。
@@ -313,7 +314,7 @@ function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRec
         <Badge variant={state.variant}>{state.label}</Badge>
         {item.last_error_code && (
           <span
-            className="max-w-[160px] truncate text-[11px] text-[#a40e26]"
+            className="max-w-[160px] truncate text-[11px] text-destructive"
             title={item.last_error_message || item.last_error_code}
           >
             {errorCodeLabel(item.last_error_code)}
@@ -324,7 +325,7 @@ function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRec
     <Td>{item.last_latency_ms == null ? "—" : <span className="inline-flex items-center gap-1 tabular-nums"><Gauge className="size-3.5" />{item.last_latency_ms} ms</span>}</Td>
     <Td><div className="flex max-w-[280px] flex-wrap gap-1">{item.health_checks.length === 0 ? <span className="text-muted-foreground">—</span> : item.health_checks.map((check) => <Badge key={check.target_id} variant={check.success ? "success" : "destructive"} title={check.latency_ms == null ? check.url : `${check.url} · ${check.latency_ms} ms`}><SiteIcon url={check.url} compact />{check.target_name}{check.latency_ms == null ? "" : ` ${check.latency_ms}ms`}</Badge>)}</div></Td>
     <Td><span className="tabular-nums" title={`下载 ${formatBytes(traffic?.download_bytes ?? 0)} / 上传 ${formatBytes(traffic?.upload_bytes ?? 0)}`}>{formatBytes((traffic?.download_bytes ?? 0) + (traffic?.upload_bytes ?? 0))}</span></Td>
-    <Td><span className={cn("tabular-nums", item.consecutive_probe_failures > 0 && "text-[#a40e26]")}>{item.consecutive_probe_failures}</span></Td>
+    <Td><span className={cn("tabular-nums", item.consecutive_probe_failures > 0 && "text-destructive")}>{item.consecutive_probe_failures}</span></Td>
     <Td>{formatDate(item.last_checked_at)}</Td>
     <Td><span className="font-mono text-[11px]" title={item.fingerprint}>{compactId(item.fingerprint)}</span></Td>
     <Td align="right"><div className="inline-flex items-center gap-1.5"><Button variant="outline" size="sm" onClick={onCheck} disabled={checking || unavailable}>{checking ? <LoaderCircle className="animate-spin" /> : <Activity />}复测</Button><Button variant="outline" size="sm" onClick={onToggle} disabled={retired}>{disabled ? <CirclePlay /> : <Ban />}{disabled ? "启用" : "禁用"}</Button></div></Td>
@@ -332,7 +333,7 @@ function NodeRow({ item, traffic, checking, onCheck, onToggle }: { item: NodeRec
 }
 
 function Loading() { return <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />正在加载节点</div> }
-function Empty() { return <div className="flex min-h-56 flex-col items-center justify-center px-6 text-center"><Network className="mb-3 size-8 text-[#8c959f]" /><div className="font-medium">没有匹配的节点</div><p className="mt-1 max-w-lg text-xs leading-5 text-muted-foreground">刷新一条可解析的订阅后，节点会进入库存并自动开始质量检测。</p></div> }
+function Empty() { return <div className="flex min-h-56 flex-col items-center justify-center px-6 text-center"><Network className="mb-3 size-8 text-muted-foreground" /><div className="font-medium">没有匹配的节点</div><p className="mt-1 max-w-lg text-xs leading-5 text-muted-foreground">刷新一条可解析的订阅后，节点会进入库存并自动开始质量检测。</p></div> }
 function Metric({ label, value, helper, border = false }: { label: string; value: number | string; helper: string; border?: boolean }) { return <div className={cn("px-4 py-3", border && "border-t sm:border-l sm:border-t-0")}><div className="text-xs text-muted-foreground">{label}</div><div className="mt-0.5 text-xl font-semibold tabular-nums">{value}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{helper}</div></div> }
 function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) { return <Button type="button" size="sm" variant={active ? "default" : "outline"} onClick={onClick} className="h-7 shrink-0 rounded-full px-2.5 text-[11px]">{children}</Button> }
 function Th({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) { return <th className={cn("whitespace-nowrap border-b px-3 py-2 font-medium", align === "right" && "text-right")}>{children}</th> }

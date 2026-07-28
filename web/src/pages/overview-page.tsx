@@ -85,10 +85,10 @@ export function OverviewPage({ onNotice }: OverviewPageProps) {
     <StatusBand status={data?.status ?? null} streaming={streaming} loading={loading} />
 
     <section className="grid border-y bg-card sm:grid-cols-2 xl:grid-cols-4">
-      <Metric icon={ArrowDownToLine} label="当前下载" value={formatRate(latest?.download_bytes_per_second ?? 0)} color="text-[#0969da]" />
-      <Metric icon={ArrowUpFromLine} label="当前上传" value={formatRate(latest?.upload_bytes_per_second ?? 0)} color="text-[#1a7f37]" />
-      <Metric icon={Activity} label="活动连接" value={String(latest?.active_connections ?? 0)} color="text-[#8250df]" />
-      <Metric icon={Route} label="有效入口" value={String(routes.filter((item) => item.listener.enabled).length)} color="text-[#bc4c00]" />
+      <Metric icon={ArrowDownToLine} label="当前下载" value={formatRate(latest?.download_bytes_per_second ?? 0)} color="text-info" />
+      <Metric icon={ArrowUpFromLine} label="当前上传" value={formatRate(latest?.upload_bytes_per_second ?? 0)} color="text-success" />
+      <Metric icon={Activity} label="活动连接" value={String(latest?.active_connections ?? 0)} color="text-primary" />
+      <Metric icon={Route} label="有效入口" value={String(routes.filter((item) => item.listener.enabled).length)} color="text-warning" />
     </section>
 
     <section className="border-y bg-card py-4">
@@ -112,8 +112,8 @@ function StatusBand({ status, streaming, loading }: { status: DataPlaneStatus | 
   const running = status?.running === true
   const Icon = loading ? LoaderCircle : running ? CircleCheck : CircleAlert
   return <section className="flex flex-col border-y bg-card sm:flex-row sm:items-center">
-    <div className={cn("flex min-w-56 items-center gap-3 px-4 py-3", running ? "bg-[#dafbe1]" : "bg-[#fff8c5]")}><Icon className={cn("size-5", loading && "animate-spin", running ? "text-[#1a7f37]" : "text-[#9a6700]")} /><div><div className="text-sm font-semibold">{loading ? "读取状态" : running ? "Mihomo 运行中" : "Mihomo 未运行"}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{status?.listener_count ?? 0} 入口 · {status?.proxy_count ?? 0} 代理</div></div></div>
-    <div className="flex flex-1 items-center justify-between gap-3 px-4 py-3 text-xs"><span className="text-muted-foreground">秒级数据流</span><span className="inline-flex items-center gap-1.5 font-medium"><span className={cn("size-2 rounded-full", streaming ? "bg-[#1a7f37]" : "bg-[#cf222e]")} />{streaming ? "已连接" : "正在重连"}</span></div>
+    <div className={cn("flex min-w-56 items-center gap-3 px-4 py-3", running ? "bg-success-muted" : "bg-warning-muted")}><Icon className={cn("size-5", loading && "animate-spin", running ? "text-success" : "text-warning")} /><div><div className="text-sm font-semibold">{loading ? "读取状态" : running ? "Mihomo 运行中" : "Mihomo 未运行"}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{status?.listener_count ?? 0} 入口 · {status?.proxy_count ?? 0} 代理</div></div></div>
+    <div className="flex flex-1 items-center justify-between gap-3 px-4 py-3 text-xs"><span className="text-muted-foreground">秒级数据流</span><span className="inline-flex items-center gap-1.5 font-medium"><span className={cn("size-2 rounded-full", streaming ? "bg-success" : "bg-destructive")} />{streaming ? "已连接" : "正在重连"}</span></div>
   </section>
 }
 
@@ -131,13 +131,13 @@ function TrafficChart({ samples }: { samples: OverviewSample[] }) {
   return <div className="mt-3 px-2 sm:px-4">
     <div className="relative h-56 w-full overflow-hidden">
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="size-full" role="img" aria-label="上传和下载速率滑动窗口图表">
-        {[0.25, 0.5, 0.75, 1].map((ratio) => <line key={ratio} x1={inset} x2={width - inset} y1={height - inset - (height - inset * 2) * ratio} y2={height - inset - (height - inset * 2) * ratio} stroke="#d8dee4" strokeWidth="1" vectorEffect="non-scaling-stroke" />)}
-        <path d={download} fill="none" stroke="#0969da" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-        <path d={upload} fill="none" stroke="#1a7f37" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+        {[0.25, 0.5, 0.75, 1].map((ratio) => <line key={ratio} x1={inset} x2={width - inset} y1={height - inset - (height - inset * 2) * ratio} y2={height - inset - (height - inset * 2) * ratio} stroke="var(--border)" strokeWidth="1" vectorEffect="non-scaling-stroke" />)}
+        <path d={download} fill="none" stroke="var(--info)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+        <path d={upload} fill="none" stroke="var(--success)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
       </svg>
       {samples.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">等待首个采样点</div>}
     </div>
-    <div className="flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground"><div className="flex gap-4"><span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[#0969da]" />下载</span><span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[#1a7f37]" />上传</span></div><span>峰值 {formatRate(maximum)}</span></div>
+    <div className="flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground"><div className="flex gap-4"><span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-4 bg-info" />下载</span><span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-4 bg-success" />上传</span></div><span>峰值 {formatRate(maximum)}</span></div>
   </div>
 }
 

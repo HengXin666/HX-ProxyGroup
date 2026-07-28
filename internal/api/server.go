@@ -527,6 +527,8 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusConflict, "admin_not_configured", "administrator account is not configured yet")
 	case errors.Is(err, auth.ErrWeakPassword):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "weak_password", err.Error())
+	case errors.Is(err, auth.ErrInvalidUsername):
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "invalid_username", err.Error())
 	case errors.Is(err, alert.ErrNotFound):
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "alert not found")
 	case errors.Is(err, alert.ErrInvalidSetting):

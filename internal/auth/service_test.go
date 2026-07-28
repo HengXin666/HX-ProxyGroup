@@ -193,6 +193,40 @@ func TestChangePasswordRevokesAllSessions(t *testing.T) {
 	}
 }
 
+func TestChangeUsernameRevokesAllSessions(t *testing.T) {
+	service, tokenPath := newTestService(t)
+	ctx := context.Background()
+	setupAdmin(t, service, tokenPath)
+	first, err := service.Login(ctx, "127.0.0.1", "admin", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Login(ctx, "127.0.0.2", "admin", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ChangeUsername(ctx, "wrong", "new-admin"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+	if err := service.ChangeUsername(ctx, "correct horse battery", "x"); !errors.Is(err, ErrInvalidUsername) {
+		t.Fatalf("expected ErrInvalidUsername, got %v", err)
+	}
+	if err := service.ChangeUsername(ctx, "correct horse battery", "new-admin"); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range []Session{first, second} {
+		if _, err := service.Authenticate(ctx, session.Token); !errors.Is(err, ErrSessionExpired) {
+			t.Fatalf("expected all sessions revoked, got %v", err)
+		}
+	}
+	if _, err := service.Login(ctx, "127.0.0.1", "admin", "correct horse battery"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("old username must stop working, got %v", err)
+	}
+	if _, err := service.Login(ctx, "127.0.0.1", "new-admin", "correct horse battery"); err != nil {
+		t.Fatalf("login with new username: %v", err)
+	}
+}
+
 func TestPasswordHashRoundTrip(t *testing.T) {
 	hash, err := HashPassword("s3cret passphrase!")
 	if err != nil {

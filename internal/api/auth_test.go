@@ -177,3 +177,70 @@ func TestAuthBootstrapAndEnforcement(t *testing.T) {
 		t.Fatalf("health must stay unauthenticated, got %d", response.StatusCode)
 	}
 }
+
+func TestAuthUsernameChangeRequiresPasswordAndRevokesSession(t *testing.T) {
+	testServer, service, tokenPath := newAuthTestServer(t)
+	rawToken, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Setup(context.Background(), strings.TrimSpace(string(rawToken)), "admin", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	client := testServer.Client()
+
+	response := postJSON(t, client, testServer.URL+"/api/v1/auth/login", map[string]string{
+		"username": "admin",
+		"password": "correct horse battery",
+	}, nil)
+	var login struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&login); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	var sessionCookie *http.Cookie
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == sessionCookieName {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("login did not return a session cookie")
+	}
+
+	body, _ := json.Marshal(map[string]string{"current_password": "correct horse battery", "new_username": "renamed-admin"})
+	request, _ := http.NewRequest(http.MethodPut, testServer.URL+"/api/v1/auth/username", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", login.CSRFToken)
+	request.AddCookie(sessionCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("username change failed with %d", response.StatusCode)
+	}
+
+	request, _ = http.NewRequest(http.MethodGet, testServer.URL+"/api/v1/backups", nil)
+	request.AddCookie(sessionCookie)
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old session must be revoked, got %d", response.StatusCode)
+	}
+
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/login", map[string]string{
+		"username": "renamed-admin",
+		"password": "correct horse battery",
+	}, nil)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("new username login failed with %d", response.StatusCode)
+	}
+}

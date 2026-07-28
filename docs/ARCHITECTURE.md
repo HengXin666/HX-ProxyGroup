@@ -468,6 +468,12 @@ Periodic Batch Flush -> SQLite time buckets
 - 节点、组和 Listener 使用稳定内部 ID 映射，避免名称变更断开历史。
 - 数据面重启导致累计计数归零时，聚合器识别 counter reset，不写入负数增量。
 
+### 11.1 秒级操作总览
+
+实时总览与长期聚合使用不同读路径。浏览器通过 `/api/v1/overview/stream` 建立只读 SSE，控制面按秒读取 Mihomo Unix Controller 的活动连接累计字节并计算相邻快照差值。即使差值为零也发送样本，前端只保留固定大小的 30/60/120 秒滑动窗口。
+
+该采样循环归属于 HTTP 请求：客户端断开或服务关闭时通过 `request.Context()` 取消并停止 ticker。没有总览客户端时不运行额外后台采样任务。连接数据只用于计算和展示，代理流量仍不经过控制面。
+
 ---
 
 ## 12. API 与前端

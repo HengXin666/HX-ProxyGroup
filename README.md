@@ -139,6 +139,7 @@ HX-ProxyGroup 不是新的代理协议实现，而是一个代理控制平面：
 - [`docs/RELIABILITY.md`](docs/RELIABILITY.md)：可靠性、安全、安装和运行约束。
 - [`docs/BACKUP_EXPORT.md`](docs/BACKUP_EXPORT.md)：备份、恢复、便携导出与当前 API。
 - [`docs/SUBSCRIPTIONS.md`](docs/SUBSCRIPTIONS.md)：订阅加密存储、刷新、SSRF 边界与自动调度。
+- [`docs/PROBES_ROUTING_OVERVIEW.md`](docs/PROBES_ROUTING_OVERVIEW.md)：节点检测、全局配置、路由规则集与秒级总览。
 - [`docs/V2.md`](docs/V2.md)：v2 交付说明——规则流水线、管理员认证、告警、调度增强与浏览器内终端。
 - [`AGENTS.md`](AGENTS.md)：后续 AI / Agent 开发必须遵守的工程规范。
 - [`ref/README.md`](ref/README.md)：参考项目与参考范围。

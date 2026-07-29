@@ -1,6 +1,6 @@
-# HX-ProxyGroup
-
 <div align="center">
+
+<h1>HX-ProxyGroup</h1>
 
 **面向个人 Linux 服务器的代理订阅、节点质量评估、Proxy Group 编排与多协议出口控制平面。**
 

@@ -52,7 +52,7 @@ Options:
   -h, --help            Show this help.
 
 Release bundles are named hx-proxygroup_<tag>_linux_<amd64|arm64>.tar.gz and
-contain bin/hx-proxygroupd, bin/mihomo, web/, deploy/systemd/, and install.sh.
+contain bin/hx-proxygroupd, bin/mihomo, web/, deploy/systemd/, install.sh, and LICENSE.
 USAGE
 }
 
@@ -197,6 +197,7 @@ prepare_local_stage() {
     cp -a "${web}/." "${stage}/web/"
     cp -a "${SCRIPT_DIR}/deploy/systemd/." "${stage}/deploy/systemd/"
     install -m 0755 "${SCRIPT_DIR}/install.sh" "${stage}/install.sh"
+    install -m 0644 "${SCRIPT_DIR}/LICENSE" "${stage}/LICENSE"
 }
 
 validate_stage() {
@@ -205,6 +206,7 @@ validate_stage() {
     [[ -x "${stage}/bin/mihomo" ]] || fail "bundle is missing bin/mihomo"
     [[ -f "${stage}/web/index.html" ]] || fail "bundle is missing web/index.html"
     [[ -f "${stage}/deploy/systemd/${CONTROL_SERVICE}" && -f "${stage}/deploy/systemd/${DATAPLANE_SERVICE}" ]] || fail "bundle is missing systemd units"
+    [[ -f "${stage}/LICENSE" ]] || fail "bundle is missing LICENSE"
     "${stage}/bin/mihomo" -t -d "${DATA_DIR}/runtime" -f "${DATA_DIR}/runtime/active.yaml" >/dev/null
 }
 
@@ -215,6 +217,7 @@ install_version() {
     install -m 0755 -o root -g root "${stage}/bin/mihomo" "${version_dir}/mihomo"
     cp -a "${stage}/web/." "${version_dir}/web/"
     cp -a "${stage}/deploy/systemd/." "${version_dir}/deploy/systemd/"
+    install -m 0644 -o root -g root "${stage}/LICENSE" "${version_dir}/LICENSE"
     chown -R root:root "${version_dir}"
     install -m 0755 -o root -g root "${stage}/install.sh" "${INSTALLER_PATH}"
     install -m 0644 -o root -g root "${stage}/deploy/systemd/${CONTROL_SERVICE}" "${UNIT_DIR}/${CONTROL_SERVICE}"

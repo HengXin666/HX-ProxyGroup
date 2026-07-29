@@ -37,6 +37,7 @@ install -d -m 0755 "${stage}/bin" "${stage}/web" "${stage}/deploy/systemd" "${OU
 install -m 0755 "${CONTROL_BINARY}" "${stage}/bin/hx-proxygroupd"
 install -m 0755 "${MIHOMO_BINARY}" "${stage}/bin/mihomo"
 install -m 0755 "${ROOT_DIR}/install.sh" "${stage}/install.sh"
+install -m 0644 "${ROOT_DIR}/LICENSE" "${stage}/LICENSE"
 cp -a "${WEB_DIR}/." "${stage}/web/"
 cp -a "${ROOT_DIR}/deploy/systemd/." "${stage}/deploy/systemd/"
 

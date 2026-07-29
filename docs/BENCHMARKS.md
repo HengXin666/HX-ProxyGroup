@@ -2,7 +2,8 @@
 
 ## 1. 测试环境
 
-- 日期：2026-07-29
+- 微基准日期：2026-07-29
+- 资源基线日期：2026-07-30
 - 系统：Linux amd64
 - Go：`go1.26.5-X:nodwarf5`
 - CPU：13th Gen Intel Core i9-13980HX，24 核 / 32 逻辑 CPU
@@ -45,9 +46,38 @@ go test ./internal/store ./internal/dataplane/mihomo
 - 控制面退出隔离：外部数据面模式下关闭 Manager 不会停止或杀死 Mihomo，数据面生命周期由独立 systemd unit 所有。
 - 发布升级：安装器固定 Release 版本并验证 SHA-256；双服务 readiness 失败时原子恢复上一版 `current` 链接并重启旧版本。
 
-## 4. 尚未测量
+## 4. 空闲资源基线
 
-当前环境没有可用的真实 Mihomo 可执行文件和稳定的远端测试链路，因此未测量：
+资源基线使用 `-trimpath -ldflags='-s -w'` 生产构建。控制面使用空 SQLite 数据库并提供已构建静态前端，浏览器终端关闭；Mihomo 使用一个绑定 `127.0.0.1` 的 Mixed Listener，规则仅为 `MATCH,DIRECT`。两个进程同时运行，启动完成后采样。
+
+| 进程 / 文件 | 实测值 | 补充信息 |
+| --- | ---: | --- |
+| `hx-proxygroupd` RSS | 20,344 KiB（19.9 MiB） | VSZ 1,939,264 KiB，10 threads |
+| Mihomo RSS | 44,168 KiB（43.1 MiB） | v1.19.29，VSZ 1,832,844 KiB，8 threads |
+| 双进程 RSS 合计 | 64,512 KiB（63.0 MiB） | 空闲基线，不是峰值 |
+| 控制面 CPU | 0 tick / 15 秒 | 采样时钟 100 Hz，分辨率约 0.07% 单核 |
+| Mihomo CPU | 0 tick / 15 秒 | 同一采样窗口与分辨率 |
+| 控制面二进制 | 13,111,561 bytes（12.5 MiB） | stripped Linux amd64 |
+| Mihomo 二进制 | 48,338,552 bytes（46.1 MiB） | Linux amd64，`with_gvisor` |
+| 静态 Web 资源 | 886,952 bytes（0.85 MiB） | `web/dist` 实际磁盘内容 |
+
+核心复现命令：
+
+```bash
+go build -trimpath -ldflags='-s -w' -o /tmp/hx-proxygroupd ./cmd/hx-proxygroupd
+ps -p <control-pid>,<mihomo-pid> -o pid=,rss=,vsz=,%cpu=,etimes=,nlwp=,comm=
+getconf CLK_TCK
+stat -c '%n %s bytes' /tmp/hx-proxygroupd /usr/bin/mihomo
+du -sb web/dist
+```
+
+CPU 结果通过读取 `/proc/<pid>/stat` 的 `utime + stime`，在 15 秒前后取差值。零 tick 只表示该窗口内低于采样分辨率，不能解释为进程永远不使用 CPU。RSS 不包含页缓存，也不是订阅解析、配置编译、探测或真实转发时的峰值。
+
+VPS 规划还要为内核、systemd、SSH、文件缓存、SQLite WAL、快照、日志和负载峰值预留空间。根据这次 63 MiB 空闲基线，512 MiB 是轻量生产部署的保守起点；大量节点、规则或连接建议 1 GiB 及以上。256 MiB 仅适合在目标机完成峰值实测后的极轻负载。
+
+## 5. 尚未测量
+
+当前环境有 Mihomo v1.19.29，但没有稳定的远端测试链路，因此尚未测量：
 
 - HTTP CONNECT、SOCKS5、Mixed 的真实吞吐和长短连接延迟。
 - 100、1,000、10,000 并发连接下的文件描述符与 RSS。

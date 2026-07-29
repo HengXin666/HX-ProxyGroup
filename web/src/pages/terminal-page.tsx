@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import "@xterm/xterm/css/xterm.css"
 
 import { ApiError, api, type TerminalStatus } from "@/lib/api"
+import { PredictiveEcho, type TerminalMode } from "@/lib/terminal-echo"
 import { subscribeTheme } from "@/lib/theme"
 
 type ConnectionState = "idle" | "connecting" | "connected" | "closed"
@@ -18,6 +19,7 @@ export function TerminalPage({
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
+  const echoRef = useRef(new PredictiveEcho())
   const [status, setStatus] = useState<TerminalStatus | null>(null)
   const [connection, setConnection] = useState<ConnectionState>("idle")
 
@@ -61,6 +63,8 @@ export function TerminalPage({
     }
     const terminal = terminalRef.current
     const fit = fitRef.current
+    const predictiveEcho = echoRef.current
+    predictiveEcho.reset()
     terminal.reset()
     fit?.fit()
 
@@ -82,11 +86,24 @@ export function TerminalPage({
     }
     socket.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        terminal.write(new Uint8Array(event.data))
+        const output = predictiveEcho.consume(new Uint8Array(event.data))
+        if (output.byteLength > 0) terminal.write(output)
+        return
+      }
+      if (typeof event.data === "string") {
+        try {
+          const message = JSON.parse(event.data) as { type?: string } & Partial<TerminalMode>
+          if (message.type === "mode" && typeof message.echo === "boolean" && typeof message.canonical === "boolean") {
+            predictiveEcho.setMode({ echo: message.echo, canonical: message.canonical })
+          }
+        } catch {
+          predictiveEcho.reset()
+        }
       }
     }
     socket.onclose = (event) => {
       socketRef.current = null
+      predictiveEcho.reset()
       setConnection("closed")
       terminal.write(`\r\n\x1b[33m[会话已结束${event.reason ? `：${event.reason}` : ""}]\x1b[0m\r\n`)
     }
@@ -96,6 +113,8 @@ export function TerminalPage({
 
     const inputDisposable = terminal.onData((data) => {
       if (socket.readyState === WebSocket.OPEN) {
+        const predicted = predictiveEcho.predict(data)
+        if (predicted != null) terminal.write(predicted)
         socket.send(JSON.stringify({ type: "input", data }))
       }
     })
@@ -107,6 +126,7 @@ export function TerminalPage({
       inputDisposable.dispose()
       resizeDisposable.dispose()
       observer.disconnect()
+      predictiveEcho.reset()
     })
   }, [onNotice])
 

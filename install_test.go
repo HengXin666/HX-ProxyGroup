@@ -170,6 +170,7 @@ func assertReleaseArchive(t *testing.T, path string) {
 	wanted := map[string]bool{
 		"./bin/hx-proxygroupd":                   false,
 		"./bin/mihomo":                           false,
+		"./LICENSE":                              false,
 		"./web/index.html":                       false,
 		"./install.sh":                           false,
 		"./deploy/systemd/hx-proxygroup.service": false,

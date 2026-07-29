@@ -46,6 +46,14 @@ type terminalMessage struct {
 	Rows int    `json:"rows,omitempty"`
 }
 
+type terminalModeMessage struct {
+	Type      string `json:"type"`
+	Echo      bool   `json:"echo"`
+	Canonical bool   `json:"canonical"`
+}
+
+var terminalAuthRevalidateInterval = 30 * time.Second
+
 // handleTerminalSocket bridges one WebSocket to one PTY session. Unlike the
 // rest of the API, the terminal requires a fully configured and
 // authenticated administrator unconditionally — there is no pre-setup
@@ -59,7 +67,8 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 		s.writeAPIError(writer, request, http.StatusForbidden, "terminal_requires_auth", "terminal requires administrator authentication")
 		return
 	}
-	session, err := s.auth.Authenticate(request.Context(), sessionToken(request))
+	token := sessionToken(request)
+	session, err := s.auth.Authenticate(request.Context(), token)
 	if err != nil {
 		s.handleError(writer, request, err)
 		return
@@ -93,9 +102,31 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 	go func() {
 		defer close(outputDone)
 		buffer := make([]byte, 16<<10)
+		sendMode := func() bool {
+			mode, modeErr := shell.TerminalMode()
+			if modeErr != nil {
+				// Unknown mode must disable prediction rather than risk echoing
+				// a password or full-screen application input locally.
+				mode = terminal.Mode{}
+			}
+			payload, _ := json.Marshal(terminalModeMessage{Type: "mode", Echo: mode.Echo, Canonical: mode.Canonical})
+			writeCtx, writeCancel := context.WithTimeout(socketCtx, 15*time.Second)
+			writeErr := connection.Write(writeCtx, websocket.MessageText, payload)
+			writeCancel()
+			if writeErr != nil {
+				return false
+			}
+			return true
+		}
+		if !sendMode() {
+			return
+		}
 		for {
 			count, readErr := shell.Read(buffer)
 			if count > 0 {
+				if !sendMode() {
+					return
+				}
 				writeCtx, writeCancel := context.WithTimeout(socketCtx, 15*time.Second)
 				writeErr := connection.Write(writeCtx, websocket.MessageBinary, buffer[:count])
 				writeCancel()
@@ -105,6 +136,32 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 			}
 			if readErr != nil {
 				return
+			}
+		}
+	}()
+
+	// Revalidate the database-backed administrator session while the socket is
+	// open. Logout-all, username changes, password changes, and expiry revoke
+	// an existing terminal instead of only blocking the next connection.
+	authDone := make(chan struct{})
+	go func() {
+		defer close(authDone)
+		ticker := time.NewTicker(terminalAuthRevalidateInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-socketCtx.Done():
+				return
+			case <-ticker.C:
+				checkCtx, checkCancel := context.WithTimeout(socketCtx, 5*time.Second)
+				_, authErr := s.auth.Authenticate(checkCtx, token)
+				checkCancel()
+				if authErr != nil {
+					shell.Close("administrator session revoked")
+					cancel()
+					_ = connection.Close(websocket.StatusPolicyViolation, "administrator session expired")
+					return
+				}
 			}
 		}
 	}()
@@ -133,5 +190,6 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 	}
 	cancel()
 	<-outputDone
+	<-authDone
 	_ = connection.Close(websocket.StatusNormalClosure, "bye")
 }

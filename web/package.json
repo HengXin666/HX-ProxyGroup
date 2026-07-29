@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test:e2e:inventory": "node e2e/inventory-layout.mjs",
+    "test:terminal-echo": "node --experimental-strip-types --test e2e/terminal-echo.test.ts",
     "check": "tsc -b --pretty false",
     "test:ui": "node e2e/ui-smoke.mjs",
     "preview": "vite preview"

@@ -12,6 +12,7 @@
 [![Mihomo](https://img.shields.io/badge/Data_Plane-Mihomo-2F6FEB?style=flat-square)](https://github.com/MetaCubeX/mihomo)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![systemd](https://img.shields.io/badge/Service-systemd-5A5A5A?style=flat-square&logo=linux&logoColor=white)](https://systemd.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square)](LICENSE)
 
 [快速开始](#快速开始) · [生产安装](#生产安装) · [核心能力](#核心能力) · [架构](#架构) · [兼容性](#订阅与协议兼容性) · [文档](#文档导航)
 
@@ -238,7 +239,7 @@ TUIC        VLESS        VMess         WireGuard
 
 完整容器、Provider、sing-box 映射和 URI 矩阵见 [订阅与 Provider 兼容矩阵](docs/SUBSCRIPTION_COMPATIBILITY.md)。
 
-## 基准与恢复验证
+## 基准、占用与恢复验证
 
 测试环境：Linux amd64、Go `1.26.5-X:nodwarf5`、Intel Core i9-13980HX、32 逻辑 CPU。下列数据为三次运行的中间值：
 
@@ -249,6 +250,18 @@ TUIC        VLESS        VMess         WireGuard
 | SQLite 批量写入 1,000 个统计资源 | 33.80 ms | 1.04 MB/op |
 | SQLite 查询 500 个统计点 | 1.30 ms | 0.13 MB/op |
 
+同一环境下的生产构建空闲基线（2026-07-30，连续 15 秒低活动采样）：
+
+| 进程 / 资源 | 实测值 | 说明 |
+| --- | ---: | --- |
+| Go 控制面 RSS | 19.9 MiB | 空数据库、静态前端、终端关闭 |
+| Mihomo RSS | 43.1 MiB | v1.19.29、1 个仅环回 DIRECT Mixed Listener |
+| 双进程合计 RSS | 63.0 MiB | 两个进程同时空闲时的 RSS 合计 |
+| 空闲 CPU | 0 tick / 15 秒 | 两个进程分别采样；本机测量分辨率约 0.07% 单核 |
+| 程序与前端 | 59.4 MiB | 控制面 12.5 MiB + Mihomo 46.1 MiB + Web 0.85 MiB |
+
+这是开发机上的空闲实测值，不是所有 VPS 的上限或保证值。订阅刷新、10,000 节点解析、配置编译、连接统计和 Mihomo 实际转发都会产生瞬时 CPU 与内存峰值；版本保留、SQLite、快照和日志也会增加磁盘占用。轻量生产部署建议至少准备 **512 MiB RAM**，大量节点或连接建议 **1 GiB 及以上**；256 MiB 只适合经实测确认的极轻负载。
+
 自动化故障测试覆盖：
 
 - 辅助进程在 SQLite 未提交写事务中被强制终止，重开后恢复最后已提交状态并通过完整性检查。
@@ -256,7 +269,7 @@ TUIC        VLESS        VMess         WireGuard
 - 关闭控制面 Manager 不终止 systemd 所有的数据面。
 - Release 包内容、可复现 SHA-256、双 unit 私有监听和安装契约。
 
-这些是控制面微基准，不代表 HTTP CONNECT/SOCKS5 的真实吞吐。真实并发连接、RSS、整机断电、磁盘满和干净发行版 VM 安装仍需环境测试。命令、三次原始结果和边界见 [基准与故障恢复报告](docs/BENCHMARKS.md)。
+这些是控制面微基准与空闲资源基线，不代表 HTTP CONNECT/SOCKS5 的真实吞吐或高峰占用。真实并发连接、整机断电、磁盘满和干净发行版 VM 安装仍需环境测试。命令、三次原始结果和边界见 [基准与故障恢复报告](docs/BENCHMARKS.md)。
 
 ## 运维说明
 
@@ -283,6 +296,10 @@ HX_PROXYGROUP_TERMINAL=1 bash run.sh
 ```
 
 终端要求管理员登录，默认空闲 10 分钟断开、最长 2 小时、最多 2 个并发会话，并记录建立、关闭、来源、操作者、时长和原因。它不是远程 SSH 跳板。
+
+这是 HX-ProxyGroup 所在服务器的本机 PTY Shell。普通命令行模式下，前端读取服务端 PTY 的 `ECHO` / `ICANON` 状态，只对可打印字符做有界预测回显，因此网络较慢时键入内容仍会立即出现在本地；真实命令结果仍取决于网络和服务器响应。密码提示、控制键、未知状态及 vim/top 等 raw/full-screen 程序不会预测回显。
+
+WebSocket 只接受同源连接，并在会话存续期间周期性复核数据库中的管理员 Session；退出全部会话、修改账号或密码、Session 过期都会关闭已连接终端。Shell 只继承必要的身份、路径与区域环境，控制面配置和凭据不会注入终端。启用此功能仍等价于向管理员授予 `hx-proxygroup` 服务账号的命令执行权限，日常运维应优先使用带密钥和系统级审计的 SSH。完整威胁模型与漏洞报告方式见 [安全策略](SECURITY.md)。
 
 ### 备份语义
 
@@ -324,6 +341,7 @@ npm run build
 | [Cloudflare / 雷池](docs/CLOUDFLARE.md) | WebSocket 入口、反向代理和公网边界 |
 | [备份与导出](docs/BACKUP_EXPORT.md) | Artifact、Online Backup 与秘密处理 |
 | [v2 能力](docs/V2.md) | 规则流水线、认证、告警、调度与浏览器终端 |
+| [安全策略](SECURITY.md) | 漏洞报告、部署边界与浏览器终端威胁模型 |
 
 ## 当前状态与路线
 
@@ -367,7 +385,7 @@ HX-ProxyGroup 明确不做：
 
 ## 许可
 
-仓库当前尚未附带开源许可证。正式对外发布或接受第三方贡献前，维护者需要选择并提交明确的 `LICENSE`；在此之前保留所有权利。
+HX-ProxyGroup 自有代码采用 [MIT License](LICENSE)。Mihomo 由其上游独立发布，依赖项和随 Release 分发的第三方组件继续适用各自的许可证；MIT License 不会覆盖或替代这些上游条款。
 
 ---
 

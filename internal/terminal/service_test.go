@@ -116,3 +116,74 @@ func TestResizeValidation(t *testing.T) {
 		t.Fatalf("valid resize failed: %v", err)
 	}
 }
+
+func TestTerminalModeTracksEchoAndCanonicalState(t *testing.T) {
+	service, err := NewService(Config{Enabled: true, Shell: "/bin/sh"}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := service.Open(context.Background(), "admin", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close("test done")
+
+	mode, err := session.TerminalMode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mode.Echo || !mode.Canonical {
+		t.Fatalf("initial terminal mode = %+v, want echo + canonical", mode)
+	}
+
+	if _, err := session.Write([]byte("stty -echo\n")); err != nil {
+		t.Fatal(err)
+	}
+	mode = waitTerminalMode(t, session, func(mode Mode) bool { return !mode.Echo })
+	if mode.Echo {
+		t.Fatalf("disabled terminal mode = %+v, want echo disabled", mode)
+	}
+}
+
+func waitTerminalMode(t *testing.T, session *Session, matches func(Mode) bool) Mode {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var last Mode
+	for time.Now().Before(deadline) {
+		mode, err := session.TerminalMode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = mode
+		if matches(mode) {
+			return mode
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("terminal mode did not reach expected state; last = %+v", last)
+	return Mode{}
+}
+
+func TestSafeShellEnvironmentDropsApplicationSecrets(t *testing.T) {
+	environment := safeShellEnvironment([]string{
+		"HOME=/srv/hx",
+		"USER=hx-proxygroup",
+		"PATH=/usr/bin:/bin",
+		"LANG=C.UTF-8",
+		"LC_TIME=C",
+		"HX_PROXYGROUP_MASTER_KEY=must-not-leak",
+		"DATABASE_URL=sqlite-secret",
+		"AUTHORIZATION=Bearer-secret",
+	}, "/bin/sh")
+	joined := strings.Join(environment, "\n")
+	for _, secret := range []string{"must-not-leak", "sqlite-secret", "Bearer-secret", "HX_PROXYGROUP_MASTER_KEY", "DATABASE_URL", "AUTHORIZATION"} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("safe environment leaks %q: %s", secret, joined)
+		}
+	}
+	for _, expected := range []string{"HOME=/srv/hx", "PATH=/usr/bin:/bin", "LC_TIME=C", "TERM=xterm-256color", "HISTFILE=/dev/null"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("safe environment missing %q: %s", expected, joined)
+		}
+	}
+}

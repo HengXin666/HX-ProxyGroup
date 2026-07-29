@@ -134,7 +134,13 @@ body {
   font-size: 14px;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+	overflow-x: hidden;
 }
+
+#root { min-width: 0; }
+
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
 
 @keyframes page-in {
   from { opacity: 0; transform: translateY(6px); }

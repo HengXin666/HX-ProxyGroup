@@ -46,7 +46,7 @@ type logIdentity struct {
 func (m *Manager) OpenLogStream(ctx context.Context) (proxylog.Reader, error) {
 	m.mu.Lock()
 	m.refreshProcessLocked()
-	if m.process == nil || !m.status.Running {
+	if !m.isRunningLocked() || !m.status.Running {
 		m.mu.Unlock()
 		return nil, ErrNotRunning
 	}

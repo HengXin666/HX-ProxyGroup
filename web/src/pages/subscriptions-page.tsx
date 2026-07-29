@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { ChevronDown, ChevronRight, FileText, Gauge, Globe2, LoaderCircle, Pencil, Plus, Radio, RefreshCw, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, CircleDot, FileText, Gauge, Globe2, LoaderCircle, Pencil, Plus, Radio, RefreshCw, Trash2 } from "lucide-react"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { CreateSubscriptionForm } from "@/components/create-subscription-form"
@@ -200,45 +200,28 @@ export function SubscriptionsPage({ onNotice, embedded = false }: SubscriptionsP
             </Button>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1020px] border-collapse text-left">
-              <thead className="bg-muted/60 text-xs text-muted-foreground">
-                <tr>
-                  <Th>订阅</Th>
-                  <Th>来源</Th>
-                  <Th>状态</Th>
-                  <Th>最近刷新</Th>
-                  <Th>下次刷新</Th>
-                  <Th>成功快照</Th>
-                  <Th>周期</Th>
-                  <Th>累计流量</Th>
-                  <Th align="right">操作</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {items.map((item) => (
-                  <SubscriptionRow
-                    key={item.id}
-                    item={item}
-                    nodes={nodesBySubscription.get(item.id) || []}
-                    traffic={traffic}
-                    expanded={expanded.has(item.id)}
-                    busy={Boolean(busy[item.id])}
-                    testing={Boolean(busy[`test:${item.id}`])}
-                    onToggle={() => setExpanded((current) => {
-                      const next = new Set(current)
-                      if (next.has(item.id)) next.delete(item.id)
-                      else next.add(item.id)
-                      return next
-                    })}
-                    onCheck={() => void checkNodes(item)}
-                    onRefresh={() => void refresh(item)}
-                    onEdit={() => setEditTarget(item)}
-                    onDelete={() => setDeleteTarget(item)}
-                  />
-                ))}
-              </tbody>
-            </table>
+          <div className="divide-y">
+            {items.map((item) => (
+              <SubscriptionRow
+                key={item.id}
+                item={item}
+                nodes={nodesBySubscription.get(item.id) || []}
+                traffic={traffic}
+                expanded={expanded.has(item.id)}
+                busy={Boolean(busy[item.id])}
+                testing={Boolean(busy[`test:${item.id}`])}
+                onToggle={() => setExpanded((current) => {
+                  const next = new Set(current)
+                  if (next.has(item.id)) next.delete(item.id)
+                  else next.add(item.id)
+                  return next
+                })}
+                onCheck={() => void checkNodes(item)}
+                onRefresh={() => void refresh(item)}
+                onEdit={() => setEditTarget(item)}
+                onDelete={() => setDeleteTarget(item)}
+              />
+            ))}
           </div>
         )}
       </section>
@@ -307,85 +290,71 @@ function SubscriptionRow({
 }) {
   const source = sourceMeta[item.source_type]
   const SourceIcon = source.icon
+  const totalTraffic = nodes.reduce((total, node) => {
+    const value = traffic.get(node.id)
+    return total + (value?.upload_bytes ?? 0) + (value?.download_bytes ?? 0)
+  }, 0)
   return (
-    <>
-    <tr className="cursor-pointer hover:bg-muted/60" onClick={onEdit} title="点击查看与编辑订阅">
-      <Td>
+    <article>
+      <div className="grid gap-3 px-3 py-3 transition-colors hover:bg-muted/40 lg:grid-cols-[minmax(220px,1.25fr)_minmax(180px,.8fr)_minmax(250px,1fr)_auto] lg:items-center">
         <div className="flex min-w-0 items-center gap-2.5">
-          <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={`${expanded ? "收起" : "展开"} ${item.name}`} className="size-7">
+          <Button variant="ghost" size="icon" onClick={onToggle} aria-label={`${expanded ? "收起" : "展开"} ${item.name}`} className="size-7 shrink-0">
             {expanded ? <ChevronDown /> : <ChevronRight />}
           </Button>
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground">
-            <SourceIcon className="size-3.5" />
-          </div>
-          <div className="min-w-0">
-            <div className="max-w-[260px] truncate font-medium text-foreground" title={item.name}>{item.name}</div>
-            <div className="mt-0.5 font-mono text-[11px] text-muted-foreground" title={item.id}>{nodes.length} 个节点 · {compactId(item.id)} · v{item.version}</div>
-          </div>
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground"><SourceIcon className="size-4" /></div>
+          <button type="button" className="min-w-0 text-left" onClick={onEdit} title="查看与编辑订阅">
+            <span className="block truncate font-medium text-foreground hover:text-primary">{item.name}</span>
+            <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground" title={item.id}>{compactId(item.id)} · v{item.version}</span>
+          </button>
         </div>
-      </Td>
-      <Td><Badge variant="outline">{source.label}</Badge></Td>
-      <Td>
-        <div className="flex items-center gap-1.5">
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline"><SourceIcon className="mr-1 size-3" />{source.label}</Badge>
           <Badge variant={item.enabled ? "success" : "secondary"}>{item.enabled ? "已启用" : "已禁用"}</Badge>
           {item.consecutive_failures > 0 && <Badge variant="warning">失败 {item.consecutive_failures}</Badge>}
+          <span className="w-full text-[11px] text-muted-foreground">{nodes.length} 个节点 · {formatBytes(totalTraffic)}</span>
         </div>
-      </Td>
-      <Td>{formatDate(item.last_refresh_attempt_at)}</Td>
-      <Td>{formatDate(item.next_refresh_at)}</Td>
-      <Td>
-        <span className="font-mono text-[11px]" title={item.last_success_snapshot_id || ""}>
-          {item.last_success_snapshot_id ? compactId(item.last_success_snapshot_id) : "—"}
-        </span>
-      </Td>
-      <Td><span className="tabular-nums">{item.refresh_interval_seconds}s</span></Td>
-      <Td><span className="tabular-nums" title="该订阅活动节点的累计上传与下载">{formatBytes(nodes.reduce((total, node) => { const value = traffic.get(node.id); return total + (value?.upload_bytes ?? 0) + (value?.download_bytes ?? 0) }, 0))}</span></Td>
-      <Td align="right">
-        <div className="flex justify-end gap-1.5">
-          <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onEdit() }} aria-label={`编辑 ${item.name}`}><Pencil /></Button>
-          <Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); onCheck() }} disabled={busy || testing || nodes.length === 0}>
-            {testing ? <LoaderCircle className="animate-spin" /> : <Gauge />}
-            测试
-          </Button>
-          <Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); onRefresh() }} disabled={busy || !item.enabled}>
-            {busy ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
-            刷新
-          </Button>
-          <Button variant="ghost" size="icon" onClick={(event) => { event.stopPropagation(); onDelete() }} disabled={busy} aria-label={`删除 ${item.name}`}>
-            <Trash2 className="text-destructive" />
-          </Button>
+
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] sm:grid-cols-4 lg:grid-cols-2">
+          <SubscriptionDetail label="最近刷新" value={formatDate(item.last_refresh_attempt_at)} />
+          <SubscriptionDetail label="下次刷新" value={formatDate(item.next_refresh_at)} />
+          <SubscriptionDetail label="刷新计划" value={item.refresh_cron ? `Cron ${item.refresh_cron}` : `${item.refresh_interval_seconds}s`} />
+          <SubscriptionDetail label="成功快照" value={item.last_success_snapshot_id ? compactId(item.last_success_snapshot_id) : "暂无"} mono />
+        </dl>
+
+        <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
+          <Button variant="ghost" size="icon" onClick={onEdit} aria-label={`编辑 ${item.name}`} title="编辑订阅"><Pencil /></Button>
+          <Button variant="outline" size="sm" onClick={onCheck} disabled={busy || testing || nodes.length === 0}>{testing ? <LoaderCircle className="animate-spin" /> : <Gauge />}测试</Button>
+          <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy || !item.enabled}>{busy ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}刷新</Button>
+          <Button variant="ghost" size="icon" onClick={onDelete} disabled={busy} aria-label={`删除 ${item.name}`} title="删除订阅"><Trash2 className="text-destructive" /></Button>
         </div>
-      </Td>
-    </tr>
-    {expanded && (
-      <tr>
-        <td colSpan={9} className="border-t bg-muted/60 px-4 py-3">
-          {nodes.length === 0 ? (
-            <div className="py-3 text-center text-xs text-muted-foreground">该订阅尚无活动节点，请先刷新订阅。</div>
-          ) : (
-            <div className="ml-7 overflow-hidden rounded-md border bg-card">
-              {nodes.map((node, index) => <SubscriptionNode key={node.id} node={node} traffic={traffic.get(node.id)} last={index === nodes.length - 1} />)}
-            </div>
-          )}
-        </td>
-      </tr>
-    )}
-    </>
+      </div>
+      {expanded && <div className="border-t bg-muted/40 px-3 py-3 sm:pl-14">
+        {nodes.length === 0 ? <div className="py-3 text-center text-xs text-muted-foreground">该订阅尚无活动节点，请先刷新订阅。</div> : (
+          <div className="divide-y overflow-hidden rounded-md border bg-card">
+            {nodes.map((node) => <SubscriptionNode key={node.id} node={node} traffic={traffic.get(node.id)} />)}
+          </div>
+        )}
+      </div>}
+    </article>
   )
 }
 
-function SubscriptionNode({ node, traffic, last }: { node: NodeRecord; traffic?: TrafficSummary; last: boolean }) {
+function SubscriptionDetail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return <div className="min-w-0"><dt className="text-muted-foreground">{label}</dt><dd className={cn("truncate text-foreground", mono && "font-mono")} title={value}>{value}</dd></div>
+}
+
+function SubscriptionNode({ node, traffic }: { node: NodeRecord; traffic?: TrafficSummary }) {
   return (
-    <div className={cn("grid min-w-[1040px] grid-cols-[minmax(220px,1fr)_90px_110px_100px_minmax(180px,1fr)_110px] items-center gap-3 px-3 py-2 text-xs", !last && "border-b")}>
+    <div className="grid gap-2 px-3 py-2.5 text-xs sm:grid-cols-[minmax(180px,1fr)_auto_auto] lg:grid-cols-[minmax(200px,1fr)_auto_auto_minmax(180px,1fr)_auto] lg:items-center">
       <div className="flex min-w-0 items-center gap-2">
-        <span className="text-muted-foreground">└</span>
+        <CircleDot className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-medium text-foreground" title={node.display_name}>{node.display_name}</span>
       </div>
       <Badge variant="outline">{node.protocol.toUpperCase()}</Badge>
       <Badge variant={node.lifecycle_state === "healthy" ? "success" : node.lifecycle_state === "quarantined" ? "warning" : "secondary"}>{node.lifecycle_state}</Badge>
-      <span className="tabular-nums text-muted-foreground">{node.last_latency_ms == null ? "未测试" : `${node.last_latency_ms} ms`}</span>
-      <div className="flex flex-wrap gap-1">{node.health_checks.length ? node.health_checks.map((check) => <Badge key={check.target_id} variant={check.success ? "success" : "destructive"}>{check.target_name}{check.latency_ms == null ? "" : ` ${check.latency_ms}ms`}</Badge>) : <span className="text-muted-foreground">未测试站点</span>}</div>
-      <span className="tabular-nums text-muted-foreground">{formatBytes((traffic?.upload_bytes ?? 0) + (traffic?.download_bytes ?? 0))}</span>
+      <div className="flex flex-wrap gap-1 sm:col-span-3 lg:col-span-1">{node.health_checks.length ? node.health_checks.map((check) => <Badge key={check.target_id} variant={check.success ? "success" : "destructive"}>{check.target_name}{check.latency_ms == null ? "" : ` ${check.latency_ms}ms`}</Badge>) : <span className="text-muted-foreground">未测试站点</span>}</div>
+      <span className="text-right tabular-nums text-muted-foreground sm:col-start-3 lg:col-auto">{node.last_latency_ms == null ? "未测试" : `${node.last_latency_ms} ms`} · {formatBytes((traffic?.upload_bytes ?? 0) + (traffic?.download_bytes ?? 0))}</span>
     </div>
   )
 }
@@ -398,12 +367,4 @@ function Metric({ label, value, helper, border = false, warning = false }: { lab
       <div className="mt-0.5 text-[11px] text-muted-foreground">{helper}</div>
     </div>
   )
-}
-
-function Th({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) {
-  return <th className={cn("whitespace-nowrap border-b px-3 py-2 font-medium", align === "right" && "text-right")}>{children}</th>
-}
-
-function Td({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) {
-  return <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs text-muted-foreground", align === "right" && "text-right")}>{children}</td>
 }

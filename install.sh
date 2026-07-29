@@ -1,310 +1,349 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly SERVICE_NAME="hx-proxygroup.service"
+readonly CONTROL_SERVICE="hx-proxygroup.service"
+readonly DATAPLANE_SERVICE="hx-proxygroup-dataplane.service"
 readonly SERVICE_USER="hx-proxygroup"
 readonly SERVICE_GROUP="hx-proxygroup"
-readonly INSTALL_ROOT="/usr/local/lib/hx-proxygroup"
-readonly BINARY_LINK="/usr/local/bin/hx-proxygroupd"
-readonly UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}"
-readonly CONFIG_DIR="/etc/hx-proxygroup"
-readonly DATA_DIR="/var/lib/hx-proxygroup"
-readonly LOG_DIR="/var/log/hx-proxygroup"
+readonly REPOSITORY="HengXin666/HX-ProxyGroup"
+
+INSTALL_ROOT="${HX_INSTALL_ROOT:-/usr/local/lib/hx-proxygroup}"
+INSTALLER_PATH="${HX_INSTALLER_PATH:-/usr/local/sbin/hx-proxygroup-install}"
+CONFIG_DIR="${HX_CONFIG_DIR:-/etc/hx-proxygroup}"
+DATA_DIR="${HX_DATA_DIR:-/var/lib/hx-proxygroup}"
+LOG_DIR="${HX_LOG_DIR:-/var/log/hx-proxygroup}"
+UNIT_DIR="${HX_UNIT_DIR:-/etc/systemd/system}"
+RELEASE_BASE="${HX_RELEASE_BASE:-https://github.com/${REPOSITORY}/releases}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="install"
-VERSION="dev"
+VERSION="latest"
+OFFLINE_DIR=""
 BINARY_SOURCE=""
+MIHOMO_SOURCE=""
+WEB_SOURCE=""
+OUTPUT_PATH=""
 CONFIRM_PURGE="false"
-START_SERVICE="true"
+START_SERVICES="true"
+WORK_DIR=""
 
-log() {
-    printf '[hx-proxygroup] %s\n' "$*"
-}
-
-warn() {
-    printf '[hx-proxygroup] warning: %s\n' "$*" >&2
-}
-
-fail() {
-    printf '[hx-proxygroup] error: %s\n' "$*" >&2
-    exit 1
-}
+log() { printf '[hx-proxygroup] %s\n' "$*"; }
+warn() { printf '[hx-proxygroup] warning: %s\n' "$*" >&2; }
+fail() { printf '[hx-proxygroup] error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'USAGE'
 Usage:
-  sudo ./install.sh [install|upgrade|repair|status|uninstall|purge] [options]
+  sudo bash install.sh install   [--version VERSION] [--offline-dir DIR]
+  sudo hx-proxygroup-install upgrade [--version VERSION]
+  sudo hx-proxygroup-install repair|status|uninstall
+  sudo hx-proxygroup-install backup [--output FILE]
+  sudo hx-proxygroup-install purge --confirm-purge
 
 Options:
-  --version VERSION     Version directory and build version. Default: dev
-  --binary PATH         Install an existing hx-proxygroupd binary instead of building.
-  --no-start            Install files without starting the service.
-  --confirm-purge       Required for purge; deletes configuration and persistent data.
+  --version VERSION     Exact release tag, or latest (default).
+  --offline-dir DIR     Directory containing a release bundle and SHA256SUMS.
+  --binary PATH         Local hx-proxygroupd for a source/development install.
+  --mihomo PATH         Local Mihomo binary for a source/development install.
+  --web-dir DIR         Existing web/dist directory for a local install.
+  --output FILE         Disaster-backup destination for the backup command.
+  --no-start            Install files without enabling or starting services.
+  --confirm-purge       Confirm deletion of configuration and persistent data.
   -h, --help            Show this help.
 
-Current milestone installs the Go control plane only. The Mihomo data-plane unit
-will be installed when data-plane integration is implemented.
+Release bundles are named hx-proxygroup_<tag>_linux_<amd64|arm64>.tar.gz and
+contain bin/hx-proxygroupd, bin/mihomo, web/, deploy/systemd/, and install.sh.
 USAGE
 }
 
 parse_arguments() {
-    if [[ $# -gt 0 && "${1}" != --* ]]; then
-        ACTION="$1"
-        shift
-    fi
+    if [[ $# -gt 0 && "${1}" != --* ]]; then ACTION="$1"; shift; fi
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --version)
-                [[ $# -ge 2 ]] || fail "--version requires a value"
-                VERSION="$2"
-                shift 2
-                ;;
-            --binary)
-                [[ $# -ge 2 ]] || fail "--binary requires a path"
-                BINARY_SOURCE="$2"
-                shift 2
-                ;;
-            --no-start)
-                START_SERVICE="false"
-                shift
-                ;;
-            --confirm-purge)
-                CONFIRM_PURGE="true"
-                shift
-                ;;
-            -h|--help)
-                usage
-                exit 0
-                ;;
-            *)
-                fail "unknown option: $1"
-                ;;
+            --version) [[ $# -ge 2 ]] || fail "--version requires a value"; VERSION="$2"; shift 2 ;;
+            --offline-dir) [[ $# -ge 2 ]] || fail "--offline-dir requires a value"; OFFLINE_DIR="$2"; shift 2 ;;
+            --binary) [[ $# -ge 2 ]] || fail "--binary requires a value"; BINARY_SOURCE="$2"; shift 2 ;;
+            --mihomo) [[ $# -ge 2 ]] || fail "--mihomo requires a value"; MIHOMO_SOURCE="$2"; shift 2 ;;
+            --web-dir) [[ $# -ge 2 ]] || fail "--web-dir requires a value"; WEB_SOURCE="$2"; shift 2 ;;
+            --output) [[ $# -ge 2 ]] || fail "--output requires a value"; OUTPUT_PATH="$2"; shift 2 ;;
+            --no-start) START_SERVICES="false"; shift ;;
+            --confirm-purge) CONFIRM_PURGE="true"; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) fail "unknown option: $1" ;;
         esac
     done
-    case "${ACTION}" in
-        install|upgrade|repair|status|uninstall|purge) ;;
-        *) fail "unsupported action: ${ACTION}" ;;
-    esac
-    [[ "${VERSION}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "version may contain only letters, digits, dot, underscore, and hyphen"
+    case "${ACTION}" in install|upgrade|repair|status|backup|uninstall|purge) ;; *) fail "unsupported action: ${ACTION}" ;; esac
+    [[ "${VERSION}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "version contains unsupported characters"
 }
 
-require_root() {
-    [[ "${EUID}" -eq 0 ]] || fail "this action must run as root"
-}
+require_root() { [[ "${EUID}" -eq 0 ]] || fail "this action must run as root"; }
+require_command() { command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"; }
+validate_version() { [[ "${VERSION}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "version contains unsupported characters"; }
 
-require_command() {
-    command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+normalize_arch() {
+    case "$(uname -m)" in x86_64|amd64) printf 'amd64\n' ;; aarch64|arm64) printf 'arm64\n' ;; *) fail "unsupported architecture: $(uname -m)" ;; esac
 }
 
 check_platform() {
     [[ "$(uname -s)" == "Linux" ]] || fail "only Linux is supported"
     [[ -d /run/systemd/system ]] || fail "systemd is required"
-    case "$(uname -m)" in
-        x86_64|amd64|aarch64|arm64) ;;
-        *) warn "architecture $(uname -m) has not been validated" ;;
-    esac
-    require_command systemctl
-    require_command install
-    require_command getent
+    case "${ID:-}" in debian|ubuntu|fedora|rhel|centos|rocky|almalinux|arch|opensuse*|sles|"") ;; *) warn "distribution ${ID} is not in the validated matrix" ;; esac
+    normalize_arch >/dev/null
+    for command in systemctl install getent tar sha256sum; do require_command "${command}"; done
+}
+
+load_os_release() {
+    ID=""
+    if [[ -r /etc/os-release ]]; then
+        ID="$(sed -n 's/^ID=//p' /etc/os-release | head -n 1 | tr -d '\"')"
+    fi
 }
 
 nologin_shell() {
-    if [[ -x /usr/sbin/nologin ]]; then
-        printf '%s\n' /usr/sbin/nologin
-    elif [[ -x /sbin/nologin ]]; then
-        printf '%s\n' /sbin/nologin
-    else
-        printf '%s\n' /bin/false
-    fi
+    for candidate in /usr/sbin/nologin /sbin/nologin /bin/false; do
+        [[ -x "${candidate}" ]] && { printf '%s\n' "${candidate}"; return; }
+    done
+    fail "no non-login shell is available"
 }
 
-ensure_service_account() {
-    if ! getent group "${SERVICE_GROUP}" >/dev/null; then
-        groupadd --system "${SERVICE_GROUP}"
-    fi
-    if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-        useradd \
-            --system \
-            --gid "${SERVICE_GROUP}" \
-            --home-dir "${DATA_DIR}" \
-            --shell "$(nologin_shell)" \
-            --comment "HX-ProxyGroup service account" \
-            "${SERVICE_USER}"
-    fi
-}
-
-ensure_directories() {
+ensure_account_and_directories() {
+    getent group "${SERVICE_GROUP}" >/dev/null || groupadd --system "${SERVICE_GROUP}"
+    id -u "${SERVICE_USER}" >/dev/null 2>&1 || useradd --system --gid "${SERVICE_GROUP}" --home-dir "${DATA_DIR}" --shell "$(nologin_shell)" --comment "HX-ProxyGroup service account" "${SERVICE_USER}"
+    install -d -m 0755 -o root -g root "${INSTALL_ROOT}" "${INSTALL_ROOT}/versions"
     install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${CONFIG_DIR}"
-    install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${DATA_DIR}"
-    install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${DATA_DIR}/runtime"
-    install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${DATA_DIR}/snapshots"
-    install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${DATA_DIR}/artifacts"
+    install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${DATA_DIR}" "${DATA_DIR}/runtime" "${DATA_DIR}/snapshots" "${DATA_DIR}/artifacts" "${DATA_DIR}/backups"
     install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${LOG_DIR}"
     if [[ ! -e "${CONFIG_DIR}/config.yaml" ]]; then
-        printf '%s\n' '# HX-ProxyGroup configuration placeholder; structured config loading is not implemented yet.' \
-            >"${CONFIG_DIR}/config.yaml"
-        chmod 0640 "${CONFIG_DIR}/config.yaml"
-        chown root:"${SERVICE_GROUP}" "${CONFIG_DIR}/config.yaml"
+        install -m 0640 -o root -g "${SERVICE_GROUP}" /dev/null "${CONFIG_DIR}/config.yaml"
+    fi
+    if [[ ! -e "${DATA_DIR}/runtime/active.yaml" ]]; then
+        install -m 0600 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" /dev/null "${DATA_DIR}/runtime/active.yaml"
+        printf '%s\n' \
+            'mode: rule' 'log-level: info' \
+            "external-controller-unix: ${DATA_DIR}/runtime/mihomo.sock" \
+            'proxies: []' 'proxy-groups: []' 'listeners: []' 'rules:' '  - MATCH,DIRECT' \
+            >"${DATA_DIR}/runtime/active.yaml"
     fi
 }
 
-build_or_copy_binary() {
-    local destination="$1"
-    if [[ -n "${BINARY_SOURCE}" ]]; then
-        [[ -f "${BINARY_SOURCE}" ]] || fail "binary does not exist: ${BINARY_SOURCE}"
-        [[ -x "${BINARY_SOURCE}" ]] || fail "binary is not executable: ${BINARY_SOURCE}"
-        install -m 0755 "${BINARY_SOURCE}" "${destination}"
-        return
-    fi
-
-    require_command go
-    local build_dir
-    build_dir="$(mktemp -d)"
-    trap 'rm -rf -- "${build_dir:-}"' RETURN
-    log "building hx-proxygroupd version ${VERSION}"
-    (
-        cd "${SCRIPT_DIR}"
-        CGO_ENABLED=0 go build \
-            -trimpath \
-            -ldflags "-s -w -X main.version=${VERSION}" \
-            -o "${build_dir}/hx-proxygroupd" \
-            ./cmd/hx-proxygroupd
-    )
-    install -m 0755 "${build_dir}/hx-proxygroupd" "${destination}"
-    rm -rf -- "${build_dir}"
-    trap - RETURN
+resolve_latest_version() {
+    require_command curl
+    local effective
+    effective="$(curl --fail --silent --show-error --location --max-time 20 --output /dev/null --write-out '%{url_effective}' "${RELEASE_BASE}/latest")"
+    VERSION="${effective##*/tag/}"
+    [[ "${VERSION}" != "${effective}" && "${VERSION}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "could not resolve latest release tag"
 }
 
-install_unit() {
-    local unit_source="${SCRIPT_DIR}/deploy/systemd/${SERVICE_NAME}"
-    [[ -f "${unit_source}" ]] || fail "systemd unit not found: ${unit_source}"
-    install -m 0644 "${unit_source}" "${UNIT_PATH}"
-    systemctl daemon-reload
+safe_extract_bundle() {
+    local bundle="$1" destination="$2"
+    if tar -tzf "${bundle}" | awk '/(^\/|(^|\/)\.\.($|\/))/ { bad=1 } END { exit bad ? 0 : 1 }'; then
+        fail "release bundle contains an unsafe path"
+    fi
+    tar -xzf "${bundle}" -C "${destination}"
+}
+
+verify_bundle() {
+    local bundle="$1" checksums="$2" name
+    name="$(basename -- "${bundle}")"
+    local expected
+    expected="$(awk -v name="${name}" '$2 == name || $2 == "*" name {print $1; exit}' "${checksums}")"
+    [[ "${expected}" =~ ^[0-9a-fA-F]{64}$ ]] || fail "SHA256SUMS has no entry for ${name}"
+    local actual
+    actual="$(sha256sum "${bundle}" | awk '{print $1}')"
+    [[ "${actual,,}" == "${expected,,}" ]] || fail "checksum mismatch for ${name}"
+}
+
+prepare_release_stage() {
+    local stage="$1" arch bundle_name bundle checksums
+    arch="$(normalize_arch)"
+    if [[ "${VERSION}" == "latest" ]]; then
+        if [[ -n "${OFFLINE_DIR}" && -r "${OFFLINE_DIR}/VERSION" ]]; then VERSION="$(tr -d '[:space:]' <"${OFFLINE_DIR}/VERSION")"; else resolve_latest_version; fi
+    fi
+    validate_version
+    bundle_name="hx-proxygroup_${VERSION}_linux_${arch}.tar.gz"
+    if [[ -n "${OFFLINE_DIR}" ]]; then
+        bundle="${OFFLINE_DIR}/${bundle_name}"; checksums="${OFFLINE_DIR}/SHA256SUMS"
+        [[ -f "${bundle}" && -f "${checksums}" ]] || fail "offline bundle or SHA256SUMS is missing"
+    else
+        require_command curl
+        bundle="${WORK_DIR}/${bundle_name}"; checksums="${WORK_DIR}/SHA256SUMS"
+        log "downloading fixed release ${VERSION} for linux/${arch}"
+        curl --fail --silent --show-error --location --max-time 120 --output "${bundle}" "${RELEASE_BASE}/download/${VERSION}/${bundle_name}"
+        curl --fail --silent --show-error --location --max-time 30 --output "${checksums}" "${RELEASE_BASE}/download/${VERSION}/SHA256SUMS"
+    fi
+    verify_bundle "${bundle}" "${checksums}"
+    safe_extract_bundle "${bundle}" "${stage}"
+}
+
+prepare_local_stage() {
+    local stage="$1" backend="${BINARY_SOURCE}" mihomo="${MIHOMO_SOURCE}" web="${WEB_SOURCE}"
+    if [[ -z "${backend}" ]]; then
+        require_command go
+        backend="${stage}/hx-proxygroupd.build"
+        (cd "${SCRIPT_DIR}" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${backend}" ./cmd/hx-proxygroupd)
+    fi
+    if [[ -z "${mihomo}" ]]; then mihomo="$(command -v mihomo || true)"; fi
+    [[ -x "${backend}" ]] || fail "local control-plane binary is missing or not executable"
+    [[ -x "${mihomo}" ]] || fail "local Mihomo binary is required; pass --mihomo PATH"
+    if [[ -z "${web}" ]]; then
+        require_command npm
+        (cd "${SCRIPT_DIR}/web" && [[ -d node_modules ]] || npm ci; npm run build)
+        web="${SCRIPT_DIR}/web/dist"
+    fi
+    [[ -f "${web}/index.html" ]] || fail "web directory does not contain index.html"
+    install -d -m 0755 "${stage}/bin" "${stage}/web" "${stage}/deploy/systemd"
+    install -m 0755 "${backend}" "${stage}/bin/hx-proxygroupd"
+    install -m 0755 "${mihomo}" "${stage}/bin/mihomo"
+    cp -a "${web}/." "${stage}/web/"
+    cp -a "${SCRIPT_DIR}/deploy/systemd/." "${stage}/deploy/systemd/"
+    install -m 0755 "${SCRIPT_DIR}/install.sh" "${stage}/install.sh"
+}
+
+validate_stage() {
+    local stage="$1"
+    [[ -x "${stage}/bin/hx-proxygroupd" ]] || fail "bundle is missing bin/hx-proxygroupd"
+    [[ -x "${stage}/bin/mihomo" ]] || fail "bundle is missing bin/mihomo"
+    [[ -f "${stage}/web/index.html" ]] || fail "bundle is missing web/index.html"
+    [[ -f "${stage}/deploy/systemd/${CONTROL_SERVICE}" && -f "${stage}/deploy/systemd/${DATAPLANE_SERVICE}" ]] || fail "bundle is missing systemd units"
+    "${stage}/bin/mihomo" -t -d "${DATA_DIR}/runtime" -f "${DATA_DIR}/runtime/active.yaml" >/dev/null
+}
+
+install_version() {
+    local stage="$1" version_dir="${INSTALL_ROOT}/versions/${VERSION}"
+    install -d -m 0755 -o root -g root "${version_dir}" "${version_dir}/web" "${version_dir}/deploy/systemd"
+    install -m 0755 -o root -g root "${stage}/bin/hx-proxygroupd" "${version_dir}/hx-proxygroupd"
+    install -m 0755 -o root -g root "${stage}/bin/mihomo" "${version_dir}/mihomo"
+    cp -a "${stage}/web/." "${version_dir}/web/"
+    cp -a "${stage}/deploy/systemd/." "${version_dir}/deploy/systemd/"
+    chown -R root:root "${version_dir}"
+    install -m 0755 -o root -g root "${stage}/install.sh" "${INSTALLER_PATH}"
+    install -m 0644 -o root -g root "${stage}/deploy/systemd/${CONTROL_SERVICE}" "${UNIT_DIR}/${CONTROL_SERVICE}"
+    install -m 0644 -o root -g root "${stage}/deploy/systemd/${DATAPLANE_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}"
+}
+
+switch_current() {
+    local target="$1" temporary="${INSTALL_ROOT}/.current.$$"
+    rm -f -- "${temporary}"
+    ln -s -- "${target}" "${temporary}"
+    mv -Tf -- "${temporary}" "${INSTALL_ROOT}/current"
 }
 
 wait_until_ready() {
-    local attempts=30
-    local i
-    for ((i = 1; i <= attempts; i++)); do
-        if systemctl is-active --quiet "${SERVICE_NAME}"; then
-            if command -v curl >/dev/null 2>&1; then
-                if curl --fail --silent --show-error --max-time 1 \
-                    http://127.0.0.1:19090/health/ready >/dev/null 2>&1; then
-                    return 0
-                fi
-            else
-                return 0
-            fi
+    local attempt
+    for ((attempt=1; attempt<=45; attempt++)); do
+        if systemctl is-active --quiet "${CONTROL_SERVICE}" && systemctl is-active --quiet "${DATAPLANE_SERVICE}"; then
+            if command -v curl >/dev/null 2>&1 && curl --fail --silent --max-time 1 http://127.0.0.1:19090/health/ready >/dev/null; then return 0; fi
         fi
         sleep 1
     done
     return 1
 }
 
-install_or_upgrade() {
-    require_root
-    check_platform
-    ensure_service_account
-    ensure_directories
-
-    local version_dir="${INSTALL_ROOT}/versions/${VERSION}"
-    local candidate="${version_dir}/hx-proxygroupd"
-    local old_target=""
-    if [[ -L "${BINARY_LINK}" ]]; then
-        old_target="$(readlink -f "${BINARY_LINK}" || true)"
-    fi
-
-    install -d -m 0755 -o root -g root "${version_dir}"
-    build_or_copy_binary "${candidate}"
-    ln -sfn "${candidate}" "${BINARY_LINK}"
-    install_unit
-
-    if [[ "${START_SERVICE}" == "false" ]]; then
-        log "installed ${VERSION}; service start skipped"
-        return
-    fi
-
-    systemctl enable "${SERVICE_NAME}" >/dev/null
-    if ! systemctl restart "${SERVICE_NAME}"; then
-        rollback_binary "${old_target}"
-        fail "failed to restart ${SERVICE_NAME}"
-    fi
-    if ! wait_until_ready; then
-        systemctl status "${SERVICE_NAME}" --no-pager || true
-        journalctl -u "${SERVICE_NAME}" -n 50 --no-pager || true
-        rollback_binary "${old_target}"
-        fail "service did not become ready; previous binary restored when available"
-    fi
-    log "installed ${VERSION}; service is ready on 127.0.0.1:19090"
+restart_services() {
+    systemctl daemon-reload
+    systemctl enable "${DATAPLANE_SERVICE}" "${CONTROL_SERVICE}" >/dev/null
+    systemctl restart "${DATAPLANE_SERVICE}"
+    systemctl restart "${CONTROL_SERVICE}"
+    wait_until_ready
 }
 
-rollback_binary() {
-    local old_target="$1"
-    if [[ -n "${old_target}" && -x "${old_target}" ]]; then
-        warn "restoring previous binary ${old_target}"
-        ln -sfn "${old_target}" "${BINARY_LINK}"
-        systemctl restart "${SERVICE_NAME}" || true
-    else
-        warn "no previous binary is available for rollback"
-        systemctl stop "${SERVICE_NAME}" || true
+install_or_upgrade() {
+    require_root; load_os_release; check_platform; ensure_account_and_directories
+    [[ "${START_SERVICES}" == "false" ]] || require_command curl
+    WORK_DIR="$(mktemp -d)"; trap '[[ -z "${WORK_DIR}" ]] || rm -rf -- "${WORK_DIR}"' EXIT
+    local stage="${WORK_DIR}/stage" old_target=""
+    install -d -m 0700 "${stage}"
+    if [[ -n "${BINARY_SOURCE}${MIHOMO_SOURCE}${WEB_SOURCE}" || "${VERSION}" == "dev" ]]; then prepare_local_stage "${stage}"; else prepare_release_stage "${stage}"; fi
+    validate_stage "${stage}"
+    [[ ! -L "${INSTALL_ROOT}/current" ]] || old_target="$(readlink -f "${INSTALL_ROOT}/current" || true)"
+    install_version "${stage}"
+    switch_current "${INSTALL_ROOT}/versions/${VERSION}"
+    if [[ "${START_SERVICES}" == "false" ]]; then systemctl daemon-reload; log "installed ${VERSION}; service start skipped"; return; fi
+    if ! restart_services; then
+        systemctl status "${DATAPLANE_SERVICE}" "${CONTROL_SERVICE}" --no-pager || true
+        journalctl -u "${DATAPLANE_SERVICE}" -u "${CONTROL_SERVICE}" -n 80 --no-pager || true
+        if [[ -n "${old_target}" && -d "${old_target}" ]]; then
+            warn "upgrade failed; restoring ${old_target}"
+            switch_current "${old_target}"
+            restart_services || warn "previous version did not recover automatically"
+        fi
+        fail "installation failed readiness checks"
     fi
+    printf '%s\n' "${VERSION}" >"${INSTALL_ROOT}/CURRENT_VERSION"
+    log "${VERSION} is ready; future updates: sudo hx-proxygroup-install upgrade"
 }
 
 repair_installation() {
-    require_root
-    check_platform
-    [[ -x "${BINARY_LINK}" ]] || fail "${BINARY_LINK} is missing; run install first"
-    ensure_service_account
-    ensure_directories
-    install_unit
-    if [[ "${START_SERVICE}" == "true" ]]; then
-        systemctl enable --now "${SERVICE_NAME}"
-        wait_until_ready || fail "service did not become ready after repair"
+    require_root; load_os_release; check_platform; ensure_account_and_directories
+    [[ "${START_SERVICES}" == "false" ]] || require_command curl
+    [[ -x "${INSTALL_ROOT}/current/hx-proxygroupd" && -x "${INSTALL_ROOT}/current/mihomo" ]] || fail "current version is missing; run install"
+    local source="${INSTALL_ROOT}/current"
+    if [[ -f "${source}/deploy/systemd/${CONTROL_SERVICE}" ]]; then
+        install -m 0644 "${source}/deploy/systemd/${CONTROL_SERVICE}" "${UNIT_DIR}/${CONTROL_SERVICE}"
+        install -m 0644 "${source}/deploy/systemd/${DATAPLANE_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}"
+    else
+        install -m 0644 "${SCRIPT_DIR}/deploy/systemd/${CONTROL_SERVICE}" "${UNIT_DIR}/${CONTROL_SERVICE}"
+        install -m 0644 "${SCRIPT_DIR}/deploy/systemd/${DATAPLANE_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}"
     fi
+    "${source}/mihomo" -t -d "${DATA_DIR}/runtime" -f "${DATA_DIR}/runtime/active.yaml" >/dev/null
+    [[ "${START_SERVICES}" == "false" ]] || restart_services || fail "services did not recover after repair"
     log "installation repaired"
+}
+
+backup_installation() {
+    require_root; require_command tar
+    local destination="${OUTPUT_PATH}"
+    [[ -n "${destination}" ]] || destination="${DATA_DIR}/backups/hx-proxygroup-disaster-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+    install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "$(dirname -- "${destination}")"
+    local was_active="false" temporary
+    systemctl is-active --quiet "${CONTROL_SERVICE}" && was_active="true"
+    systemctl stop "${CONTROL_SERVICE}" || true
+    temporary="$(mktemp)"
+    if ! tar --exclude="${DATA_DIR#/}/artifacts" --exclude="${DATA_DIR#/}/backups" -C / -czf "${temporary}" "${CONFIG_DIR#/}" "${DATA_DIR#/}" ||
+       ! install -m 0600 "${temporary}" "${destination}" ||
+       ! chmod 0600 "${destination}"; then
+        rm -f -- "${temporary}"
+        [[ "${was_active}" == "false" ]] || systemctl start "${CONTROL_SERVICE}" || true
+        fail "disaster backup failed; the control-plane service was restored to its previous state"
+    fi
+    rm -f -- "${temporary}"
+    [[ "${was_active}" == "false" ]] || systemctl start "${CONTROL_SERVICE}"
+    log "disaster backup created at ${destination}; it contains secrets"
 }
 
 show_status() {
     require_command systemctl
-    systemctl status "${SERVICE_NAME}" --no-pager || true
-    if [[ -L "${BINARY_LINK}" ]]; then
-        log "active binary: $(readlink -f "${BINARY_LINK}")"
-    fi
-    log "configuration: ${CONFIG_DIR}"
-    log "persistent data: ${DATA_DIR}"
+    systemctl status "${DATAPLANE_SERVICE}" "${CONTROL_SERVICE}" --no-pager || true
+    [[ ! -L "${INSTALL_ROOT}/current" ]] || log "active version: $(readlink -f "${INSTALL_ROOT}/current")"
 }
 
 uninstall_program() {
-    require_root
-    check_platform
-    systemctl disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
-    rm -f -- "${UNIT_PATH}" "${BINARY_LINK}"
+    require_root; load_os_release; check_platform
+    if [[ -d "${DATA_DIR}" ]]; then backup_installation; fi
+    systemctl disable --now "${CONTROL_SERVICE}" "${DATAPLANE_SERVICE}" >/dev/null 2>&1 || true
+    rm -f -- "${UNIT_DIR}/${CONTROL_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}" "${INSTALLER_PATH}"
     systemctl daemon-reload
-    systemctl reset-failed "${SERVICE_NAME}" >/dev/null 2>&1 || true
-    log "program removed; configuration and persistent data were preserved"
+    log "program removed; configuration, data, versions, and disaster backup were preserved"
 }
 
 purge_all() {
     require_root
     [[ "${CONFIRM_PURGE}" == "true" ]] || fail "purge requires --confirm-purge"
-    uninstall_program
+    systemctl disable --now "${CONTROL_SERVICE}" "${DATAPLANE_SERVICE}" >/dev/null 2>&1 || true
+    rm -f -- "${UNIT_DIR}/${CONTROL_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}" "${INSTALLER_PATH}"
     rm -rf -- "${INSTALL_ROOT}" "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}"
-    if id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-        userdel "${SERVICE_USER}" || true
-    fi
-    if getent group "${SERVICE_GROUP}" >/dev/null; then
-        groupdel "${SERVICE_GROUP}" || true
-    fi
+    id -u "${SERVICE_USER}" >/dev/null 2>&1 && userdel "${SERVICE_USER}" || true
+    getent group "${SERVICE_GROUP}" >/dev/null && groupdel "${SERVICE_GROUP}" || true
+    systemctl daemon-reload
     log "program, configuration, persistent data, and service account purged"
 }
 
-parse_arguments "$@"
+main() {
+    parse_arguments "$@"
+    case "${ACTION}" in
+        install|upgrade) install_or_upgrade ;; repair) repair_installation ;; status) show_status ;;
+        backup) backup_installation ;; uninstall) uninstall_program ;; purge) purge_all ;;
+    esac
+}
 
-case "${ACTION}" in
-    install|upgrade) install_or_upgrade ;;
-    repair) repair_installation ;;
-    status) show_status ;;
-    uninstall) uninstall_program ;;
-    purge) purge_all ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

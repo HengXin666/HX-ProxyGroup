@@ -4,10 +4,13 @@ import {
   BellRing,
   CheckCircle2,
   CircleX,
+  Info,
+  LayoutDashboard,
   LogOut,
   ListFilter,
-	LayoutDashboard,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   Radio,
   Route,
   Settings2,
@@ -19,6 +22,7 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { api, setCsrfToken, setUnauthenticatedHandler } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { AlertsPage } from "@/pages/alerts-page"
+import { AboutPage } from "@/pages/about-page"
 import { ArtifactsPage } from "@/pages/artifacts-page"
 import { AuthPage } from "@/pages/auth-page"
 import { InventoryPage } from "@/pages/inventory-page"
@@ -28,8 +32,9 @@ import { RulesPage } from "@/pages/rules-page"
 import { SettingsPage } from "@/pages/settings-page"
 import { TerminalPage } from "@/pages/terminal-page"
 
-type Page = "overview" | "subscriptions" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal"
+type Page = "overview" | "subscriptions" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal" | "about"
 type Notice = { id: number; message: string; tone: "success" | "error" }
+const sidebarStorageKey = "hx-proxygroup.sidebar-collapsed"
 
 const pages: Array<{
   id: Page
@@ -45,6 +50,7 @@ const pages: Array<{
   { id: "alerts", label: "告警", description: "状态与邮件通知", icon: BellRing },
   { id: "artifacts", label: "备份", description: "Backup 与 Export", icon: Archive },
   { id: "terminal", label: "终端", description: "v2 · 服务器 Shell", icon: TerminalSquare },
+  { id: "about", label: "关于", description: "版本、GitHub 与更新", icon: Info },
 ]
 
 function pageFromHash(): Page {
@@ -63,6 +69,11 @@ export default function App() {
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [authGate, setAuthGate] = useState<AuthGate>({ phase: "checking" })
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem(sidebarStorageKey) === "1")
+
+  useEffect(() => {
+    window.localStorage.setItem(sidebarStorageKey, sidebarCollapsed ? "1" : "0")
+  }, [sidebarCollapsed])
 
   const refreshAuth = useCallback(async () => {
     try {
@@ -155,32 +166,51 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background lg:grid lg:h-screen lg:grid-cols-[228px_minmax(0,1fr)] lg:overflow-hidden">
-      <aside className="hidden min-h-screen border-r bg-card lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
-        <div className="flex h-14 items-center gap-2.5 border-b px-4">
-          <div className="flex size-7 items-center justify-center rounded-md bg-[#24292f] text-white">
-            <Network className="size-4" />
+    <div className={cn(
+      "min-h-screen bg-background lg:grid lg:h-screen lg:overflow-hidden lg:transition-[grid-template-columns] lg:duration-200",
+      sidebarCollapsed ? "lg:grid-cols-[68px_minmax(0,1fr)]" : "lg:grid-cols-[228px_minmax(0,1fr)]",
+    )}>
+      <aside data-sidebar data-collapsed={sidebarCollapsed} className="relative z-50 hidden min-h-screen border-r bg-card lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
+        <div className={cn("flex h-14 items-center border-b", sidebarCollapsed ? "justify-center px-2" : "gap-2.5 px-3")}>
+          {!sidebarCollapsed && <>
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-[#24292f] text-white"><Network className="size-4" /></div>
+            <div className="min-w-0 flex-1 truncate text-sm font-semibold">HX-ProxyGroup</div>
+          </>}
+          <div className="group relative flex">
+            <button
+              type="button"
+              className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              onClick={() => setSidebarCollapsed((current) => !current)}
+              aria-label={sidebarCollapsed ? "展开侧栏" : "折叠侧栏"}
+              aria-expanded={!sidebarCollapsed}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+            </button>
+            {sidebarCollapsed && <SidebarTooltip>展开侧栏</SidebarTooltip>}
           </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">HX-ProxyGroup</div>
-            <div className="text-[11px] text-muted-foreground">Control Plane</div>
-          </div>
-          <div className="ml-auto"><ThemeToggle /></div>
         </div>
 
-        <nav className="space-y-1 p-2">
+        <nav className="space-y-1 p-2" aria-label="主导航">
           {pages.map((item) => (
             <SidebarItem
               key={item.id}
               item={item}
               active={item.id === page}
               onClick={() => navigate(item.id)}
+              collapsed={sidebarCollapsed}
             />
           ))}
         </nav>
 
-        <div className="mt-auto border-t p-3">
-          <div className="rounded-md border bg-muted/60 px-3 py-2.5">
+        <div className={cn("mt-auto border-t", sidebarCollapsed ? "space-y-1 p-2" : "p-3")}>
+          {sidebarCollapsed ? <>
+            <SidebarIconSlot tooltip={`后端状态：${healthy === null ? "检测中" : healthy ? "就绪" : "离线"}`}><StatusDot healthy={healthy} compact /></SidebarIconSlot>
+            <SidebarIconSlot tooltip="切换主题"><ThemeToggle /></SidebarIconSlot>
+            {authGate.username && <SidebarIconSlot tooltip={`退出登录（${authGate.username}）`}>
+              <button type="button" onClick={() => void handleLogout()} className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label={`退出登录（${authGate.username}）`}><LogOut className="size-4" /></button>
+            </SidebarIconSlot>}
+          </> : <>
+            <div className="rounded-md border bg-muted/60 px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium">后端状态</span>
               <StatusDot healthy={healthy} />
@@ -188,7 +218,8 @@ export default function App() {
             <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
               Mihomo 数据面、节点检测、持久化流量统计、实时日志与告警均已接入。
             </div>
-          </div>
+            </div>
+            <div className="mt-2 flex h-8 items-center justify-between rounded-md px-2.5 text-xs text-muted-foreground"><span>界面主题</span><ThemeToggle /></div>
           {authGate.username && (
             <button
               type="button"
@@ -199,6 +230,7 @@ export default function App() {
               <span className="min-w-0 flex-1 truncate">退出登录（{authGate.username}）</span>
             </button>
           )}
+          </>}
         </div>
       </aside>
 
@@ -211,7 +243,7 @@ export default function App() {
             <span className="font-semibold">HX-ProxyGroup</span>
             <div className="ml-auto flex items-center gap-1"><ThemeToggle /><StatusDot healthy={healthy} /></div>
           </div>
-          <nav className="flex gap-1 overflow-x-auto border-t px-2 py-1.5">
+          <nav className="scrollbar-none flex gap-1 overflow-x-auto border-t px-2 py-1.5">
             {pages.map((item) => {
               const Icon = item.icon
               return (
@@ -253,6 +285,7 @@ export default function App() {
           {page === "alerts" && <AlertsPage onNotice={showNotice} />}
           {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
           {page === "terminal" && <TerminalPage onNotice={showNotice} />}
+          {page === "about" && <AboutPage onNotice={showNotice} />}
         </main>
       </div>
 
@@ -282,35 +315,49 @@ function SidebarItem({
   item,
   active,
   onClick,
+  collapsed,
 }: {
   item: (typeof pages)[number]
   active: boolean
   onClick: () => void
+  collapsed: boolean
 }) {
   const Icon = item.icon
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-label={collapsed ? item.label : undefined}
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+        "group relative flex w-full items-center rounded-md text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+        collapsed ? "h-10 justify-center px-0" : "gap-2.5 px-2.5 py-2",
         active && "bg-accent font-medium text-accent-foreground",
       )}
     >
       <Icon className="size-4 shrink-0" />
-      <span className="min-w-0 flex-1">
+      {!collapsed && <span className="min-w-0 flex-1">
         <span className="block truncate">{item.label}</span>
         <span className={cn("block truncate text-[11px] font-normal", active ? "text-accent-foreground/80" : "text-muted-foreground")}>{item.description}</span>
-      </span>
+      </span>}
+      {collapsed && <SidebarTooltip><span className="font-medium">{item.label}</span><span className="ml-1.5 text-muted-foreground">{item.description}</span></SidebarTooltip>}
     </button>
   )
 }
 
-function StatusDot({ healthy }: { healthy: boolean | null }) {
+function SidebarTooltip({ children }: { children: React.ReactNode }) {
+  return <span data-sidebar-tooltip role="tooltip" className="pointer-events-none absolute left-[calc(100%+8px)] top-1/2 z-[70] -translate-y-1/2 whitespace-nowrap rounded-md border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground opacity-0 shadow-lg transition-opacity group-hover:opacity-100">{children}</span>
+}
+
+function SidebarIconSlot({ children, tooltip }: { children: React.ReactNode; tooltip: string }) {
+  return <div className="group relative flex justify-center">{children}<SidebarTooltip>{tooltip}</SidebarTooltip></div>
+}
+
+function StatusDot({ healthy, compact = false }: { healthy: boolean | null; compact?: boolean }) {
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 text-[11px] text-muted-foreground",
+        compact && "size-8 justify-center p-0",
         healthy === true && "border-success-border bg-success-muted text-success-foreground",
         healthy === false && "border-destructive/40 bg-destructive/10 text-destructive",
       )}
@@ -322,7 +369,7 @@ function StatusDot({ healthy }: { healthy: boolean | null }) {
           healthy === false && "bg-destructive",
         )}
       />
-      {healthy === null ? "检测中" : healthy ? "就绪" : "离线"}
+      {!compact && (healthy === null ? "检测中" : healthy ? "就绪" : "离线")}
     </span>
   )
 }

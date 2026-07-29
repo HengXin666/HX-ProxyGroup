@@ -389,6 +389,15 @@ export interface DataPlaneStatus {
   log_max_bytes: number
 }
 
+export interface SystemInfo {
+  application: string
+  version: string
+  dataplane_version?: string
+  repository_url: string
+  update_command: string
+  supported_protocols: string[]
+}
+
 export interface OverviewSample {
   timestamp: string
   upload_bytes_per_second: number

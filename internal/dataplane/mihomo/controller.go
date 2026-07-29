@@ -43,7 +43,7 @@ type connectionMetadata struct {
 func (m *Manager) TrafficSnapshot(ctx context.Context) (metrics.RuntimeSnapshot, error) {
 	m.mu.Lock()
 	m.refreshProcessLocked()
-	if m.process == nil || !m.status.Running {
+	if !m.isRunningLocked() || !m.status.Running {
 		m.mu.Unlock()
 		return metrics.RuntimeSnapshot{}, ErrNotRunning
 	}
@@ -148,7 +148,7 @@ func (m *Manager) TestProxy(
 
 	m.mu.Lock()
 	m.refreshProcessLocked()
-	if m.process == nil || !m.status.Running {
+	if !m.isRunningLocked() || !m.status.Running {
 		m.mu.Unlock()
 		return 0, ErrNotRunning
 	}

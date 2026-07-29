@@ -26,7 +26,7 @@ type overviewConnection struct {
 func (m *Manager) OverviewSnapshot(ctx context.Context) (overview.Snapshot, error) {
 	m.mu.Lock()
 	m.refreshProcessLocked()
-	if m.process == nil || !m.status.Running {
+	if !m.isRunningLocked() || !m.status.Running {
 		m.mu.Unlock()
 		return overview.Snapshot{}, ErrNotRunning
 	}

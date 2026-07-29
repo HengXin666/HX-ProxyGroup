@@ -25,6 +25,7 @@ import type {
   RefreshResult,
   Subscription,
   SubscriptionList,
+	SystemInfo,
   TrafficResourceType,
   TrafficSeries,
   TrafficSummaryList,
@@ -248,6 +249,10 @@ export const api = {
     } catch {
       return false
     }
+  },
+
+  systemInfo(): Promise<SystemInfo> {
+    return request("/api/v1/system/info")
   },
 
   listSubscriptions(): Promise<SubscriptionList> {

@@ -3,6 +3,7 @@ package nodeparse
 import (
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -142,5 +143,133 @@ func TestParseSingBoxJSON(t *testing.T) {
 	node := result.Nodes[0]
 	if node.Protocol != "vless" || node.DisplayName != "CF VLESS" || node.Canonical["network"] != "ws" {
 		t.Fatalf("unexpected node: %+v", node)
+	}
+}
+
+func TestNativeMihomoProtocolCompatibilityMatrix(t *testing.T) {
+	content := []byte(`
+proxies:
+  - {name: AnyTLS, type: anytls, server: anytls.example.com, port: 443, password: secret}
+  - {name: Hysteria, type: hysteria, server: hy.example.com, port: 443, auth-str: secret}
+  - {name: Hysteria2, type: hysteria2, server: hy2.example.com, port: 443, password: secret}
+  - {name: HTTP, type: http, server: http.example.com, port: 8080}
+  - {name: Mieru, type: mieru, server: mieru.example.com, port: 443, username: user, password: secret}
+  - {name: ShadowTLS, type: shadow-tls, server: shadow.example.com, port: 443, password: secret}
+  - {name: Snell, type: snell, server: snell.example.com, port: 443, psk: secret}
+  - {name: SOCKS5, type: socks5, server: socks.example.com, port: 1080}
+  - {name: SS, type: ss, server: ss.example.com, port: 8388, cipher: aes-128-gcm, password: secret}
+  - {name: SSH, type: ssh, server: ssh.example.com, port: 22, username: user, password: secret}
+  - {name: SSR, type: ssr, server: ssr.example.com, port: 8388, cipher: aes-128-ctr, password: secret, protocol: auth_sha1_v4, obfs: tls1.2_ticket_auth}
+  - {name: Trojan, type: trojan, server: trojan.example.com, port: 443, password: secret}
+  - {name: TUIC, type: tuic, server: tuic.example.com, port: 443, uuid: 11111111-1111-1111-1111-111111111111, password: secret}
+  - {name: VLESS, type: vless, server: vless.example.com, port: 443, uuid: 11111111-1111-1111-1111-111111111111}
+  - {name: VMess, type: vmess, server: vmess.example.com, port: 443, uuid: 11111111-1111-1111-1111-111111111111}
+  - {name: WireGuard, type: wireguard, server: wg.example.com, port: 51820, private-key: private, public-key: public, ip: 172.16.0.2}
+`)
+	result, err := Parse(content)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(result.Nodes) != 16 || len(result.Failures) != 0 {
+		t.Fatalf("nodes = %d, failures = %+v", len(result.Nodes), result.Failures)
+	}
+	got := make([]string, 0, len(result.Nodes))
+	for _, node := range result.Nodes {
+		got = append(got, node.Protocol)
+	}
+	slices.Sort(got)
+	want := SupportedProtocols()
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("protocols = %v, want %v", got, want)
+	}
+}
+
+func TestParseMihomoProviderPayloadAndReferences(t *testing.T) {
+	payload, err := Parse([]byte(`payload:
+  - {name: provider-node, type: hysteria2, server: hy2.example.com, port: 443, password: secret}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.DetectedFormat != "mihomo-provider-yaml" || len(payload.Nodes) != 1 {
+		t.Fatalf("unexpected payload result: %+v", payload)
+	}
+
+	config, err := Parse([]byte(`
+proxy-providers:
+  inline:
+    type: inline
+    payload:
+      - {name: inline-node, type: tuic, server: tuic.example.com, port: 443, uuid: id, password: secret}
+  remote:
+    type: http
+    url: https://provider.example.com/nodes.yaml
+    header:
+      User-Agent: [HX-Test/1]
+      X-Provider: token
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Nodes) != 1 || len(config.Providers) != 1 || config.Providers[0].Name != "remote" {
+		t.Fatalf("unexpected config result: %+v", config)
+	}
+	if config.Providers[0].UserAgent != "HX-Test/1" || config.Providers[0].Headers["x-provider"] != "token" {
+		t.Fatalf("provider headers were not normalized: %+v", config.Providers[0])
+	}
+}
+
+func TestShareURICompatibilityMatrix(t *testing.T) {
+	cases := []struct {
+		uri      string
+		protocol string
+		field    string
+		value    string
+	}{
+		{"hysteria://auth@hy.example.com:443?upmbps=20#HY", "hysteria", "auth-str", "auth"},
+		{"hy2://secret@hy2.example.com:443?obfs=salamander#HY2", "hysteria2", "password", "secret"},
+		{"tuic://id:secret@tuic.example.com:443?congestion_control=bbr#TUIC", "tuic", "uuid", "id"},
+		{"anytls://secret@anytls.example.com:443#AnyTLS", "anytls", "password", "secret"},
+		{"ssh://user:secret@ssh.example.com:22#SSH", "ssh", "username", "user"},
+	}
+	for _, test := range cases {
+		t.Run(test.protocol, func(t *testing.T) {
+			result, err := Parse([]byte(test.uri))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Nodes) != 1 || result.Nodes[0].Protocol != test.protocol || result.Nodes[0].Canonical[test.field] != test.value {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+		})
+	}
+}
+
+func TestProtocolAliasesNormalizeForMihomoCompiler(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		protocol string
+		tls      bool
+	}{
+		{name: "HTTPS URI", content: "https://user:secret@http.example.com:443#HTTPS", protocol: "http", tls: true},
+		{name: "SOCKS URI", content: "socks://user:secret@socks.example.com:1080#SOCKS", protocol: "socks5"},
+		{name: "HTTPS YAML", content: "proxies:\n  - {name: HTTPS, type: https, server: http.example.com, port: 443}\n", protocol: "http", tls: true},
+		{name: "SOCKS YAML", content: "proxies:\n  - {name: SOCKS, type: socks, server: socks.example.com, port: 1080}\n", protocol: "socks5"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := Parse([]byte(test.content))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Nodes) != 1 || result.Nodes[0].Protocol != test.protocol || result.Nodes[0].Canonical["type"] != test.protocol {
+				t.Fatalf("unexpected alias result: %+v", result)
+			}
+			if tls, _ := result.Nodes[0].Canonical["tls"].(bool); tls != test.tls {
+				t.Fatalf("tls = %v, want %v", tls, test.tls)
+			}
+		})
 	}
 }

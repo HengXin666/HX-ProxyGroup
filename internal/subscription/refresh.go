@@ -186,7 +186,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (result RefreshResult,
 			if readErr != nil {
 				return RefreshResult{}, s.refreshFailed(ctx, record, fetchedAt, fmt.Errorf("read previous subscription snapshot: %w", readErr))
 			}
-			parseSummary, imports, parseErr := s.parseNodeImports(content, fetchResult.Metadata.ContentType)
+			parseSummary, imports, parseErr := s.parseNodeImports(ctx, content, fetchResult.Metadata.ContentType, SourceType(record.SourceType), config)
 			if parseErr != nil {
 				return RefreshResult{}, s.refreshFailed(ctx, record, fetchedAt, parseErr)
 			}
@@ -215,7 +215,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (result RefreshResult,
 	existing, err := s.repository.GetSubscriptionSnapshotByHash(ctx, id, contentHash)
 	if err == nil {
 		if s.parser != nil {
-			parseSummary, imports, parseErr := s.parseNodeImports(fetchResult.Content, fetchResult.Metadata.ContentType)
+			parseSummary, imports, parseErr := s.parseNodeImports(ctx, fetchResult.Content, fetchResult.Metadata.ContentType, SourceType(record.SourceType), config)
 			if parseErr != nil {
 				return RefreshResult{}, s.refreshFailed(ctx, record, fetchedAt, parseErr)
 			}
@@ -242,7 +242,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (result RefreshResult,
 		return RefreshResult{}, s.refreshFailed(ctx, record, fetchedAt, err)
 	}
 
-	parseSummary, imports, err := s.parseNodeImports(fetchResult.Content, fetchResult.Metadata.ContentType)
+	parseSummary, imports, err := s.parseNodeImports(ctx, fetchResult.Content, fetchResult.Metadata.ContentType, SourceType(record.SourceType), config)
 	if err != nil {
 		return RefreshResult{}, s.refreshFailed(ctx, record, fetchedAt, err)
 	}

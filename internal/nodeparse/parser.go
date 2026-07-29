@@ -3,13 +3,12 @@ package nodeparse
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -31,9 +30,36 @@ type Failure struct {
 }
 
 type Result struct {
-	DetectedFormat string    `json:"detected_format"`
-	Nodes          []Node    `json:"nodes"`
-	Failures       []Failure `json:"failures,omitempty"`
+	DetectedFormat string              `json:"detected_format"`
+	Nodes          []Node              `json:"nodes"`
+	Failures       []Failure           `json:"failures,omitempty"`
+	Providers      []ProviderReference `json:"-"`
+}
+
+// ProviderReference describes an external Mihomo proxy-provider. Fetching is
+// intentionally owned by the subscription service so SSRF and file policies
+// stay identical to ordinary subscription sources.
+type ProviderReference struct {
+	Name      string
+	Type      string
+	URL       string
+	Path      string
+	Headers   map[string]string
+	UserAgent string
+}
+
+var nativeProtocols = map[string]struct{}{
+	"anytls": {}, "hysteria": {}, "hysteria2": {}, "http": {}, "https": {},
+	"mieru": {}, "shadow-tls": {}, "snell": {}, "socks": {}, "socks5": {},
+	"ss": {}, "ssh": {}, "ssr": {}, "trojan": {}, "tuic": {}, "vless": {},
+	"vmess": {}, "wireguard": {},
+}
+
+// SupportedProtocols returns the outbound protocol names accepted from native
+// Mihomo YAML. Actual availability is still determined by the installed
+// Mihomo build during candidate validation.
+func SupportedProtocols() []string {
+	return []string{"anytls", "hysteria", "hysteria2", "http", "mieru", "shadow-tls", "snell", "socks5", "ss", "ssh", "ssr", "trojan", "tuic", "vless", "vmess", "wireguard"}
 }
 
 func Parse(content []byte) (Result, error) {
@@ -105,7 +131,7 @@ func singBoxToCanonical(raw map[string]any) (map[string]any, error) {
 		protocol = "ss"
 	case "socks":
 		protocol = "socks5"
-	case "vless", "vmess", "trojan", "http":
+	case "hysteria", "hysteria2", "tuic", "ssh", "wireguard", "mieru", "anytls", "vless", "vmess", "trojan", "http":
 	default:
 		return nil, fmt.Errorf("unsupported sing-box outbound type %q", protocol)
 	}
@@ -113,9 +139,22 @@ func singBoxToCanonical(raw map[string]any) (map[string]any, error) {
 		"name": stringValue(input["tag"]), "type": protocol,
 		"server": input["server"], "port": input["server_port"],
 	}
-	for _, key := range []string{"uuid", "username", "password", "flow", "security"} {
+	for _, key := range []string{"uuid", "username", "password", "flow", "security", "auth", "auth_str", "obfs", "obfs_password", "congestion_control", "udp_relay_mode", "private_key", "peer_public_key", "reserved", "local_address"} {
 		if value, exists := input[key]; exists {
-			canonical[key] = value
+			canonical[strings.ReplaceAll(key, "_", "-")] = value
+		}
+	}
+	if protocol == "hysteria" || protocol == "hysteria2" {
+		if value, exists := canonical["auth-str"]; exists {
+			canonical["auth-str"] = value
+		} else if value, exists := canonical["auth"]; exists {
+			canonical["password"] = value
+		}
+	}
+	if protocol == "wireguard" {
+		if value, exists := canonical["peer-public-key"]; exists {
+			canonical["public-key"] = value
+			delete(canonical, "peer-public-key")
 		}
 	}
 	if method, exists := input["method"]; exists {
@@ -151,25 +190,65 @@ func singBoxToCanonical(raw map[string]any) (map[string]any, error) {
 
 func parseClashYAML(content []byte) (Result, bool) {
 	var document struct {
-		Proxies []map[string]any `yaml:"proxies"`
+		Proxies   []map[string]any          `yaml:"proxies"`
+		Payload   []map[string]any          `yaml:"payload"`
+		Providers map[string]map[string]any `yaml:"proxy-providers"`
 	}
-	if err := yaml.Unmarshal(content, &document); err != nil || document.Proxies == nil {
+	if err := yaml.Unmarshal(content, &document); err != nil || (document.Proxies == nil && document.Payload == nil && document.Providers == nil) {
 		return Result{}, false
 	}
-	result := Result{DetectedFormat: "clash-yaml", Nodes: make([]Node, 0, len(document.Proxies))}
-	for index, raw := range document.Proxies {
+	format := "clash-yaml"
+	items := document.Proxies
+	if document.Proxies == nil && document.Payload != nil {
+		format = "mihomo-provider-yaml"
+		items = document.Payload
+	}
+	result := Result{DetectedFormat: format, Nodes: make([]Node, 0, len(items))}
+	appendClashNodes(&result, items, "")
+	providerNames := make([]string, 0, len(document.Providers))
+	for name := range document.Providers {
+		providerNames = append(providerNames, name)
+	}
+	slices.Sort(providerNames)
+	for _, name := range providerNames {
+		raw := normalizeMap(document.Providers[name])
+		if inline := mapSlice(raw["payload"]); inline != nil {
+			appendClashNodes(&result, inline, name)
+			continue
+		}
+		if inline := mapSlice(raw["proxies"]); inline != nil {
+			appendClashNodes(&result, inline, name)
+			continue
+		}
+		providerType := strings.ToLower(strings.TrimSpace(stringValue(raw["type"])))
+		reference := ProviderReference{Name: name, Type: providerType, URL: stringValue(raw["url"]), Path: stringValue(raw["path"])}
+		reference.Headers, reference.UserAgent = providerHeaders(raw["header"])
+		if providerType == "http" && reference.URL != "" || providerType == "file" && reference.Path != "" {
+			result.Providers = append(result.Providers, reference)
+			continue
+		}
+		result.Failures = append(result.Failures, Failure{Name: name, Reason: "provider must contain payload/proxies or a valid http/file source"})
+	}
+	return result, true
+}
+
+func appendClashNodes(result *Result, items []map[string]any, providerName string) {
+	for index, raw := range items {
 		node, err := nodeFromClash(raw)
 		if err != nil {
+			name := stringValue(raw["name"])
+			if providerName != "" {
+				name = providerName + ": " + name
+			}
 			result.Failures = append(result.Failures, Failure{
 				Index:  index,
-				Name:   stringValue(raw["name"]),
+				Name:   name,
 				Reason: err.Error(),
 			})
 			continue
 		}
 		result.Nodes = append(result.Nodes, node)
 	}
-	return result, true
 }
 
 func nodeFromClash(raw map[string]any) (Node, error) {
@@ -177,6 +256,16 @@ func nodeFromClash(raw map[string]any) (Node, error) {
 	protocol := strings.ToLower(strings.TrimSpace(stringValue(canonical["type"])))
 	if protocol == "" {
 		return Node{}, errors.New("missing node type")
+	}
+	if _, supported := nativeProtocols[protocol]; !supported {
+		return Node{}, fmt.Errorf("unsupported Mihomo node type %q", protocol)
+	}
+	switch protocol {
+	case "https":
+		protocol = "http"
+		canonical["tls"] = true
+	case "socks":
+		protocol = "socks5"
 	}
 	server := strings.TrimSpace(stringValue(canonical["server"]))
 	if server == "" {
@@ -220,153 +309,41 @@ func parseURILines(text string) Result {
 	return result
 }
 
-func parseURI(value string) (Node, error) {
-	separator := strings.Index(value, "://")
-	if separator <= 0 {
-		return Node{}, errors.New("invalid share URI")
-	}
-	protocol := strings.ToLower(value[:separator])
-	switch protocol {
-	case "vless", "trojan", "http", "https", "socks", "socks5":
-		return parseStandardURI(value, protocol)
-	case "vmess":
-		return parseVMessURI(value)
-	case "ss":
-		return parseShadowsocksURI(value)
-	default:
-		return Node{}, fmt.Errorf("unsupported protocol %q", protocol)
-	}
-}
-
-func parseStandardURI(value, protocol string) (Node, error) {
-	parsed, err := url.Parse(value)
-	if err != nil {
-		return Node{}, errors.New("invalid share URI")
-	}
-	server := strings.TrimSpace(parsed.Hostname())
-	port, err := strconv.Atoi(parsed.Port())
-	if server == "" || err != nil || port < 1 || port > 65535 {
-		return Node{}, errors.New("invalid server or port")
-	}
-	canonical := map[string]any{
-		"type":   protocol,
-		"server": server,
-		"port":   port,
-	}
-	if parsed.User != nil {
-		identity := parsed.User.Username()
-		password, hasPassword := parsed.User.Password()
-		switch protocol {
-		case "vless":
-			canonical["uuid"] = identity
-		case "trojan":
-			canonical["password"] = identity
-		default:
-			canonical["username"] = identity
-			if hasPassword {
-				canonical["password"] = password
-			}
-		}
-	}
-	if protocol == "https" {
-		canonical["tls"] = true
-	}
-	if query := normalizeQuery(parsed.Query()); len(query) > 0 {
-		canonical["query"] = query
-	}
-	name, _ := url.QueryUnescape(parsed.Fragment)
-	if strings.TrimSpace(name) == "" {
-		name = net.JoinHostPort(server, strconv.Itoa(port))
-	}
-	return finalize(name, protocol, canonical)
-}
-
-func parseVMessURI(value string) (Node, error) {
-	decoded, ok := decodeBase64([]byte(strings.TrimPrefix(value, "vmess://")))
+func mapSlice(value any) []map[string]any {
+	items, ok := value.([]any)
 	if !ok {
-		return Node{}, errors.New("invalid vmess base64 payload")
+		return nil
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(decoded, &raw); err != nil {
-		return Node{}, errors.New("invalid vmess JSON payload")
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if mapped, ok := item.(map[string]any); ok {
+			result = append(result, mapped)
+		}
 	}
-	canonical := normalizeMap(raw)
-	server := strings.TrimSpace(stringValue(canonical["add"]))
-	port, err := integerValue(canonical["port"])
-	if server == "" || err != nil || port < 1 || port > 65535 {
-		return Node{}, errors.New("invalid vmess server or port")
-	}
-	canonical["type"] = "vmess"
-	canonical["server"] = server
-	canonical["port"] = port
-	delete(canonical, "add")
-	name := strings.TrimSpace(stringValue(canonical["ps"]))
-	delete(canonical, "ps")
-	if name == "" {
-		name = net.JoinHostPort(server, strconv.Itoa(port))
-	}
-	return finalize(name, "vmess", canonical)
+	return result
 }
 
-func parseShadowsocksURI(value string) (Node, error) {
-	payload := strings.TrimPrefix(value, "ss://")
-	fragment := ""
-	if index := strings.Index(payload, "#"); index >= 0 {
-		fragment = payload[index+1:]
-		payload = payload[:index]
+func providerHeaders(value any) (map[string]string, string) {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, ""
 	}
-	query := ""
-	if index := strings.Index(payload, "?"); index >= 0 {
-		query = payload[index+1:]
-		payload = payload[:index]
-	}
-	if !strings.Contains(payload, "@") {
-		decoded, ok := decodeBase64([]byte(payload))
-		if !ok {
-			return Node{}, errors.New("invalid shadowsocks base64 payload")
+	headers := make(map[string]string, len(raw))
+	userAgent := ""
+	for key, value := range raw {
+		text := stringValue(value)
+		if items, ok := value.([]any); ok && len(items) > 0 {
+			text = stringValue(items[0])
 		}
-		payload = string(decoded)
-	}
-	at := strings.LastIndex(payload, "@")
-	if at <= 0 {
-		return Node{}, errors.New("invalid shadowsocks authority")
-	}
-	credentials := payload[:at]
-	if !strings.Contains(credentials, ":") {
-		decoded, ok := decodeBase64([]byte(credentials))
-		if !ok {
-			return Node{}, errors.New("invalid shadowsocks credentials")
+		if strings.EqualFold(key, "user-agent") {
+			userAgent = text
+			continue
 		}
-		credentials = string(decoded)
+		if text != "" {
+			headers[key] = text
+		}
 	}
-	credentialSeparator := strings.Index(credentials, ":")
-	if credentialSeparator <= 0 {
-		return Node{}, errors.New("invalid shadowsocks credentials")
-	}
-	server, portText, err := net.SplitHostPort(payload[at+1:])
-	if err != nil {
-		return Node{}, errors.New("invalid shadowsocks server or port")
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port < 1 || port > 65535 {
-		return Node{}, errors.New("invalid shadowsocks port")
-	}
-	canonical := map[string]any{
-		"type":     "ss",
-		"server":   server,
-		"port":     port,
-		"cipher":   credentials[:credentialSeparator],
-		"password": credentials[credentialSeparator+1:],
-	}
-	if query != "" {
-		values, _ := url.ParseQuery(query)
-		canonical["query"] = normalizeQuery(values)
-	}
-	name, _ := url.QueryUnescape(fragment)
-	if strings.TrimSpace(name) == "" {
-		name = net.JoinHostPort(server, strconv.Itoa(port))
-	}
-	return finalize(name, "ss", canonical)
+	return headers, userAgent
 }
 
 func finalize(name, protocol string, canonical map[string]any) (Node, error) {
@@ -419,40 +396,6 @@ func normalizeValue(value any) any {
 	default:
 		return value
 	}
-}
-
-func normalizeQuery(values url.Values) map[string]any {
-	result := make(map[string]any, len(values))
-	for key, items := range values {
-		if len(items) == 1 {
-			result[strings.ToLower(key)] = items[0]
-		} else {
-			result[strings.ToLower(key)] = append([]string(nil), items...)
-		}
-	}
-	return result
-}
-
-func decodeBase64(value []byte) ([]byte, bool) {
-	compact := strings.Map(func(character rune) rune {
-		if character == '\r' || character == '\n' || character == ' ' || character == '\t' {
-			return -1
-		}
-		return character
-	}, string(value))
-	encodings := []*base64.Encoding{
-		base64.StdEncoding,
-		base64.RawStdEncoding,
-		base64.URLEncoding,
-		base64.RawURLEncoding,
-	}
-	for _, encoding := range encodings {
-		decoded, err := encoding.DecodeString(compact)
-		if err == nil && len(decoded) > 0 {
-			return decoded, true
-		}
-	}
-	return nil, false
 }
 
 func stringValue(value any) string {

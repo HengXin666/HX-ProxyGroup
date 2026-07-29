@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:e2e:inventory": "node e2e/inventory-layout.mjs",
     "check": "tsc -b --pretty false",
     "test:ui": "node e2e/ui-smoke.mjs",
     "preview": "vite preview"

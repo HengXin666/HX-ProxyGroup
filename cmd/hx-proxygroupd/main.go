@@ -58,7 +58,9 @@ func run(logger *slog.Logger) error {
 	flag.StringVar(&cfg.MasterKeyPath, "master-key", cfg.MasterKeyPath, "master key path for encrypted secrets")
 	flag.StringVar(&cfg.RuntimeConfigPath, "runtime-config", cfg.RuntimeConfigPath, "active Mihomo configuration path")
 	flag.StringVar(&cfg.SnapshotsPath, "snapshots", cfg.SnapshotsPath, "subscription snapshot directory")
+	flag.StringVar(&cfg.WebRoot, "web-root", cfg.WebRoot, "production web asset directory")
 	flag.StringVar(&cfg.MihomoBinary, "mihomo", cfg.MihomoBinary, "Mihomo executable path or command name")
+	flag.BoolVar(&cfg.MihomoExternal, "mihomo-external", cfg.MihomoExternal, "coordinate a systemd-managed Mihomo process")
 	flag.StringVar(&cfg.MihomoEgressInterface, "mihomo-egress-interface", cfg.MihomoEgressInterface, "Mihomo outbound interface: auto, off, or an interface name")
 	flag.IntVar(&cfg.MihomoMaxProcs, "mihomo-max-procs", cfg.MihomoMaxProcs, "maximum CPU threads available to Mihomo")
 	flag.Int64Var(&cfg.MihomoLogMaxBytes, "mihomo-log-max-bytes", cfg.MihomoLogMaxBytes, "maximum bytes in each Mihomo log file")
@@ -111,6 +113,7 @@ func run(logger *slog.Logger) error {
 		mihomo.WithEgressInterface(egressInterface),
 		mihomo.WithProcessMaxProcs(cfg.MihomoMaxProcs),
 		mihomo.WithLogRotation(cfg.MihomoLogMaxBytes, cfg.MihomoLogBackups),
+		mihomo.WithExternalProcess(cfg.MihomoExternal),
 	)
 	if err != nil {
 		return err
@@ -293,6 +296,13 @@ func run(logger *slog.Logger) error {
 		api.WithAuth(authService),
 		api.WithAlerts(alertService),
 		api.WithTerminal(terminalService),
+		api.WithWebRoot(cfg.WebRoot),
+		api.WithSystemInfo(api.SystemInfo{
+			Application: "HX-ProxyGroup", Version: version,
+			RepositoryURL:      "https://github.com/HengXin666/HX-ProxyGroup",
+			UpdateCommand:      "sudo hx-proxygroup-install upgrade",
+			SupportedProtocols: nodeparse.SupportedProtocols(),
+		}),
 	)
 	if err != nil {
 		return err

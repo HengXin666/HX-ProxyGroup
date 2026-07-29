@@ -113,23 +113,28 @@ Wants=network-online.target
 After=network-online.target hx-proxygroup-dataplane.service
 
 [Service]
-Type=notify
+Type=simple
 User=hx-proxygroup
 Group=hx-proxygroup
-ExecStart=/usr/bin/hx-proxygroupd --config /etc/hx-proxygroup/config.yaml
+ExecStart=/usr/local/lib/hx-proxygroup/current/hx-proxygroupd \
+  --listen 127.0.0.1:19090 \
+  --data-dir /var/lib/hx-proxygroup \
+  --config /etc/hx-proxygroup/config.yaml \
+  --web-root /usr/local/lib/hx-proxygroup/current/web \
+  --mihomo /usr/local/lib/hx-proxygroup/current/mihomo \
+  --mihomo-external
 Restart=on-failure
 RestartSec=5s
 StartLimitIntervalSec=300
 StartLimitBurst=10
-WatchdogSec=30s
-TimeoutStartSec=90s
-TimeoutStopSec=30s
+TimeoutStartSec=30s
+TimeoutStopSec=20s
 LimitNOFILE=1048576
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/hx-proxygroup /var/log/hx-proxygroup
+ReadWritePaths=/var/lib/hx-proxygroup
 LockPersonality=true
 RestrictSUIDSGID=true
 
@@ -148,7 +153,8 @@ After=network-online.target
 [Service]
 User=hx-proxygroup
 Group=hx-proxygroup
-ExecStart=/usr/lib/hx-proxygroup/mihomo -d /var/lib/hx-proxygroup/runtime -f /var/lib/hx-proxygroup/runtime/active.yaml
+ExecStartPre=/usr/local/lib/hx-proxygroup/current/mihomo -t -d /var/lib/hx-proxygroup/runtime -f /var/lib/hx-proxygroup/runtime/active.yaml
+ExecStart=/usr/local/lib/hx-proxygroup/current/mihomo -d /var/lib/hx-proxygroup/runtime -f /var/lib/hx-proxygroup/runtime/active.yaml
 Restart=on-failure
 RestartSec=3s
 StartLimitIntervalSec=300
@@ -158,19 +164,19 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/hx-proxygroup /var/log/hx-proxygroup
+ReadWritePaths=/var/lib/hx-proxygroup/runtime
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-最终 Unit 以实际 Mihomo 参数和所需 capability 为准。不能为了方便直接使用宽泛的 root 权限或关闭全部 systemd 沙箱。
+仓库中的 `deploy/systemd/` 是发布包的权威 unit。两个服务均以非 root 用户运行，管理 API 只监听 `127.0.0.1`，External Controller 使用 Unix Socket，并启用 systemd 文件系统、设备、内核和 capability 沙箱。
 
 ### 5.3 服务协作
 
 - 数据面必须能独立加载最后有效配置启动。
 - 控制面可以检查和修正数据面状态，但不应成为数据面启动的硬前置。
-- 控制面升级时，不应无条件重启数据面。
+- 安装器切换完整 Release 时会重启两个服务以保证二进制契约一致；日常配置热重载和控制面自身退出不会停止健康数据面。
 - 数据面升级前先验证新二进制和当前配置兼容性。
 - systemd 重启次数和最近退出码写入系统状态与告警。
 
@@ -180,14 +186,14 @@ WantedBy=multi-user.target
 
 ### 6.1 基本原则
 
-- [ ] `set -Eeuo pipefail`。
-- [ ] 所有路径、版本和下载源均可通过参数覆盖。
-- [ ] 不使用 `curl | sh` 作为内部实现方式；先下载、校验，再执行。
-- [ ] 所有 Release 文件必须校验 SHA-256，支持额外签名校验。
-- [ ] 安装流程采用阶段和回滚栈。
-- [ ] 重复执行不会重置数据库、管理员密码或用户配置。
-- [ ] 非交互模式下不读取 stdin。
-- [ ] 关键步骤输出明确日志，失败时给出恢复命令。
+- [x] 使用 `set -Eeuo pipefail`。
+- [x] 安装根目录、配置、数据、日志、unit、Release 源、版本和离线来源均可覆盖。
+- [x] 内部不使用 `curl | sh`；先下载固定 Release 包和校验文件，再校验、解包和执行。
+- [x] 所有 Release 包校验 SHA-256；额外签名校验尚未实现。
+- [x] 使用临时阶段目录、版本目录、原子 `current` 链接和 readiness 失败回滚。
+- [x] 重复执行不会重置数据库、管理员密码、主密钥或用户配置。
+- [x] 非交互模式下不读取 stdin。
+- [x] 关键步骤输出明确日志，失败时输出双服务状态和最近 journald 日志。
 
 ### 6.2 命令
 
@@ -197,10 +203,11 @@ install.sh upgrade   [--version X]
 install.sh repair
 install.sh status
 install.sh backup    [--output PATH]
-install.sh restore   --input PATH
 install.sh uninstall
-install.sh purge     --confirm
+install.sh purge     --confirm-purge
 ```
+
+当前 `backup` 生成包含配置、数据库、主密钥、运行配置和快照的敏感灾难归档并排除递归备份目录；尚未提供自动 Restore 子命令，恢复仍需人工维护窗口。
 
 ### 6.3 安装流程
 
@@ -228,11 +235,10 @@ preflight
 ### 6.4 版本化布局
 
 ```text
-/usr/lib/hx-proxygroup/
+/usr/local/lib/hx-proxygroup/
 ├── versions/
 │   ├── 1.0.0/
 │   │   ├── hx-proxygroupd
-│   │   ├── hx-proxygroupctl
 │   │   ├── mihomo
 │   │   └── web/
 │   └── 1.0.1/
@@ -241,11 +247,25 @@ preflight
 
 使用版本目录和原子符号链接切换，升级失败时恢复旧链接。至少保留上一版可用版本。
 
+稳定 Release 包名为 `hx-proxygroup_<tag>_linux_<amd64|arm64>.tar.gz`，固定包含 `bin/hx-proxygroupd`、`bin/mihomo`、`web/`、`deploy/systemd/` 和新版 `install.sh`。升级成功时安装器自身同步更新，因此后续版本继续使用：
+
+```bash
+sudo hx-proxygroup-install upgrade
+```
+
 ### 6.5 卸载语义
 
 - `uninstall`：停止并移除程序与 systemd unit，保留 `/etc`、数据库和备份。
 - `purge`：明确确认后删除全部配置、数据库、凭据和备份。
 - 卸载前默认创建一次带时间戳的备份。
+
+### 6.6 自动化恢复证据
+
+- 发布包结构和可复现 SHA-256 由 `TestPackageReleaseBundleContract` 验证。
+- 双 unit 的私有监听、独立生命周期和 systemd 沙箱由根包安装测试验证。
+- SQLite WAL 在未提交事务中强制终止辅助进程后的恢复由 `internal/store/recovery_test.go` 验证。
+- 外部 Mihomo 热重载失败恢复上一版配置，以及控制面关闭不终止数据面，由 `internal/dataplane/mihomo/manager_external_test.go` 验证。
+- 真实发行版 VM 安装、整机断电和数据面吞吐仍属于发布前人工/环境测试，见 [`BENCHMARKS.md`](BENCHMARKS.md)。
 
 ---
 

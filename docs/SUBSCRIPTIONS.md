@@ -15,7 +15,7 @@
  -> 更新最近成功快照与下一次刷新时间
 ```
 
-当前已经完成从原始订阅到节点库存的纵向链路，但尚未生成或应用 Mihomo 数据面配置。因此“订阅已刷新、节点已入库”仍不代表本机已经开放可用代理端口。
+刷新成功后节点进入库存；只有节点被代理组和 Listener 引用并且完整候选配置通过当前 Mihomo 校验与应用后，才代表本机已开放对应代理端口。
 
 ## 2. 来源类型
 
@@ -141,15 +141,18 @@ HTTP 409 subscription_conflict
 当前解析器支持：
 
 - Clash / Mihomo YAML 中的 `proxies` 列表。
+- Mihomo Provider `payload`，以及配置中的内联 `proxy-providers.payload/proxies`。
+- 展开 HTTP Provider，并复用父订阅的 SSRF、DNS、重定向、Header、User-Agent、超时和大小限制。
+- 展开 File 订阅中的相对或绝对 File Provider，并继续拒绝符号链接和非普通文件。
 - sing-box JSON 中的 `outbounds` 列表。
-- VLESS、VMess、Trojan、Shadowsocks、HTTP / HTTPS、SOCKS / SOCKS5 分享 URI。
+- VLESS、VMess、Trojan、Shadowsocks、HTTP / HTTPS、SOCKS / SOCKS5、Hysteria、Hysteria2 / Hy2、TUIC、AnyTLS 和 SSH 分享 URI。
 - Base64 包裹的 URI 列表。
 - 单节点解析失败结构化保存，不会静默丢弃。
 - 按规范配置生成稳定 SHA-256 指纹，显示名称变化不会制造重复节点。
 - 新快照至少包含一个有效节点才会激活；解析失败时继续保留最近成功快照。
 - 相同内容和 HTTP 304 路径会重建节点关系，兼容解析器上线前保存的旧原始快照。
 
-尚未覆盖全部机场变体、Mihomo Provider 展开和所有插件协议，具体边界以解析兼容矩阵和测试为准。
+Provider 展开最多 3 层、32 个 Provider、累计 32 MiB。尚未覆盖全部机场私有变体和所有插件协议，准确边界见 [`SUBSCRIPTION_COMPATIBILITY.md`](SUBSCRIPTION_COMPATIBILITY.md)。最终协议可用性仍由关于页显示的当前 Mihomo 构建和候选配置校验决定。
 
 ## 7. 自动刷新调度
 
@@ -177,11 +180,11 @@ next_refresh_at = now + refresh_interval
 
 退避最多达到订阅刷新周期或 30 分钟中的较小值。服务器在任务执行中崩溃时，租约到期后任务会再次被领取。
 
-## 8. 当前未完成
+## 8. 当前扩展项
 
-- [ ] 展开 Mihomo Provider，并补齐全部机场变体和插件协议兼容矩阵。
-- [ ] 支持批量手工刷新 API。
-- [ ] Cron 表达式；当前仅支持固定间隔。
+- [x] 展开 Mihomo HTTP / File / Inline Provider，并建立协议兼容矩阵。
+- [x] 支持批量手工刷新 API。
+- [x] 支持 UTC 标准 5 字段 Cron 表达式。
 - [ ] 请求代理配置；当前订阅 Fetcher 明确直连。
-- [ ] 随机抖动；当前依靠数据库租约和扫描周期分散任务。
+- [x] 失败退避加入有界随机抖动。
 - [ ] 管理面刷新历史和实时 SSE 进度。

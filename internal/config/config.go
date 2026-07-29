@@ -19,7 +19,9 @@ type Config struct {
 	MasterKeyPath     string
 	RuntimeConfigPath string
 	SnapshotsPath     string
+	WebRoot           string
 	MihomoBinary      string
+	MihomoExternal    bool
 	// MihomoEgressInterface selects the physical interface used by the managed
 	// data plane. "auto" resolves the Linux main-table default route; "off"
 	// leaves routing to the host policy tables.
@@ -44,7 +46,9 @@ func Default() Config {
 		MasterKeyPath:     envOrDefault("HX_PROXYGROUP_MASTER_KEY", filepath.Join(dataDirectory, "master.key")),
 		RuntimeConfigPath: envOrDefault("HX_PROXYGROUP_RUNTIME_CONFIG", filepath.Join(dataDirectory, "runtime", "active.yaml")),
 		SnapshotsPath:     envOrDefault("HX_PROXYGROUP_SNAPSHOTS", filepath.Join(dataDirectory, "snapshots")),
+		WebRoot:           envOrDefault("HX_PROXYGROUP_WEB_ROOT", ""),
 		MihomoBinary:      envOrDefault("HX_PROXYGROUP_MIHOMO", "mihomo"),
+		MihomoExternal:    envOrDefault("HX_PROXYGROUP_MIHOMO_EXTERNAL", "") == "1",
 		MihomoEgressInterface: envOrDefault(
 			"HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE",
 			"auto",

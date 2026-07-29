@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,6 +95,83 @@ func TestParsedRefreshPersistsDeduplicatedNodesAndRetiresMissingNodes(t *testing
 	}
 	if states[firstNodeID] != "retired" {
 		t.Fatalf("old node state = %q, want retired", states[firstNodeID])
+	}
+}
+
+func TestRefreshExpandsHTTPMihomoProvider(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("User-Agent") != "HX-Provider-Test/1" {
+			t.Errorf("User-Agent = %q", request.Header.Get("User-Agent"))
+		}
+		_, _ = response.Write([]byte("payload:\n  - {name: remote-provider, type: anytls, server: anytls.example.com, port: 443, password: secret}\n"))
+	}))
+	defer provider.Close()
+
+	ctx := context.Background()
+	directory := t.TempDir()
+	database, err := store.Open(ctx, filepath.Join(directory, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	box, _ := secret.New(make([]byte, 32))
+	service, err := NewService(database, box,
+		WithRefresh(NewDefaultSourceLoader(), filepath.Join(directory, "snapshots")),
+		WithParser(nodeparse.Parse),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(ctx, CreateRequest{
+		Name: "provider", SourceType: SourceInline,
+		SourceConfig: SourceConfig{AllowPrivate: true, Inline: "proxy-providers:\n  remote:\n    type: http\n    url: " + provider.URL + "\n    header:\n      User-Agent: [HX-Provider-Test/1]\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Refresh(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EstimatedNodes != 1 || result.DetectedFormat != "clash-yaml+providers" {
+		t.Fatalf("unexpected refresh result: %+v", result)
+	}
+}
+
+func TestRefreshExpandsRelativeFileMihomoProvider(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	rootPath := filepath.Join(directory, "root.yaml")
+	providerPath := filepath.Join(directory, "provider.yaml")
+	if err := os.WriteFile(rootPath, []byte("proxy-providers:\n  local:\n    type: file\n    path: provider.yaml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(providerPath, []byte("payload:\n  - {name: local-provider, type: snell, server: snell.example.com, port: 443, psk: secret}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(ctx, filepath.Join(directory, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	box, _ := secret.New(make([]byte, 32))
+	service, err := NewService(database, box,
+		WithRefresh(NewDefaultSourceLoader(), filepath.Join(directory, "snapshots")),
+		WithParser(nodeparse.Parse),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(ctx, CreateRequest{Name: "file-provider", SourceType: SourceFile, SourceConfig: SourceConfig{FilePath: rootPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Refresh(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EstimatedNodes != 1 {
+		t.Fatalf("unexpected refresh result: %+v", result)
 	}
 }
 

@@ -47,9 +47,9 @@ v1 需求与 Mihomo 的原生抽象高度一致：
 ```text
 systemd
 ├── hx-proxygroup.service
-│   └── /usr/bin/hx-proxygroupd
+│   └── /usr/local/lib/hx-proxygroup/current/hx-proxygroupd --mihomo-external
 └── hx-proxygroup-dataplane.service
-    └── /usr/lib/hx-proxygroup/mihomo -f /var/lib/hx-proxygroup/runtime/config.yaml
+    └── /usr/local/lib/hx-proxygroup/current/mihomo -f /var/lib/hx-proxygroup/runtime/active.yaml
 ```
 
 建议目录：
@@ -63,19 +63,22 @@ systemd
 /var/lib/hx-proxygroup/
 ├── hx-proxygroup.db
 ├── runtime/
-│   ├── config.yaml             # 当前生效数据面配置
-│   ├── config.previous.yaml    # 上一版有效配置
+│   ├── active.yaml             # 当前生效数据面配置
+│   ├── previous.yaml           # 上一版有效配置
 │   ├── candidates/             # 待校验配置
 │   └── providers/              # 数据面 provider 缓存
 ├── snapshots/                 # 订阅成功快照
-├── backups/
-└── versions/                  # 二进制 / 配置回滚元数据
+└── backups/
+
+/usr/local/lib/hx-proxygroup/
+├── versions/<release>/        # 控制面、Mihomo、静态前端与 unit
+└── current -> versions/<release>
 
 /var/log/hx-proxygroup/
 └── audit.log                   # 可选；默认优先 journald
 ```
 
-控制面和数据面使用同一不可登录系统用户运行。只有确实需要的网络能力通过 systemd capability 精确授予，不使用长期 root 进程。
+控制面和数据面使用同一不可登录系统用户运行。systemd 分别拥有两个进程；控制面只通过 Unix Controller 校验和热重载数据面配置，退出时不终止外部 Mihomo。只有确实需要的网络能力通过 systemd capability 精确授予，不使用长期 root 进程。
 
 ---
 

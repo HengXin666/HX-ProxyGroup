@@ -42,7 +42,7 @@ func convertNodeConfig(canonical map[string]any) (map[string]any, error) {
 		config["tls"] = true
 	case "socks":
 		config["type"] = "socks5"
-	case "socks5", "http", "ss", "trojan", "vless":
+	case "anytls", "hysteria", "hysteria2", "http", "mieru", "shadow-tls", "snell", "socks5", "ss", "ssh", "ssr", "trojan", "tuic", "vless", "wireguard":
 		config["type"] = protocol
 	case "vmess":
 		config["type"] = "vmess"
@@ -165,6 +165,21 @@ func applyQuery(config map[string]any) {
 	}
 	if flow := stringValue(raw["flow"]); flow != "" {
 		config["flow"] = flow
+	}
+	for _, mapping := range []struct{ from, to string }{
+		{"alpn", "alpn"}, {"auth", "auth-str"}, {"auth_str", "auth-str"},
+		{"congestion_control", "congestion-controller"}, {"disable_mtu_discovery", "disable-mtu-discovery"},
+		{"downmbps", "down"}, {"heartbeat", "heartbeat-interval"}, {"obfs", "obfs"},
+		{"obfs-password", "obfs-password"}, {"obfs_password", "obfs-password"},
+		{"password", "password"}, {"reduce_rtt", "fast-open"}, {"udp_relay_mode", "udp-relay-mode"},
+		{"upmbps", "up"}, {"uuid", "uuid"},
+	} {
+		if value, exists := raw[mapping.from]; exists && stringValue(value) != "" {
+			config[mapping.to] = value
+		}
+	}
+	if insecure := strings.ToLower(firstString(raw, "insecure", "allowinsecure", "skip-cert-verify")); insecure == "1" || insecure == "true" {
+		config["skip-cert-verify"] = true
 	}
 	network := strings.ToLower(firstString(raw, "type", "network"))
 	if network != "" && network != "tcp" {

@@ -85,6 +85,14 @@ type DataPlaneService interface {
 	Status() mihomo.Status
 }
 
+type SystemInfo struct {
+	Application        string   `json:"application"`
+	Version            string   `json:"version"`
+	RepositoryURL      string   `json:"repository_url"`
+	UpdateCommand      string   `json:"update_command"`
+	SupportedProtocols []string `json:"supported_protocols"`
+}
+
 type ProxyServiceService interface {
 	Create(context.Context, proxyservice.CreateRequest) (proxyservice.ServiceRecord, error)
 }
@@ -162,6 +170,17 @@ func WithDataPlane(service DataPlaneService) Option {
 	}
 }
 
+func WithSystemInfo(info SystemInfo) Option {
+	return func(server *Server) error {
+		if strings.TrimSpace(info.Application) == "" || strings.TrimSpace(info.Version) == "" {
+			return errors.New("system application and version are required")
+		}
+		info.SupportedProtocols = append([]string(nil), info.SupportedProtocols...)
+		server.systemInfo = &info
+		return nil
+	}
+}
+
 func WithProxyServices(service ProxyServiceService) Option {
 	return func(server *Server) error {
 		if service == nil {
@@ -235,9 +254,11 @@ type Server struct {
 	overview         OverviewService
 	logs             http.Handler
 	dataplane        DataPlaneService
+	systemInfo       *SystemInfo
 	auth             AuthService
 	alerts           AlertService
 	terminal         TerminalService
+	webRoot          string
 	logger           *slog.Logger
 	ready            atomic.Bool
 	overviewInterval time.Duration
@@ -271,6 +292,21 @@ func NewServer(bundles BundleService, logger *slog.Logger, options ...Option) (*
 	}
 	server.ready.Store(true)
 	return server, nil
+}
+
+func WithWebRoot(root string) Option {
+	return func(server *Server) error {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			return nil
+		}
+		info, err := os.Stat(path.Join(root, "index.html"))
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("web root %q does not contain index.html", root)
+		}
+		server.webRoot = root
+		return nil
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -331,6 +367,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/dataplane/status", s.handleDataPlaneStatus)
 		mux.HandleFunc("/api/v1/dataplane/apply", s.handleDataPlaneApply)
 	}
+	if s.systemInfo != nil {
+		mux.HandleFunc("/api/v1/system/info", s.handleSystemInfo)
+	}
 	if s.alerts != nil {
 		mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
 		mux.HandleFunc("/api/v1/alerts/", s.handleAlertItem)
@@ -339,12 +378,30 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/v1/terminal/status", s.handleTerminalStatus)
 		mux.HandleFunc("/api/v1/terminal/ws", s.handleTerminalSocket)
 	}
+	if s.webRoot != "" {
+		mux.Handle("/", newSPAHandler(s.webRoot))
+	}
 	var handler http.Handler = mux
 	if s.auth != nil {
 		s.registerAuthRoutes(mux)
 		handler = s.requireAuth(handler)
 	}
 	return s.requestContext(s.securityHeaders(handler))
+}
+
+func (s *Server) handleSystemInfo(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, request, http.MethodGet)
+		return
+	}
+	response := struct {
+		SystemInfo
+		DataPlaneVersion string `json:"dataplane_version,omitempty"`
+	}{SystemInfo: *s.systemInfo}
+	if s.dataplane != nil {
+		response.DataPlaneVersion = s.dataplane.Status().Version
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func (s *Server) SetReady(ready bool) {

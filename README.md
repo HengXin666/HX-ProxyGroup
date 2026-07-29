@@ -1,170 +1,378 @@
 # HX-ProxyGroup
 
-面向个人服务器部署的代理订阅、节点质量评估、代理组编排与多协议出口管理平台。
+<div align="center">
 
-> 项目名中的“代理组”统一使用 **Proxy Group**，目录名为 `HX-ProxyGroup`。
+**面向个人 Linux 服务器的代理订阅、节点质量评估、Proxy Group 编排与多协议出口控制平面。**
 
-## 当前阶段
+让多个订阅、去重节点、质量检测、路由规则、独立 Listener、流量统计和故障恢复进入同一个可审计的管理面。
 
-- [x] 明确 v1 产品边界与核心功能
-- [x] 明确控制面 / 数据面分离架构
-- [x] 明确低占用、高性能、可恢复部署约束
-- [x] 创建 Go 控制面工程与健康检查
-- [x] 实现备份 / 便携导出归档、下载与完整性校验 API
-- [x] 接入 SQLite Desired State、迁移与 Online Backup
-- [x] 实现加密订阅 CRUD、手动刷新、快照与自动调度
-- [x] 实现 Clash/Mihomo YAML 与常见分享 URI 解析、稳定指纹去重和节点生命周期持久化
-- [ ] 补齐剩余订阅协议兼容、Provider 展开与解析兼容矩阵
-- [x] 接入 Mihomo 配置编译、校验、进程管理、Listener 就绪检查与失败回滚
-- [x] 创建合并的订阅与节点库存、代理服务、Backup / Export 管理面板，并支持全站明亮、黑夜与跟随系统主题
-- [x] 实现跨订阅动态 Proxy Group、入口与账号聚合编排、HTTP/SOCKS/Mixed Listener，以及单节点/批量延迟检测
-- [x] 实现固定阶段规则流水线（Normalize→Enrich→Predicate→Score→Bucket→Sort→Limit）与可解释评分
-- [x] 实现管理员认证（Argon2id、Session、CSRF、登录限速与锁定、账号或密码变更后全体注销）
-- [x] 实现告警状态机（冷却、恢复通知、确认、重启不重复轰炸）与 SMTP 邮件通道
-- [x] 订阅调度增强：Cron 表达式、重试随机抖动与快速重试上限、结构化失败原因持久化、节点管理员禁用
-- [x] v2：浏览器内终端（PTY + WebSocket + xterm.js，默认关闭、强制认证、空闲超时、审计）
-- [x] 完成 Listener、代理组和节点流量统计与 30 天分层聚合
-- [ ] 完成 `install.sh` 与 systemd 双服务注册
-- [ ] 完成基准测试与故障恢复测试
+[![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/)
+[![React](https://img.shields.io/badge/React-19-20232A?style=flat-square&logo=react&logoColor=61DAFB)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Mihomo](https://img.shields.io/badge/Data_Plane-Mihomo-2F6FEB?style=flat-square)](https://github.com/MetaCubeX/mihomo)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org/)
+[![systemd](https://img.shields.io/badge/Service-systemd-5A5A5A?style=flat-square&logo=linux&logoColor=white)](https://systemd.io/)
 
-## 当前可运行能力
+[快速开始](#快速开始) · [生产安装](#生产安装) · [核心能力](#核心能力) · [架构](#架构) · [兼容性](#订阅与协议兼容性) · [文档](#文档导航)
 
-当前里程碑已提供 Go 控制面、SQLite WAL/迁移、事务一致 Online Backup、加密订阅 CRUD、自动刷新与快照、常见节点格式解析和指纹去重，以及 Mihomo 配置编译、语法校验、受控重启、Listener 就绪检查与失败回滚。可在 Web 面板中创建 Proxy Group，开放独立 HTTP、SOCKS5 或 Mixed 端口，并使用 Mihomo Unix Socket API 执行真实代理延迟检测。管理 API 在管理员认证完成前强制绑定显式环回 IP。
+</div>
 
-当前已经可以在不添加任何订阅的情况下，把本机 `DIRECT` 出口创建为代理服务；也可以按订阅树批量刷新、测试节点，并将多个订阅按地区名称标签、协议、状态和延迟筛选后排序取 Top N。入口支持 HTTP、SOCKS5、Mixed，以及由 Mihomo 提供的 VLESS/VMess/Trojan over WebSocket；高级入口可配置 Cloudflare 公网域名并生成 v2rayN、Clash/Mihomo、sing-box 三类客户端订阅。
+![HX-ProxyGroup 全局总览](docs/screenshots/global-overview-desktop.png)
 
-本迭代新增：固定阶段规则流水线（每条规则输出命中/未命中/修改前后值/排除原因，可配置加权评分并支持显式缺失指标策略）；单管理员认证（首次启动生成 0600 的一次性 `admin-setup-token`，通过 `/api/v1/auth/setup` 初始化，此后全部 `/api/v1/*` 强制登录并校验 CSRF）；告警状态机与 SMTP 邮件通道（订阅连续失败、空快照、空代理组、数据面异常，冷却 6 小时、恢复通知一次、确认后静默、重启不重复轰炸）；订阅 Cron 调度、退避抖动与结构化失败原因；节点管理员禁用/启用；以及 v2 浏览器内终端。
+> [!IMPORTANT]
+> HX-ProxyGroup 是代理控制平面，不是新的代理协议内核。VMess、VLESS、Trojan、Hysteria、TUIC、SOCKS5、HTTP CONNECT 等数据转发由当前安装的 Mihomo 构建负责，代理流量不经过 Go 控制面。
 
-尚未完成的是 Provider 展开、完整资源统计和更多服务端协议入口等扩展能力。流量统计的采样精度边界见 [`docs/TRAFFIC_STATS.md`](docs/TRAFFIC_STATS.md)。
+## 为什么使用 HX-ProxyGroup
 
-### v2 浏览器内终端
+普通订阅客户端适合在单台终端上选节点；HX-ProxyGroup 面向长期运行的服务器场景，把“订阅输入”转化为可恢复、可解释、可组合的 Desired State：
 
-终端默认关闭。启用方式：
+| 需求 | HX-ProxyGroup 的处理方式 |
+| --- | --- |
+| 多个机场和自定义节点 | 统一刷新、规范化、稳定指纹去重，同时保留来源关系 |
+| 节点质量不断变化 | 经 Mihomo 指定节点执行真实 HTTP 检测，支持批量复测、降级和隔离 |
+| 不想手工维护静态代理组 | 按订阅、名称、地区、协议、状态、延迟、评分和 Top N 动态选取 |
+| 每个业务需要独立代理端口 | 为 Proxy Group 创建 HTTP、SOCKS5 或 Mixed Listener |
+| 配置失败不能影响现有代理 | 完整编译、Mihomo 校验、原子发布、热重载和上一版回滚 |
+| 控制面升级时代理不能一起退出 | 控制面与 Mihomo 由两个独立 systemd unit 管理 |
+| 需要知道流量和故障原因 | 秒级总览、30 天分层统计、结构化日志、告警和审计 |
+
+## 界面
+
+<table>
+  <tr>
+    <td width="50%"><strong>订阅来源</strong><br><sub>加密来源、刷新计划、快照、节点与流量集中展示。</sub></td>
+    <td width="50%"><strong>节点库存</strong><br><sub>按订阅分组，支持协议/状态筛选、排序、批量检测和禁用。</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/subscriptions-desktop.png" alt="订阅来源页面"></td>
+    <td><img src="docs/screenshots/nodes-filters-medium.png" alt="节点库存与筛选页面"></td>
+  </tr>
+  <tr>
+    <td><strong>代理服务</strong><br><sub>组合 Proxy Group、Listener、认证、路由和客户端订阅。</sub></td>
+    <td><strong>全局配置</strong><br><sub>检测、DNS、性能、主题与运行参数集中管理。</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/proxy-services-expanded-desktop.png" alt="代理服务页面"></td>
+    <td><img src="docs/screenshots/settings-dark-desktop.png" alt="深色模式全局配置页面"></td>
+  </tr>
+</table>
+
+管理面支持明亮、黑夜、跟随系统和自定义主题色；桌面侧栏可折叠为图标模式，移动端使用紧凑顶部导航。关键页面均有 Playwright 横向溢出与响应式回归测试。
+
+## 核心能力
+
+### 订阅与节点库存
+
+- Remote、Inline、File 三类订阅来源，支持固定间隔和 UTC 五字段 Cron。
+- 远程请求支持自定义 Header、User-Agent、超时、条件请求与受控重定向。
+- 来源配置和节点规范配置使用 AEAD 加密，API 不回显订阅 URL、Token 或节点凭据。
+- 不可变成功快照、内容哈希去重和活动快照切换；刷新失败保留上一版可用节点。
+- Clash/Mihomo YAML、Mihomo Provider、sing-box JSON、分享 URI 和 Base64 URI 列表。
+- HTTP、File、Inline Provider 展开，带 SSRF、符号链接、深度、数量和累计体积限制。
+- 稳定节点指纹、跨订阅去重、来源关系、candidate/healthy/degraded/quarantined/disabled/retired 生命周期。
+- 单节点检测、批量 SSE 渐进检测、自动复测、延迟阈值、连续失败隔离和成功恢复。
+
+### Proxy Group 与 Listener
+
+- 一个 Proxy Group 可组合多个订阅、固定节点和本机 `DIRECT` 出口。
+- 固定阶段规则流水线：
+
+  ```text
+  Normalize -> Enrich -> Predicate -> Score -> Bucket -> Sort -> Limit
+  ```
+
+- 支持 `manual`、`url-test`、`fallback`、轮询、一致性哈希和会话粘滞策略。
+- 支持按订阅、名称/地区标签、协议、生命周期、延迟和评分动态筛选成员。
+- HTTP CONNECT、SOCKS5 和 Mixed Listener 可直接绑定 Proxy Group。
+- VLESS、VMess、Trojan over WebSocket 服务端入口由 Mihomo 提供。
+- 可导出 Clash/Mihomo、v2rayN URI 列表和 sing-box 客户端订阅。
+- 路由规则可将站点集合指向 `DIRECT`、`REJECT` 或指定 Proxy Group。
+
+### 可观测性与运维
+
+- SSE 秒级总览：上下行速率、活动连接、入口和路由拓扑。
+- Listener、Proxy Group、节点维度的流量与连接统计。
+- 近 24 小时一分钟、2-7 天五分钟、8-30 天一小时分层聚合。
+- 订阅、空快照、空代理组和数据面异常告警，支持 SMTP、冷却、确认和恢复通知。
+- SQLite Online Backup、Portable Export、SHA-256 完整性校验与敏感灾难备份。
+- 可选浏览器本机 Shell：PTY + WebSocket + xterm.js，默认关闭，带并发、空闲、寿命和审计限制。
+
+### 安全与可靠性
+
+- 管理 API 与 Mihomo External Controller 默认只监听环回地址或 Unix Socket。
+- 单管理员 Argon2id 密码、HttpOnly Session、SameSite Cookie、CSRF、登录限速和锁定。
+- Remote Provider 每次 DNS 解析、重定向和连接都执行 SSRF 边界检查。
+- 数据库是 Desired State 的事实来源；候选配置不通过校验就不会发布。
+- 配置文件临时写入、`fsync`、原子替换；数据面重载失败自动恢复 `previous.yaml`。
+- SQLite 使用 WAL、外键、busy timeout、短事务和批量统计写入。
+- 所有 goroutine 都有所有者和取消路径；刷新与检测使用有界 worker pool。
+
+## 架构
+
+```mermaid
+flowchart LR
+    Admin[管理员浏览器] -->|REST / SSE / WebSocket| CP[Go 控制面]
+    CP --> DB[(SQLite WAL)]
+    CP --> Compiler[Desired State 编译器]
+    Compiler -->|validate + atomic publish| Config[active.yaml]
+    CP <-->|Unix Controller| DP[Mihomo 数据面]
+    Config --> DP
+    DP --> Nodes[订阅节点]
+    DP --> Direct[服务器 DIRECT 出口]
+    Clients[代理客户端] -->|HTTP / SOCKS5 / Mixed / WS| DP
+```
+
+```text
+systemd
+├── hx-proxygroup.service              # Go 控制面、管理 API、静态前端
+└── hx-proxygroup-dataplane.service    # Mihomo 数据面、真实代理转发
+```
+
+生产环境只有一个控制面进程和一个数据面进程。控制面不复制、不代理用户流量；控制面重启时，健康的数据面继续使用最后有效配置工作。
+
+详细的模块边界、领域模型和配置事务见 [架构设计](docs/ARCHITECTURE.md)。
+
+## 快速开始
+
+### 环境要求
+
+- Go 1.23 或更高版本。
+- Node.js 22.12 或更高版本，仅本地前端开发需要。
+- Linux 建议安装 Mihomo；没有 Mihomo 时管理面仍可启动，但代理、检测和数据面 Apply 不可用。
+
+### 本地运行
+
+```bash
+git clone https://github.com/HengXin666/HX-ProxyGroup.git
+cd HX-ProxyGroup
+bash run.sh
+```
+
+`run.sh` 会在项目目录中构建控制面、启动 Vite，并在缺少依赖时根据锁文件安装前端依赖。它不要求 root、不注册 systemd，也不写入 `/usr/local`、`/etc` 或 `/var/lib`。
+
+打开：
+
+```text
+http://127.0.0.1:5173
+```
+
+首次启动会生成：
+
+```text
+.tmp/run-data/admin-setup-token
+```
+
+在初始化页面输入该一次性 Token、管理员用户名和密码即可完成登录。按 `Ctrl+C` 会统一停止本次启动的前后端进程。
+
+常用开发参数：
+
+```bash
+bash run.sh --help
+bash run.sh --mihomo /path/to/mihomo
+bash run.sh --backend-only
+bash run.sh --no-install-frontend-deps
+```
+
+## 生产安装
+
+生产安装面向使用 systemd 的 Linux `amd64` / `arm64` 服务器。安装脚本会下载固定 GitHub Release、校验 SHA-256、安装控制面、Mihomo 和静态前端，再注册双服务。
+
+> [!NOTE]
+> 在线安装依赖 Release 中已上传符合 [发布包契约](scripts/package-release.sh) 的架构包与 `SHA256SUMS`。
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/HengXin666/HX-ProxyGroup/main/install.sh && sudo bash install.sh install
+```
+
+安装成功后，后续版本只需要一行命令：
+
+```bash
+sudo hx-proxygroup-install upgrade
+```
+
+安装器在切换版本前校验新 Mihomo 与当前配置；双服务 readiness 失败时原子恢复上一版 `current` 链接并重启旧版本。升级成功后安装器自身也会更新。
+
+| 命令 | 用途 |
+| --- | --- |
+| `sudo hx-proxygroup-install upgrade` | 获取并升级到最新固定 Release |
+| `sudo hx-proxygroup-install upgrade --version vX.Y.Z` | 安装指定版本 |
+| `sudo hx-proxygroup-install status` | 查看双服务与当前版本 |
+| `sudo hx-proxygroup-install repair` | 恢复目录权限、unit 和服务 |
+| `sudo hx-proxygroup-install backup` | 创建包含秘密的 `0600` 灾难归档 |
+| `sudo hx-proxygroup-install uninstall` | 移除服务和程序，保留数据与备份 |
+| `sudo hx-proxygroup-install purge --confirm-purge` | 明确确认后删除程序和全部持久数据 |
+
+离线安装：
+
+```bash
+sudo bash install.sh install --offline-dir /path/to/release
+```
+
+离线目录需要包含 `VERSION`、`SHA256SUMS` 和当前架构的 Release 包。
+
+默认布局：
+
+```text
+/usr/local/lib/hx-proxygroup/
+├── versions/<release>/
+└── current -> versions/<release>
+
+/etc/hx-proxygroup/                 # 最小启动配置
+/var/lib/hx-proxygroup/             # SQLite、密钥、快照、运行配置、备份
+/etc/systemd/system/                # 控制面与数据面 unit
+```
+
+## 订阅与协议兼容性
+
+控制面当前可规范化的 Mihomo YAML 出站类型：
+
+```text
+AnyTLS      Hysteria     Hysteria2    HTTP         Mieru        ShadowTLS
+Snell       SOCKS5       Shadowsocks  SSH          ShadowsocksR  Trojan
+TUIC        VLESS        VMess         WireGuard
+```
+
+分享 URI 覆盖 VLESS、VMess、Trojan、Shadowsocks、HTTP(S)、SOCKS5、Hysteria、Hysteria2/Hy2、TUIC、AnyTLS 和 SSH。
+
+“可解析”不等于数据面一定支持：最终能力取决于关于页显示的 Mihomo 版本，并由每次候选配置的 `mihomo -t` 决定。项目不承诺未知协议或所有机场私有变体自动兼容。
+
+完整容器、Provider、sing-box 映射和 URI 矩阵见 [订阅与 Provider 兼容矩阵](docs/SUBSCRIPTION_COMPATIBILITY.md)。
+
+## 基准与恢复验证
+
+测试环境：Linux amd64、Go `1.26.5-X:nodwarf5`、Intel Core i9-13980HX、32 逻辑 CPU。下列数据为三次运行的中间值：
+
+| 场景 | 中间值 | 累计分配 |
+| --- | ---: | ---: |
+| 解析 10,000 个 Mihomo 节点 | 87.82 ms | 59.2 MB/op |
+| 编译 10,000 个节点的完整配置 | 105.65 ms | 234.2 MB/op |
+| SQLite 批量写入 1,000 个统计资源 | 33.80 ms | 1.04 MB/op |
+| SQLite 查询 500 个统计点 | 1.30 ms | 0.13 MB/op |
+
+自动化故障测试覆盖：
+
+- 辅助进程在 SQLite 未提交写事务中被强制终止，重开后恢复最后已提交状态并通过完整性检查。
+- 外部 Mihomo 热重载失败后恢复上一版配置并再次加载。
+- 关闭控制面 Manager 不终止 systemd 所有的数据面。
+- Release 包内容、可复现 SHA-256、双 unit 私有监听和安装契约。
+
+这些是控制面微基准，不代表 HTTP CONNECT/SOCKS5 的真实吞吐。真实并发连接、RSS、整机断电、磁盘满和干净发行版 VM 安装仍需环境测试。命令、三次原始结果和边界见 [基准与故障恢复报告](docs/BENCHMARKS.md)。
+
+## 运维说明
+
+### 与宿主机 TUN 共存
+
+受管 Mihomo 默认从 Linux 主路由表识别物理出口，并写入 `interface-name`，避免上游拨号再次进入 Clash Verge、Mihomo Party 等宿主机 TUN。
+
+```bash
+# 显式指定物理出口
+HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE=eth0 bash run.sh
+
+# 明确允许数据面跟随宿主机策略路由
+HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE=off bash run.sh
+```
+
+默认 `GOMAXPROCS` 最多为 4，Mihomo 日志单文件上限 8 MiB、保留 2 份。可通过 `HX_PROXYGROUP_MIHOMO_MAX_PROCS`、`HX_PROXYGROUP_MIHOMO_LOG_MAX_BYTES` 和 `HX_PROXYGROUP_MIHOMO_LOG_BACKUPS` 调整。
+
+### 浏览器终端
+
+浏览器本机 Shell 属于可选 v2 能力，默认关闭：
 
 ```bash
 HX_PROXYGROUP_TERMINAL=1 bash run.sh
 ```
 
-约束：必须先完成管理员初始化并登录；每个会话空闲 10 分钟自动断开、最长 2 小时；并发会话上限 2；全部会话的建立与关闭（含操作者、来源地址、时长与关闭原因）写入结构化审计日志。可用 `HX_PROXYGROUP_TERMINAL_SHELL` 覆盖默认 Shell。
+终端要求管理员登录，默认空闲 10 分钟断开、最长 2 小时、最多 2 个并发会话，并记录建立、关闭、来源、操作者、时长和原因。它不是远程 SSH 跳板。
+
+### 备份语义
+
+- 管理面的普通 Backup 使用 SQLite Online Backup，适合同实例恢复，不包含主密钥和完整敏感运行状态。
+- `hx-proxygroup-install backup` 会短暂停止控制面，归档配置、数据库、主密钥、运行配置和快照；归档包含秘密。
+- Portable Export 默认不导出秘密，用于跨实例迁移配置。
+- 自动 Restore 和加密 Backup Wrapper 仍在后续清单。
+
+## 开发与测试
 
 ```bash
-cd HX-ProxyGroup
+# 后端
 go test ./...
-bash run.sh
+go vet ./...
+
+# 前端
+cd web
+npm ci
+npm run check
+npm run build
 ```
 
-`run.sh` 仅在项目目录下构建并启动进程，不要求 root，不注册 systemd，也不会写入 `/usr/local`、`/etc` 或 `/var/lib`。本地状态默认保存在 `./.tmp/run-data`，按 `Ctrl+C` 会统一停止后端和前端子进程。
+前端关键链路使用 Playwright 验证桌面、窄桌面和移动端布局，包含页面横向溢出、筛选按钮相交、侧栏折叠宽度和 Tooltip 可见性断言。运行截图保存在 [`docs/screenshots/`](docs/screenshots/)。
 
-`run.sh` 会自动识别 npm / pnpm / yarn / bun，并同时启动 Go 后端和 Vite 前端。首次运行若缺少 `web/node_modules`，脚本会优先根据锁文件自动安装依赖。前端默认地址为 `http://127.0.0.1:5173`，订阅与节点库存页为 `http://127.0.0.1:5173/#/subscriptions`（旧 `#/nodes` 地址仍会打开该页的节点标签）。前端通过 Vite 代理访问后端，因此无需额外开放 CORS。管理面板支持在全局配置的主题标签中选择明亮、黑夜和跟随系统三种模式，并通过颜色画板、HEX 输入或预设色自定义全站主题色。
+代码修改应遵守 [AGENTS.md](AGENTS.md) 中的模块边界、并发、安全、测试和本地进程生命周期要求。
 
-受管 Mihomo 默认从 Linux 主路由表选择物理出口网卡，并将 `interface-name` 写入运行配置。这使 HX 与 Clash Verge、Mihomo Party 等 TUN 客户端在同一台机器运行时，HX 的上游拨号不会再次进入宿主机 TUN。默认还将 Mihomo 的 `GOMAXPROCS` 限制为最多 4，并把 `runtime/mihomo.log` 限制为单文件 8 MiB、保留 2 份。
+## 文档导航
 
-多网卡环境可设置 `HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE=eth0` 指定出口。只有确实需要让 HX 再经过宿主机 VPN / TUN 时，才设置 `HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE=off`。资源上限可通过 `HX_PROXYGROUP_MIHOMO_MAX_PROCS`、`HX_PROXYGROUP_MIHOMO_LOG_MAX_BYTES` 和 `HX_PROXYGROUP_MIHOMO_LOG_BACKUPS` 调整。
+| 文档 | 内容 |
+| --- | --- |
+| [v1 核心清单](docs/V1_CORE.md) | 功能范围、验收标准、完成状态和剩余工作 |
+| [架构设计](docs/ARCHITECTURE.md) | 控制面/数据面、领域模型、配置事务和模块边界 |
+| [可靠性与部署](docs/RELIABILITY.md) | systemd、安装、升级、回滚、安全和资源保护 |
+| [订阅管理](docs/SUBSCRIPTIONS.md) | 加密来源、刷新、快照、调度和 SSRF |
+| [兼容矩阵](docs/SUBSCRIPTION_COMPATIBILITY.md) | Provider、Mihomo、sing-box 和分享 URI |
+| [基准与故障恢复](docs/BENCHMARKS.md) | 环境、命令、结果、恢复测试和未测边界 |
+| [探测、路由与总览](docs/PROBES_ROUTING_OVERVIEW.md) | 节点检测、路由规则与 SSE 总览 |
+| [流量统计](docs/TRAFFIC_STATS.md) | 聚合粒度、查询、保留策略和精度边界 |
+| [Cloudflare / 雷池](docs/CLOUDFLARE.md) | WebSocket 入口、反向代理和公网边界 |
+| [备份与导出](docs/BACKUP_EXPORT.md) | Artifact、Online Backup 与秘密处理 |
+| [v2 能力](docs/V2.md) | 规则流水线、认证、告警、调度与浏览器终端 |
 
-如需禁止自动安装依赖：
+## 当前状态与路线
 
-```bash
-bash run.sh --no-install-frontend-deps
+已经形成可运行纵向闭环：
+
+```text
+添加订阅 -> 刷新/展开 Provider -> 节点去重 -> 质量检测
+-> 动态 Proxy Group -> Listener -> Mihomo Apply -> 流量与告警
 ```
 
-只启动后端：
+仍在推进：
 
-```bash
-bash run.sh --backend-only
-```
+- 真实 HTTP CONNECT、SOCKS5 和高并发数据面性能报告。
+- 干净 Debian/Ubuntu VM 的安装、升级、整机重启和断电演练。
+- 自动 Restore、加密灾难备份和 Portable Import。
+- 更多服务端入口、完整资源监控与系统诊断整合页。
+- OpenAPI、CI 发布流水线、签名校验和发行版维护流程。
 
-查看全部参数：
+项目进度以 [`docs/V1_CORE.md`](docs/V1_CORE.md) 为准，不以 README 的概括替代验收清单。
 
-```bash
-bash run.sh --help
-```
+## 项目边界
 
-创建并校验一个便携导出：
+HX-ProxyGroup 明确不做：
 
-```bash
-curl -fsS -X POST http://127.0.0.1:19090/api/v1/exports \
-  -H 'Content-Type: application/json' \
-  -d '{"description":"manual export","include_secrets":false}'
+- 自行实现 VMess、VLESS、Trojan、Hysteria、TUIC、SOCKS5 或 HTTP CONNECT 转发。
+- 让 Go 控制面进入实际代理流量路径。
+- 将 WebSocket Path 当作认证。
+- 默认公开管理 API、External Controller 或新 Listener。
+- 承诺“支持所有协议”或所有未知订阅变体。
+- 在 v1 引入 MySQL、Redis、Kafka、etcd 或独立任务队列。
 
-curl -fsS http://127.0.0.1:19090/api/v1/exports
-```
+## 参与贡献
 
-创建并刷新一个内联订阅：
+提交 Issue 或 Pull Request 前，请先阅读 [AGENTS.md](AGENTS.md) 和对应领域文档：
 
-```bash
-subscription_id="$({
-  curl -fsS -X POST http://127.0.0.1:19090/api/v1/subscriptions \
-    -H 'Content-Type: application/json' \
-    -d '{"name":"example","source_type":"inline","source_config":{"inline":"vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls#example-node"}}'
-} | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+1. 描述要解决的用户问题、行为边界和兼容性影响。
+2. 订阅样本必须脱敏，不提交真实 URL、Token、密码、私钥或数据库。
+3. 保持 `api -> application service -> domain/interface -> repository/dataplane` 边界。
+4. 新行为需要单元测试；涉及 SQLite、HTTP、Mihomo 或前端主链路时增加集成/E2E 测试。
+5. 提交前运行格式化、`go test ./...`、`go vet ./...` 和前端构建。
 
-curl -fsS -X POST \
-  "http://127.0.0.1:19090/api/v1/subscriptions/${subscription_id}/refresh"
-```
+## 许可
 
-该示例中的 `python3` 只用于提取演示响应字段；生产服务本身不依赖 Python。
+仓库当前尚未附带开源许可证。正式对外发布或接受第三方贡献前，维护者需要选择并提交明确的 `LICENSE`；在此之前保留所有权利。
 
-服务器安装当前控制面：
+---
 
-```bash
-sudo bash install.sh install --version dev
-```
+<div align="center">
 
-Backup 通过 SQLite Online Backup API 包含事务一致的数据库快照，但普通归档不包含主密钥、Mihomo 运行配置或原始订阅快照。完整加密灾难恢复、Restore 和 Portable Import 仍在后续清单中。
+HX-ProxyGroup · 一个控制面，一个数据面，配置可解释，失败可恢复。
 
-## 核心定位
-
-HX-ProxyGroup 不是新的代理协议实现，而是一个代理控制平面：
-
-1. 加载并定时刷新多个机场订阅。
-2. 对节点执行可扩展的质量检测、过滤、评分和排序。
-3. 将多个订阅和规则组合为可复用代理组。
-4. 为每个代理组暴露独立的 HTTP、SOCKS5 或 Mixed 端口。
-5. 支持负载均衡、故障切换和会话粘滞。
-6. 将当前服务器作为直连出口，生成可供 Clash、V2Ray 等客户端使用的节点订阅。
-7. 提供 30 天统计、告警和管理员 Web 面板。
-
-## 固定技术路线
-
-| 层级 | 选择 | 约束 |
-| --- | --- | --- |
-| 控制面 | Go 单体服务 | 单二进制、低常驻内存、无运行时脚本依赖 |
-| 数据面 | Mihomo 独立受管进程 | 复用成熟协议栈、Proxy Provider、Proxy Group、Listener 与 API |
-| 数据库 | SQLite + WAL | 单机部署优先，批量写入，按周期聚合和清理 |
-| 前端 | React + TypeScript + Tailwind + shadcn/ui | 生产环境仅部署静态资源，不运行 Node.js |
-| 实时通信 | SSE 为主，WebSocket 按需 | 状态推送避免高频轮询 |
-| 服务管理 | systemd | 开机启动、崩溃重启、Watchdog、资源限制 |
-| 部署 | `install.sh` | 幂等安装、升级、回滚和完整卸载 |
-
-## 文档
-
-- [`docs/V1_CORE.md`](docs/V1_CORE.md)：v1 核心功能清单与验收标准。
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：系统架构、领域模型和扩展点。
-- [`docs/RELIABILITY.md`](docs/RELIABILITY.md)：可靠性、安全、安装和运行约束。
-- [`docs/BACKUP_EXPORT.md`](docs/BACKUP_EXPORT.md)：备份、恢复、便携导出与当前 API。
-- [`docs/SUBSCRIPTIONS.md`](docs/SUBSCRIPTIONS.md)：订阅加密存储、刷新、SSRF 边界与自动调度。
-- [`docs/PROBES_ROUTING_OVERVIEW.md`](docs/PROBES_ROUTING_OVERVIEW.md)：节点检测、全局配置、路由规则集与秒级总览。
-- [`docs/CLOUDFLARE.md`](docs/CLOUDFLARE.md)：本机 WebSocket 服务端入口、Cloudflare/反向代理配置和能力边界。
-- [`docs/TRAFFIC_STATS.md`](docs/TRAFFIC_STATS.md)：流量聚合、查询、保留策略和精度边界。
-- [`docs/V2.md`](docs/V2.md)：v2 交付说明——规则流水线、管理员认证、告警、调度增强与浏览器内终端。
-- [`AGENTS.md`](AGENTS.md)：后续 AI / Agent 开发必须遵守的工程规范。
-- [`ref/README.md`](ref/README.md)：参考项目与参考范围。
-
-## v1 明确不做
-
-- [ ] 多管理员、多租户和复杂 RBAC。
-- [ ] 多节点控制面集群或分布式数据库。
-- [ ] Kubernetes Operator。
-- [x] ~~浏览器内 SSH 终端；该功能进入 v2。~~ 已随 v2 交付为本机 Shell 终端（默认关闭），见 [`docs/V2.md`](docs/V2.md)。
-- [ ] 自研 VMess、VLESS、Trojan、Hysteria、TUIC 等协议实现。
-- [ ] 承诺“任意未知协议均可解析”；协议能力以当前数据面版本实际支持范围为准。
-
-## 设计原则
-
-- **协议能力由数据面提供，控制面不手搓协议。**
-- **一个控制面进程 + 一个数据面进程，不为每个节点启动独立进程。**
-- **配置变更必须先生成、校验、原子替换，再热重载或平滑重启。**
-- **刷新失败不得清空上一版可用节点。**
-- **质量检测必须有并发、带宽和频率预算，禁止无界探测。**
-- **生产环境不依赖 Node.js、Python、Redis、MySQL。**
-- **所有关键操作必须可追踪、可回滚、可在服务器重启后恢复。**
+</div>

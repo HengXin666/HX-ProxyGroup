@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,7 @@ type Manager struct {
 	maxProcs         int
 	logMaxBytes      int64
 	logBackups       int
+	externalProcess  bool
 }
 
 type ManagerOption func(*Manager) error
@@ -93,6 +95,13 @@ func WithLogRotation(maxBytes int64, backups int) ManagerOption {
 		}
 		manager.logMaxBytes = maxBytes
 		manager.logBackups = backups
+		return nil
+	}
+}
+
+func WithExternalProcess(enabled bool) ManagerOption {
+	return func(manager *Manager) error {
+		manager.externalProcess = enabled
 		return nil
 	}
 }
@@ -164,14 +173,14 @@ func (m *Manager) Apply(ctx context.Context) error {
 		m.recordFailureLocked(err)
 		return err
 	}
-	if m.process != nil && m.status.Running && bytes.Equal(compiled.YAML, m.lastCompiled.YAML) {
+	if m.status.Running && bytes.Equal(compiled.YAML, m.lastCompiled.YAML) {
 		m.status.ListenerCount = len(compiled.Endpoints)
 		m.status.ProxyCount = compiled.ProxyCount
 		m.status.ActiveListeners = append([]Endpoint(nil), compiled.Endpoints...)
 		m.status.LastError = ""
 		return nil
 	}
-	if len(compiled.Endpoints) == 0 && compiled.ProxyCount == 0 {
+	if !m.externalProcess && len(compiled.Endpoints) == 0 && compiled.ProxyCount == 0 {
 		if err := m.stopLocked(ctx); err != nil {
 			m.recordFailureLocked(err)
 			return err
@@ -216,6 +225,27 @@ func (m *Manager) Apply(ctx context.Context) error {
 	}
 	if err := publishCandidate(m.candidate, m.activePath); err != nil {
 		return m.failLocked(fmt.Errorf("publish mihomo config: %w", err))
+	}
+	if m.externalProcess {
+		if err := m.reloadExternalLocked(ctx); err != nil {
+			rollbackErr := m.rollbackAndRestartLocked(ctx, hadOldConfig, oldEndpoints)
+			return m.failLocked(errors.Join(err, rollbackErr))
+		}
+		if err := m.waitReadyLocked(ctx, compiled.Endpoints, compiled.ProxyCount); err != nil {
+			rollbackErr := m.rollbackAndRestartLocked(ctx, hadOldConfig, oldEndpoints)
+			return m.failLocked(errors.Join(err, rollbackErr))
+		}
+		now := time.Now().UTC()
+		m.lastCompiled = compiled
+		m.status.State = "running"
+		m.status.Running = true
+		m.status.PID = 0
+		m.status.ListenerCount = len(compiled.Endpoints)
+		m.status.ProxyCount = compiled.ProxyCount
+		m.status.ActiveListeners = append([]Endpoint(nil), compiled.Endpoints...)
+		m.status.LastApplyAt = &now
+		m.status.LastError = ""
+		return nil
 	}
 	if err := m.stopLocked(ctx); err != nil {
 		_ = m.rollbackConfigLocked(hadOldConfig)
@@ -262,6 +292,9 @@ func (m *Manager) Status() Status {
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.externalProcess {
+		return nil
+	}
 	return m.stopLocked(ctx)
 }
 
@@ -331,6 +364,30 @@ func (m *Manager) startLocked(configPath string) error {
 	return nil
 }
 
+func (m *Manager) reloadExternalLocked(ctx context.Context) error {
+	payload := []byte(fmt.Sprintf(`{"path":%q}`, m.activePath))
+	transport := &http.Transport{Proxy: nil, DialContext: func(dialContext context.Context, _, _ string) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(dialContext, "unix", m.controllerSocket)
+	}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 8 * time.Second}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://unix/configs?force=true", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("create Mihomo reload request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("reload systemd-managed Mihomo: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("reload systemd-managed Mihomo returned status %d", response.StatusCode)
+	}
+	return nil
+}
+
 func (m *Manager) commandEnvironment() []string {
 	prefix := "GOMAXPROCS="
 	environment := make([]string, 0, len(os.Environ())+1)
@@ -374,7 +431,7 @@ func (m *Manager) waitReadyLocked(ctx context.Context, endpoints []Endpoint, pro
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		m.refreshProcessLocked()
-		if m.process == nil {
+		if !m.isRunningLocked() {
 			return errors.New("mihomo exited before runtime became ready")
 		}
 		allReady := true
@@ -408,6 +465,14 @@ func (m *Manager) waitReadyLocked(ctx context.Context, endpoints []Endpoint, pro
 }
 
 func (m *Manager) refreshProcessLocked() {
+	if m.externalProcess {
+		m.status.Running = m.externalSocketReadyLocked()
+		m.status.PID = 0
+		if m.status.Running && m.status.State == "failed" {
+			m.status.State = "running"
+		}
+		return
+	}
 	if m.process == nil {
 		return
 	}
@@ -426,11 +491,40 @@ func (m *Manager) refreshProcessLocked() {
 	}
 }
 
+func (m *Manager) isRunningLocked() bool {
+	if m.externalProcess {
+		return m.externalSocketReadyLocked()
+	}
+	return m.process != nil
+}
+
+func (m *Manager) externalSocketReadyLocked() bool {
+	connection, err := net.DialTimeout("unix", m.controllerSocket, 100*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = connection.Close()
+	return true
+}
+
 func (m *Manager) rollbackAndRestartLocked(ctx context.Context, hadOldConfig bool, oldEndpoints []Endpoint) error {
 	if err := m.rollbackConfigLocked(hadOldConfig); err != nil {
 		return err
 	}
 	if !hadOldConfig {
+		return nil
+	}
+	if m.externalProcess {
+		if err := m.reloadExternalLocked(ctx); err != nil {
+			return fmt.Errorf("reload previous mihomo config: %w", err)
+		}
+		if err := m.waitReadyLocked(ctx, oldEndpoints, m.lastCompiled.ProxyCount); err != nil {
+			return fmt.Errorf("previous mihomo config did not recover: %w", err)
+		}
+		m.status.Running = true
+		m.status.PID = 0
+		m.status.ListenerCount = len(oldEndpoints)
+		m.status.ActiveListeners = append([]Endpoint(nil), oldEndpoints...)
 		return nil
 	}
 	if err := m.startLocked(m.activePath); err != nil {

@@ -367,6 +367,57 @@ CREATE TRIGGER traffic_delete_node AFTER DELETE ON nodes BEGIN
 END;
 `,
 	},
+	{
+		version: 13,
+		name:    "residential_providers_and_channels",
+		sql: `
+ALTER TABLE nodes ADD COLUMN origin TEXT NOT NULL DEFAULT 'subscription';
+ALTER TABLE nodes ADD COLUMN origin_ref TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX nodes_origin ON nodes(origin, origin_ref);
+
+CREATE TABLE residential_providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    vendor TEXT NOT NULL,
+    protocol TEXT NOT NULL CHECK (protocol IN ('http', 'https', 'socks5')),
+    gateway_host TEXT NOT NULL,
+    gateway_port INTEGER NOT NULL CHECK (gateway_port BETWEEN 1 AND 65535),
+    credentials_encrypted BLOB NOT NULL,
+    username_template TEXT NOT NULL,
+    rotation_mode TEXT NOT NULL CHECK (rotation_mode IN ('session-template', 'per-request', 'api-list')),
+    session_ttl_seconds INTEGER NOT NULL DEFAULT 600 CHECK (session_ttl_seconds >= 0),
+    pool_size INTEGER NOT NULL DEFAULT 8 CHECK (pool_size BETWEEN 1 AND 64),
+    default_region TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE residential_channels (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    provider_id TEXT NOT NULL REFERENCES residential_providers(id) ON DELETE RESTRICT,
+    mode TEXT NOT NULL CHECK (mode IN ('passthrough', 'sticky')),
+    proxy_group_id TEXT NOT NULL REFERENCES proxy_groups(id) ON DELETE RESTRICT,
+    listener_id TEXT NOT NULL REFERENCES listeners(id) ON DELETE RESTRICT,
+    region TEXT NOT NULL DEFAULT '',
+    active_session_index INTEGER NOT NULL DEFAULT 0 CHECK (active_session_index >= 0),
+    rotate_token TEXT NOT NULL,
+    rotate_count INTEGER NOT NULL DEFAULT 0 CHECK (rotate_count >= 0),
+    last_rotated_at TEXT NOT NULL DEFAULT '',
+    last_exit_ip TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE UNIQUE INDEX residential_channels_rotate_token ON residential_channels(rotate_token);
+CREATE INDEX residential_channels_provider ON residential_channels(provider_id);
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -64,6 +64,10 @@ ORDER BY first_seen_at ASC, id ASC
 	return records, nil
 }
 
+// ListGroupNodeCandidates returns every node a proxy group may select from.
+// Subscription nodes are only offered while they belong to an active snapshot.
+// Residential session nodes have no snapshot at all, so they are unioned in
+// with an empty subscription id and stay selectable through their own origin.
 func (s *Store) ListGroupNodeCandidates(ctx context.Context) ([]GroupNodeCandidate, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT
@@ -73,7 +77,13 @@ FROM nodes n
 JOIN subscription_nodes sn ON sn.node_id = n.id
 JOIN subscription_snapshots ss ON ss.id = sn.snapshot_id AND ss.status = 'active'
 WHERE n.lifecycle_state NOT IN ('disabled', 'retired')
-ORDER BY n.id ASC, sn.subscription_id ASC
+UNION
+SELECT
+    n.id, n.fingerprint, n.display_name, n.protocol, n.lifecycle_state,
+    n.canonical_config_encrypted, n.last_latency_ms, ''
+FROM nodes n
+WHERE n.origin = 'residential' AND n.lifecycle_state NOT IN ('disabled', 'retired')
+ORDER BY 1 ASC, 8 ASC
 `)
 	if err != nil {
 		return nil, fmt.Errorf("list proxy group node candidates: %w", err)
@@ -99,14 +109,21 @@ ORDER BY n.id ASC, sn.subscription_id ASC
 			return nil, fmt.Errorf("scan proxy group node candidate: %w", err)
 		}
 		if index, exists := byID[record.ID]; exists {
-			items[index].SubscriptionIDs = append(items[index].SubscriptionIDs, subscriptionID)
+			if subscriptionID != "" {
+				items[index].SubscriptionIDs = append(items[index].SubscriptionIDs, subscriptionID)
+			}
 			continue
 		}
 		if latency.Valid {
 			value := int(latency.Int64)
 			record.LastLatencyMS = &value
 		}
-		record.SubscriptionIDs = []string{subscriptionID}
+		// Residential session nodes have no subscription; keep the slice empty
+		// so subscription predicates never match them accidentally.
+		record.SubscriptionIDs = []string{}
+		if subscriptionID != "" {
+			record.SubscriptionIDs = []string{subscriptionID}
+		}
 		byID[record.ID] = len(items)
 		items = append(items, record)
 	}

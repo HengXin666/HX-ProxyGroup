@@ -29,6 +29,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxylog"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxyservice"
+	"github.com/HengXin666/HX-ProxyGroup/internal/residential"
 	"github.com/HengXin666/HX-ProxyGroup/internal/routingrules"
 	"github.com/HengXin666/HX-ProxyGroup/internal/scheduler"
 	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
@@ -159,6 +160,17 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	residentialService, err := residential.NewService(
+		database,
+		secretBox,
+		proxyGroupService,
+		listenerService,
+		residential.WithSelector(mihomoManager),
+		residential.WithReachabilityChecker(mihomoManager),
+	)
+	if err != nil {
+		return err
+	}
 	trafficService, err := metrics.NewService(database, mihomoManager, logger, metrics.Config{})
 	if err != nil {
 		return err
@@ -195,6 +207,14 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	nodeScheduler, err := scheduler.NewNodeScheduler(nodeService, logger, scheduler.NodeConfig{})
+	if err != nil {
+		return err
+	}
+	residentialScheduler, err := scheduler.NewResidentialScheduler(
+		residentialService,
+		logger,
+		scheduler.ResidentialConfig{},
+	)
 	if err != nil {
 		return err
 	}
@@ -287,6 +307,7 @@ func run(logger *slog.Logger) error {
 		api.WithProxyGroups(proxyGroupService),
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
+		api.WithResidential(residentialService),
 		api.WithTraffic(trafficService),
 		api.WithSettings(settingsService),
 		api.WithRoutingRules(routingRulesService),
@@ -337,13 +358,16 @@ func run(logger *slog.Logger) error {
 		serverErrors <- nil
 	}()
 
-	const backgroundTasks = 4
+	const backgroundTasks = 5
 	backgroundErrors := make(chan error, backgroundTasks)
 	go func() {
 		backgroundErrors <- subscriptionScheduler.Run(ctx)
 	}()
 	go func() {
 		backgroundErrors <- nodeScheduler.Run(ctx)
+	}()
+	go func() {
+		backgroundErrors <- residentialScheduler.Run(ctx)
 	}()
 	go func() {
 		backgroundErrors <- alertScheduler.Run(ctx)

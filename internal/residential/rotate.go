@@ -26,8 +26,11 @@ type RotationResult struct {
 	// SessionIndex is the pool slot now in use.
 	SessionIndex int `json:"session_index"`
 	PoolSize     int `json:"pool_size"`
-	// ExitIP is the observed egress address. Empty when probing is unavailable.
-	ExitIP    string    `json:"exit_ip,omitempty"`
+	// ExitIP is the most recently observed egress address, carried over from the
+	// last provider test probe. Empty when it has never been measured.
+	ExitIP string `json:"exit_ip,omitempty"`
+	// LatencyMS is the post-rotation reachability latency, 0 when unmeasured.
+	LatencyMS int       `json:"latency_ms,omitempty"`
 	RotatedAt time.Time `json:"rotated_at"`
 	// PoolRefreshed reports whether the pool was regenerated during this call.
 	PoolRefreshed bool `json:"pool_refreshed"`
@@ -126,6 +129,28 @@ func (s *Service) ChannelStatusByToken(ctx context.Context, token string) (Chann
 	}, nil
 }
 
+// RotateChannelToken issues a new public rotate token, invalidating any rotate
+// URL already handed to a consumer.
+func (s *Service) RotateChannelToken(ctx context.Context, channelID string) (Channel, error) {
+	record, err := s.repository.GetResidentialChannel(ctx, channelID)
+	if err != nil {
+		return Channel{}, mapStoreError(err)
+	}
+	token, err := newToken()
+	if err != nil {
+		return Channel{}, err
+	}
+	updated, err := s.repository.RotateResidentialChannelToken(ctx, record.ID, token)
+	if err != nil {
+		return Channel{}, mapStoreError(err)
+	}
+	provider, err := s.repository.GetResidentialProvider(ctx, updated.ProviderID)
+	if err != nil {
+		return Channel{}, mapStoreError(err)
+	}
+	return s.channelFromRecord(ctx, updated, provider.Name)
+}
+
 func (s *Service) channelByToken(ctx context.Context, token string) (store.ResidentialChannelRecord, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -199,14 +224,20 @@ func (s *Service) rotate(
 		return RotationResult{}, err
 	}
 
-	exitIP := ""
-	if s.prober != nil && nextIndex < len(pool) {
-		if observed, err := s.prober.ProbeExitIP(ctx, nodeProxyName(pool[nextIndex].Fingerprint)); err == nil {
-			exitIP = observed
+	// Verify the freshly selected session can egress. A failure is reported
+	// rather than fatal: the selector already moved, and the consumer's next
+	// request would surface the same problem anyway.
+	latencyMS := 0
+	if s.checker != nil && nextIndex < len(pool) {
+		if latency, err := s.checker.CheckProxyReachable(ctx, nodeProxyName(pool[nextIndex].Fingerprint)); err == nil {
+			latencyMS = latency
 		}
 	}
+	// The exit address is only known through the provider test probe, so the
+	// previously observed value is preserved rather than overwritten with a
+	// guess.
 	rotatedAt := s.now().UTC()
-	updated, err := s.repository.SetResidentialChannelRotation(ctx, record.ID, nextIndex, exitIP, rotatedAt)
+	updated, err := s.repository.SetResidentialChannelRotation(ctx, record.ID, nextIndex, record.LastExitIP, rotatedAt)
 	if err != nil {
 		return RotationResult{}, mapStoreError(err)
 	}
@@ -215,6 +246,7 @@ func (s *Service) rotate(
 		SessionIndex:  updated.ActiveSessionIndex,
 		PoolSize:      len(pool),
 		ExitIP:        updated.LastExitIP,
+		LatencyMS:     latencyMS,
 		RotatedAt:     rotatedAt,
 		PoolRefreshed: refreshed,
 	}, nil

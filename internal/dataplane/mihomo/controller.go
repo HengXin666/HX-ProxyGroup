@@ -1,6 +1,7 @@
 package mihomo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -146,6 +147,16 @@ func (m *Manager) TestProxy(
 		timeout = 30 * time.Second
 	}
 
+	return m.proxyDelay(ctx, nodeProxyName(fingerprint), testURL, timeout)
+}
+
+// proxyDelay asks the data plane to measure one proxy's latency against a URL.
+func (m *Manager) proxyDelay(
+	ctx context.Context,
+	proxyName string,
+	testURL string,
+	timeout time.Duration,
+) (int, error) {
 	m.mu.Lock()
 	m.refreshProcessLocked()
 	if !m.isRunningLocked() || !m.status.Running {
@@ -155,16 +166,8 @@ func (m *Manager) TestProxy(
 	socketPath := m.controllerSocket
 	m.mu.Unlock()
 
-	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: func(dialContext context.Context, _, _ string) (net.Conn, error) {
-			var dialer net.Dialer
-			return dialer.DialContext(dialContext, "unix", socketPath)
-		},
-	}
+	client, transport := controllerClient(socketPath, timeout+time.Second)
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: timeout + time.Second}
-	proxyName := nodeProxyName(fingerprint)
 	requestURL := "http://unix/proxies/" + url.PathEscape(proxyName) + "/delay?" + url.Values{
 		"timeout":  {strconv.FormatInt(timeout.Milliseconds(), 10)},
 		"url":      {testURL},
@@ -208,4 +211,108 @@ func (m *Manager) TestProxy(
 		return 0, errors.New("Mihomo returned an invalid proxy delay")
 	}
 	return result.Delay, nil
+}
+
+// controllerClient builds an HTTP client bound to the Mihomo Unix control
+// socket. Callers must close idle connections on the returned transport.
+func controllerClient(socketPath string, timeout time.Duration) (*http.Client, *http.Transport) {
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(dialContext context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(dialContext, "unix", socketPath)
+		},
+	}
+	return &http.Client{Transport: transport, Timeout: timeout}, transport
+}
+
+// SelectProxy points a `select` proxy group at one of its members.
+//
+// This is the mechanism that makes residential exit-IP rotation cheap: it is a
+// single control-socket call against the running data plane, so it neither
+// recompiles the configuration nor reloads Mihomo, and connections belonging to
+// other groups are untouched.
+func (m *Manager) SelectProxy(ctx context.Context, groupName, proxyName string) error {
+	groupName = strings.TrimSpace(groupName)
+	proxyName = strings.TrimSpace(proxyName)
+	if groupName == "" || proxyName == "" {
+		return errors.New("proxy group and member names are required")
+	}
+
+	m.mu.Lock()
+	m.refreshProcessLocked()
+	if !m.isRunningLocked() || !m.status.Running {
+		m.mu.Unlock()
+		return ErrNotRunning
+	}
+	socketPath := m.controllerSocket
+	m.mu.Unlock()
+
+	payload, err := json.Marshal(map[string]string{"name": proxyName})
+	if err != nil {
+		return fmt.Errorf("encode Mihomo proxy selection: %w", err)
+	}
+	client, transport := controllerClient(socketPath, 5*time.Second)
+	defer transport.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPut,
+		"http://unix/proxies/"+url.PathEscape(groupName),
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return fmt.Errorf("create Mihomo proxy selection request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		if strings.Contains(err.Error(), "dial unix") {
+			return fmt.Errorf("%w: control socket unreachable", ErrNotRunning)
+		}
+		return fmt.Errorf("Mihomo proxy selection failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNoContent || response.StatusCode == http.StatusOK {
+		return nil
+	}
+	return fmt.Errorf(
+		"Mihomo proxy selection returned status %d: %s",
+		response.StatusCode,
+		controllerMessage(response.Body),
+	)
+}
+
+// CheckProxyReachable confirms that one proxy can reach the public internet.
+//
+// The Mihomo delay endpoint reports latency only, not the response body, so this
+// verifies egress without revealing the exit address. Reporting the residential
+// exit IP itself is done by the control-plane provider probe, which is a
+// deliberate one-shot diagnostic rather than part of any traffic path.
+func (m *Manager) CheckProxyReachable(ctx context.Context, proxyName string) (int, error) {
+	proxyName = strings.TrimSpace(proxyName)
+	if proxyName == "" {
+		return 0, errors.New("proxy name is required")
+	}
+	return m.proxyDelay(ctx, proxyName, exitIPProbeURL, 10*time.Second)
+}
+
+// exitIPProbeURL is the reachability target used when confirming that a pooled
+// residential session can egress at all.
+const exitIPProbeURL = "http://cp.cloudflare.com/generate_204"
+
+// controllerMessage extracts a short error message from a controller response.
+func controllerMessage(body io.Reader) string {
+	raw, _ := io.ReadAll(io.LimitReader(body, 1024))
+	var payload struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(raw, &payload)
+	message := strings.TrimSpace(payload.Message)
+	if message == "" {
+		message = strings.TrimSpace(string(raw))
+	}
+	if len(message) > 256 {
+		message = message[:256]
+	}
+	return message
 }

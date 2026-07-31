@@ -63,10 +63,11 @@ type Selector interface {
 	SelectProxy(ctx context.Context, groupName, proxyName string) error
 }
 
-// ExitIPProber reports the public egress address seen through one proxy. It is a
-// one-shot diagnostic, not a traffic path.
-type ExitIPProber interface {
-	ProbeExitIP(ctx context.Context, proxyName string) (string, error)
+// ReachabilityChecker confirms that a pooled session can still egress. The data
+// plane reports latency only, so a successful check proves the newly selected
+// session works without disclosing its exit address.
+type ReachabilityChecker interface {
+	CheckProxyReachable(ctx context.Context, proxyName string) (int, error)
 }
 
 // Service is the residential proxy application service.
@@ -76,7 +77,7 @@ type Service struct {
 	groups     GroupService
 	listeners  ListenerService
 	selector   Selector
-	prober     ExitIPProber
+	checker    ReachabilityChecker
 	now        func() time.Time
 
 	// rotateLimiter bounds how often each channel may rotate. Rotation is
@@ -100,11 +101,12 @@ func WithSelector(selector Selector) Option {
 	}
 }
 
-// WithExitIPProber enables exit-IP reporting for rotations and test probes.
-func WithExitIPProber(prober ExitIPProber) Option {
+// WithReachabilityChecker enables post-rotation verification that the newly
+// selected session can actually egress.
+func WithReachabilityChecker(checker ReachabilityChecker) Option {
 	return func(service *Service) {
-		if prober != nil {
-			service.prober = prober
+		if checker != nil {
+			service.checker = checker
 		}
 	}
 }
@@ -243,7 +245,17 @@ func (s *Service) RefreshChannelPool(ctx context.Context, channelID string) erro
 	if err != nil {
 		return err
 	}
-	size := provider.PoolSize
+	existingPool, err := s.repository.ListResidentialSessionNodes(ctx, record.ID)
+	if err != nil {
+		return err
+	}
+	// The channel's current pool size wins over the provider default: an
+	// operator may have sized this channel deliberately, and a refresh must not
+	// silently resize it. Only an empty pool falls back to the provider value.
+	size := len(existingPool)
+	if size == 0 {
+		size = provider.PoolSize
+	}
 	if record.Mode == ModePassthrough {
 		size = 1
 	}

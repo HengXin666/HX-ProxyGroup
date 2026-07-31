@@ -27,6 +27,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/overview"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxyservice"
+	"github.com/HengXin666/HX-ProxyGroup/internal/residential"
 	"github.com/HengXin666/HX-ProxyGroup/internal/routingrules"
 	"github.com/HengXin666/HX-ProxyGroup/internal/subscription"
 	"github.com/HengXin666/HX-ProxyGroup/internal/systemsettings"
@@ -116,6 +117,30 @@ type RoutingRulesService interface {
 type OverviewService interface {
 	Status() mihomo.Status
 	OverviewSnapshot(context.Context) (overview.Snapshot, error)
+}
+
+// ResidentialService exposes dynamic residential IP proxy management. Rotation
+// by token is deliberately part of this interface because the public rotate
+// route resolves the channel from the token alone.
+type ResidentialService interface {
+	ListProviders(context.Context) ([]residential.Provider, error)
+	GetProvider(context.Context, string) (residential.Provider, error)
+	CreateProvider(context.Context, residential.CreateProviderRequest) (residential.Provider, error)
+	UpdateProvider(context.Context, string, residential.UpdateProviderRequest) (residential.Provider, error)
+	DeleteProvider(context.Context, string, int) error
+	TestProvider(context.Context, string, string) (residential.TestResult, error)
+
+	ListChannels(context.Context) ([]residential.Channel, error)
+	GetChannel(context.Context, string) (residential.Channel, error)
+	CreateChannel(context.Context, residential.CreateChannelRequest) (residential.Channel, error)
+	UpdateChannel(context.Context, string, residential.UpdateChannelRequest) (residential.Channel, error)
+	DeleteChannel(context.Context, string, int) error
+
+	RotateChannel(context.Context, string) (residential.RotationResult, error)
+	RotateChannelByToken(context.Context, string) (residential.RotationResult, error)
+	ChannelStatusByToken(context.Context, string) (residential.ChannelStatus, error)
+	RotateChannelToken(context.Context, string) (residential.Channel, error)
+	RefreshChannelPool(context.Context, string) error
 }
 
 type Option func(*Server) error
@@ -241,6 +266,16 @@ func WithLogs(handler http.Handler) Option {
 	}
 }
 
+func WithResidential(service ResidentialService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("residential proxy service is required")
+		}
+		server.residential = service
+		return nil
+	}
+}
+
 type Server struct {
 	bundles          BundleService
 	subscriptions    SubscriptionService
@@ -252,6 +287,7 @@ type Server struct {
 	settings         SettingsService
 	routingRules     RoutingRulesService
 	overview         OverviewService
+	residential      ResidentialService
 	logs             http.Handler
 	dataplane        DataPlaneService
 	systemInfo       *SystemInfo
@@ -347,6 +383,17 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
+	}
+	if s.residential != nil {
+		mux.HandleFunc("/api/v1/residential/presets", s.handleResidentialPresets)
+		mux.HandleFunc("/api/v1/residential/providers", s.handleResidentialProviders)
+		mux.HandleFunc("/api/v1/residential/providers/", s.handleResidentialProvider)
+		mux.HandleFunc("/api/v1/residential/channels", s.handleResidentialChannels)
+		mux.HandleFunc("/api/v1/residential/channels/", s.handleResidentialChannel)
+		// Public token-addressed rotation for consumers. The token is the
+		// credential, so these routes stay outside /api/v1 session auth in the
+		// same way as the /sub/ subscription export.
+		mux.HandleFunc("/rot/", s.handleResidentialRotatePublic)
 	}
 	if s.traffic != nil {
 		mux.HandleFunc("/api/v1/traffic", s.handleTraffic)
@@ -600,6 +647,14 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, proxygroup.ErrInvalid), errors.Is(err, listener.ErrInvalid), errors.Is(err, routingrules.ErrInvalid):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+	case errors.Is(err, residential.ErrRateLimited):
+		s.writeAPIError(writer, request, http.StatusTooManyRequests, "rotate_rate_limited", err.Error())
+	case errors.Is(err, residential.ErrInvalid):
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+	case errors.Is(err, residential.ErrNotFound):
+		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, residential.ErrConflict):
+		s.writeAPIError(writer, request, http.StatusConflict, "conflict", "resource changed or conflicts with existing configuration")
 	case errors.Is(err, listener.ErrShareDisabled):
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, proxygroup.ErrNotFound), errors.Is(err, listener.ErrNotFound), errors.Is(err, node.ErrNotFound):

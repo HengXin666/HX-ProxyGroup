@@ -46,17 +46,19 @@ var presets = []Preset{
 		Vendor:            "bestproxy",
 		Label:             "BestProxy",
 		Protocol:          "http",
-		GatewayHost:       "",
-		GatewayPort:       0,
-		UsernameTemplate:  "{user}-region-{region}-session-{session}-sessTime-{ttl}",
+		GatewayHost:       "proxy.bestproxy.com",
+		GatewayPort:       2312,
+		UsernameTemplate:  "{user}_area-{region}_life-{ttl}_session-{session}",
 		RotationMode:      RotationSessionTemplate,
-		SessionTTLSeconds: 600,
+		SessionTTLSeconds: 60,
 		PoolSize:          8,
-		Verified:          false,
+		Verified:          true,
 		DocURL:            "https://bestproxy.com",
-		Notes: "网关地址、端口与用户名参数名尚未按 BestProxy 官方文档校验。" +
-			"请填入面板给出的网关地址与端口，保存后用「测试连接」确认出口 IP，" +
-			"若失败请按文档调整用户名模板中的参数名。",
+		Notes: "BestProxy 动态住宅粘性账号语法（已在 hx-auto-outlook 中验证）：" +
+			"`账号_area-国家_life-分钟_session-会话ID`。网关为 proxy.bestproxy.com:2312；" +
+			"国家代码请填大写（如 US），系统会原样保留；life 单位为分钟，" +
+			"session_ttl_seconds 建议填 30-90；客户端建立逻辑会话时系统才生成供应商会话 ID，" +
+			"不同客户端会话获得独立出口 IP。保存后用「测试连接」确认出口 IP。",
 	},
 	{
 		Vendor:            "generic-sticky",
@@ -109,6 +111,22 @@ var presets = []Preset{
 		PoolSize:          8,
 		Verified:          true,
 		Notes:             "与粘滞会话网关相同，但上游走 SOCKS5。",
+	},
+	{
+		Vendor:            "bestproxy-api",
+		Label:             "BestProxy · API 提取",
+		Protocol:          "http",
+		GatewayHost:       "",
+		GatewayPort:       0,
+		UsernameTemplate:  "",
+		RotationMode:      RotationAPIList,
+		SessionTTLSeconds: 60,
+		PoolSize:          8,
+		Verified:          true,
+		DocURL:            "https://bestproxy.com",
+		Notes: "在 BestProxy 面板「API提取」生成 API 链接（包含 app_key 等参数），" +
+			"完整粘贴到 api_url。客户端建立会话或换 IP 时实时请求新的 IP:port 节点。" +
+			"该模式无需网关账号密码；请把本机公网出口 IP 加入 BestProxy 白名单。",
 	},
 }
 

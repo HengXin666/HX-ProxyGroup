@@ -35,6 +35,12 @@ export default defineConfig(({ mode }) => {
           target: backendTarget,
           changeOrigin: false,
         },
+        // Public residential rotate endpoints (/rot/<token>) are token
+        // addressed and sit outside the authenticated API, same as /sub.
+        "/rot": {
+          target: backendTarget,
+          changeOrigin: false,
+        },
       },
     },
   }

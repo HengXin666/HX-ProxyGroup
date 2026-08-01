@@ -458,3 +458,181 @@ export interface ApiErrorPayload {
     request_id?: string
   }
 }
+
+export type ResidentialProtocol = "http" | "https" | "socks5"
+export type ResidentialRotationMode = "session-template" | "per-request" | "api-list"
+export type ResidentialChannelMode = "passthrough" | "sticky"
+export type ResidentialSessionExpiryPolicy = "expire" | "rotate"
+
+export interface ResidentialPreset {
+  vendor: string
+  label: string
+  protocol: ResidentialProtocol
+  gateway_host: string
+  gateway_port: number
+  username_template: string
+  rotation_mode: ResidentialRotationMode
+  session_ttl_seconds: number
+  pool_size: number
+  verified: boolean
+  doc_url?: string
+  notes?: string
+}
+
+export interface ResidentialPresetCatalog {
+  items: ResidentialPreset[]
+  placeholders: string[]
+  protocols: ResidentialProtocol[]
+  rotation_modes: ResidentialRotationMode[]
+  exit_ip_default: string
+}
+
+export interface ResidentialProvider {
+  id: string
+  name: string
+  vendor: string
+  protocol: ResidentialProtocol
+  gateway_host: string
+  gateway_port: number
+  upstream_proxy_group_id?: string
+  api_url_configured: boolean
+  api_proxy_configured: boolean
+  username_template: string
+  rotation_mode: ResidentialRotationMode
+  session_ttl_seconds: number
+  max_concurrent_sessions: number
+  session_expiry_policy: ResidentialSessionExpiryPolicy
+  default_region?: string
+  credentials_configured: boolean
+  gateway_username?: string
+  supports_sticky: boolean
+  enabled: boolean
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ResidentialCredentials {
+  username: string
+  password: string
+}
+
+export interface CreateResidentialProviderRequest {
+  name: string
+  vendor: string
+  protocol: ResidentialProtocol
+  gateway_host: string
+  gateway_port: number
+  upstream_proxy_group_id?: string
+  api_url?: string
+  api_proxy_url?: string
+  credentials?: ResidentialCredentials
+  username_template: string
+  rotation_mode: ResidentialRotationMode
+  session_ttl_seconds?: number
+  max_concurrent_sessions?: number
+  session_expiry_policy?: ResidentialSessionExpiryPolicy
+  default_region?: string
+  enabled?: boolean
+}
+
+export interface UpdateResidentialProviderRequest {
+  version: number
+  name: string
+  vendor: string
+  protocol: ResidentialProtocol
+  gateway_host: string
+  gateway_port: number
+  upstream_proxy_group_id?: string
+  api_url?: string
+  api_proxy_url?: string
+  credentials?: ResidentialCredentials
+  username_template: string
+  rotation_mode: ResidentialRotationMode
+  session_ttl_seconds?: number
+  max_concurrent_sessions?: number
+  session_expiry_policy?: ResidentialSessionExpiryPolicy
+  default_region?: string
+  enabled: boolean
+}
+
+export interface ResidentialTestResult {
+  success: boolean
+  exit_ip?: string
+  rendered_username_preview?: string
+  latency_ms?: number
+  error?: string
+}
+
+export interface ResidentialChannelEndpoint {
+  kind: string
+  bind_address: string
+  port: number
+  auth_enabled: boolean
+}
+
+export interface ResidentialChannel {
+  id: string
+  name: string
+  provider_id: string
+  provider_name?: string
+  mode: ResidentialChannelMode
+  proxy_group_id: string
+  listener_id: string
+  region?: string
+  endpoint: ResidentialChannelEndpoint
+  active_session_count: number
+  pool_size?: number
+  active_session_index: number
+  rotate_count: number
+  last_rotated_at?: string
+  last_exit_ip?: string
+  pool_created_at?: string
+  pool_refresh_after_seconds?: number
+  session_ttl_seconds?: number
+  rotate_path?: string
+  can_rotate: boolean
+  enabled: boolean
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ResidentialChannelList {
+  items: ResidentialChannel[]
+}
+
+export interface ResidentialProviderList {
+  items: ResidentialProvider[]
+}
+
+export interface CreateResidentialChannelRequest {
+  name: string
+  provider_id: string
+  mode: ResidentialChannelMode
+  region?: string
+  listener: {
+    kind: string
+    bind_address: string
+    port: number
+    auth?: { username: string; password: string }
+  }
+  enabled?: boolean
+}
+
+export interface UpdateResidentialChannelRequest {
+  version: number
+  name: string
+  region?: string
+  enabled: boolean
+}
+
+export interface ResidentialRotationResult {
+  channel_id: string
+  session_index: number
+  pool_size: number
+  exit_ip?: string
+  latency_ms?: number
+  rotated_at: string
+  pool_refreshed: boolean
+}

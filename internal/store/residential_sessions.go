@@ -12,6 +12,11 @@ import (
 // provider session pool rather than imported from a subscription snapshot.
 const ResidentialOrigin = "residential"
 
+// ResidentialDialerProxyGroupIDKey is stored inside an encrypted residential
+// node config. The Mihomo compiler resolves the stable group ID to its current
+// display name before emitting dialer-proxy.
+const ResidentialDialerProxyGroupIDKey = "hx_dialer_proxy_group_id"
+
 // ResidentialSessionNode is one pooled gateway session rendered as a node.
 type ResidentialSessionNode struct {
 	ID                       string
@@ -19,6 +24,52 @@ type ResidentialSessionNode struct {
 	DisplayName              string
 	Protocol                 string
 	CanonicalConfigEncrypted []byte
+}
+
+// UpsertResidentialSessionNode persists one node allocated for one logical
+// client session. It does not remove any other channel node.
+func (s *Store) UpsertResidentialSessionNode(
+	ctx context.Context,
+	channelID string,
+	session ResidentialSessionNode,
+	now time.Time,
+) (string, error) {
+	if strings.TrimSpace(channelID) == "" {
+		return "", fmt.Errorf("residential channel id is required")
+	}
+	timestamp := now.UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO nodes(
+    id, fingerprint, display_name, protocol, canonical_config_encrypted,
+    lifecycle_state, first_seen_at, last_seen_at, retired_at, version, origin, origin_ref
+) VALUES (?, ?, ?, ?, ?, 'candidate', ?, ?, NULL, 1, ?, ?)
+ON CONFLICT(fingerprint) DO UPDATE SET
+    display_name = excluded.display_name,
+    protocol = excluded.protocol,
+    canonical_config_encrypted = excluded.canonical_config_encrypted,
+    lifecycle_state = 'candidate', last_seen_at = excluded.last_seen_at,
+    retired_at = NULL, origin = excluded.origin, origin_ref = excluded.origin_ref,
+    version = nodes.version + 1
+`, session.ID, session.Fingerprint, session.DisplayName, session.Protocol,
+		session.CanonicalConfigEncrypted, timestamp, timestamp, ResidentialOrigin, channelID)
+	if err != nil {
+		return "", fmt.Errorf("upsert residential session node: %w", err)
+	}
+	var id string
+	if err := s.db.QueryRowContext(ctx, "SELECT id FROM nodes WHERE fingerprint = ?", session.Fingerprint).Scan(&id); err != nil {
+		return "", fmt.Errorf("resolve residential session node: %w", err)
+	}
+	return id, nil
+}
+
+func (s *Store) DeleteResidentialSessionNode(ctx context.Context, channelID, fingerprint string) error {
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM nodes WHERE origin = ? AND origin_ref = ? AND fingerprint = ?",
+		ResidentialOrigin, channelID, fingerprint)
+	if err != nil {
+		return fmt.Errorf("delete residential session node: %w", err)
+	}
+	return nil
 }
 
 // ReplaceResidentialSessionPool atomically swaps the pooled session nodes that

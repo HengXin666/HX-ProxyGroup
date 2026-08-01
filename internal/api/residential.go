@@ -249,8 +249,13 @@ func (s *Server) handleResidentialChannelAction(
 
 // handleResidentialRotatePublic serves the consumer-facing rotation API.
 //
-//	GET  /rot/<token>       -> current session index and pool size
-//	POST /rot/<token>/next  -> advance to the next residential IP
+//	GET    /rot/<token>                              -> legacy channel status
+//	POST   /rot/<token>/next                         -> legacy channel rotation
+//	PUT    /rot/<token>/sessions/<id>                -> ensure logical session
+//	GET    /rot/<token>/sessions/<id>                -> logical session status
+//	DELETE /rot/<token>/sessions/<id>                -> release logical session
+//	POST   /rot/<token>/sessions/<id>/next           -> rotate only this session
+//	POST   /rot/<token>/sessions/<id>/route          -> residential/direct
 //
 // The token is the only credential, so this route is intentionally outside the
 // authenticated /api/v1 namespace. Responses never include the token, the
@@ -262,16 +267,17 @@ func (s *Server) handleResidentialRotatePublic(writer http.ResponseWriter, reque
 		http.NotFound(writer, request)
 		return
 	}
-	token, action, hasAction := strings.Cut(path, "/")
-	if token == "" || (hasAction && action != "next") {
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" {
 		http.NotFound(writer, request)
 		return
 	}
+	token := parts[0]
 
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 
-	if !hasAction {
+	if len(parts) == 1 {
 		if request.Method != http.MethodGet {
 			methodNotAllowed(writer, request, http.MethodGet)
 			return
@@ -282,6 +288,14 @@ func (s *Server) handleResidentialRotatePublic(writer http.ResponseWriter, reque
 			return
 		}
 		writeJSON(writer, http.StatusOK, status)
+		return
+	}
+	if len(parts) >= 3 && parts[1] == "sessions" {
+		s.handleResidentialClientSessionPublic(writer, request, token, parts[2:])
+		return
+	}
+	if len(parts) != 2 || parts[1] != "next" {
+		http.NotFound(writer, request)
 		return
 	}
 	if request.Method != http.MethodPost {
@@ -303,6 +317,96 @@ func (s *Server) handleResidentialRotatePublic(writer http.ResponseWriter, reque
 		"rotated_at":     result.RotatedAt,
 		"pool_refreshed": result.PoolRefreshed,
 	})
+}
+
+func (s *Server) handleResidentialClientSessionPublic(
+	writer http.ResponseWriter,
+	request *http.Request,
+	token string,
+	parts []string,
+) {
+	if len(parts) < 1 || len(parts) > 2 || parts[0] == "" {
+		http.NotFound(writer, request)
+		return
+	}
+	sessionID := parts[0]
+	action := ""
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+	if action == "" {
+		switch request.Method {
+		case http.MethodPut:
+			session, err := s.residential.EnsureClientSessionByToken(request.Context(), token, sessionID)
+			if err != nil {
+				s.handleResidentialClientSessionError(writer, request, err)
+				return
+			}
+			writeJSON(writer, http.StatusOK, session)
+		case http.MethodGet:
+			session, err := s.residential.GetClientSessionByToken(request.Context(), token, sessionID)
+			if err != nil {
+				s.handleResidentialClientSessionError(writer, request, err)
+				return
+			}
+			writeJSON(writer, http.StatusOK, session)
+		case http.MethodDelete:
+			if err := s.residential.DeleteClientSessionByToken(request.Context(), token, sessionID); err != nil {
+				s.handleResidentialClientSessionError(writer, request, err)
+				return
+			}
+			writer.WriteHeader(http.StatusNoContent)
+		default:
+			methodNotAllowed(writer, request, http.MethodPut, http.MethodGet, http.MethodDelete)
+		}
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(writer, request, http.MethodPost)
+		return
+	}
+	var (
+		session residential.ClientSession
+		err     error
+	)
+	switch action {
+	case "next":
+		session, err = s.residential.RotateClientSessionByToken(request.Context(), token, sessionID)
+	case "route":
+		var routeRequest struct {
+			RouteMode string `json:"route_mode"`
+		}
+		if decodeErr := decodeJSONBody(writer, request, &routeRequest); decodeErr != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+			return
+		}
+		session, err = s.residential.SwitchClientSessionRouteByToken(
+			request.Context(), token, sessionID, routeRequest.RouteMode,
+		)
+	default:
+		http.NotFound(writer, request)
+		return
+	}
+	if err != nil {
+		s.handleResidentialClientSessionError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, session)
+}
+
+// Session endpoints use ErrNotFound for opaque token/channel lookup failures.
+// Other validation errors belong to caller-controlled session parameters and
+// should retain the regular 422 API semantics.
+func (s *Server) handleResidentialClientSessionError(writer http.ResponseWriter, request *http.Request, err error) {
+	if errors.Is(err, residential.ErrSessionExpired) {
+		s.writeAPIError(writer, request, http.StatusGone, "session_expired", "residential client session expired")
+		return
+	}
+	if errors.Is(err, residential.ErrNotFound) {
+		http.NotFound(writer, request)
+		return
+	}
+	s.handleError(writer, request, err)
 }
 
 // handleRotateError keeps public rotation failures opaque: an unknown, disabled

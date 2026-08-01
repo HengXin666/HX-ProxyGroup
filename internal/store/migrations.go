@@ -418,6 +418,99 @@ CREATE UNIQUE INDEX residential_channels_rotate_token ON residential_channels(ro
 CREATE INDEX residential_channels_provider ON residential_channels(provider_id);
 `,
 	},
+	{
+		version: 14,
+		name:    "residential_provider_api_url",
+		sql: `
+ALTER TABLE residential_providers ADD COLUMN api_url TEXT NOT NULL DEFAULT '';
+`,
+	},
+	{
+		version: 15,
+		name:    "residential_provider_chain_settings",
+		sql: `
+ALTER TABLE residential_providers
+    ADD COLUMN upstream_proxy_group_id TEXT REFERENCES proxy_groups(id) ON DELETE RESTRICT;
+`,
+	},
+	{
+		version: 16,
+		name:    "residential_pool_lifecycle",
+		sql: `
+ALTER TABLE residential_channels
+    ADD COLUMN pool_created_at TEXT NOT NULL DEFAULT '';
+`,
+	},
+	{
+		version: 17,
+		name:    "residential_client_sessions",
+		sql: `
+CREATE TABLE residential_client_sessions (
+    channel_id TEXT NOT NULL REFERENCES residential_channels(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    auth_username TEXT NOT NULL UNIQUE,
+    auth_password_encrypted BLOB NOT NULL,
+    session_index INTEGER NOT NULL DEFAULT -1 CHECK (session_index >= -1),
+    route_mode TEXT NOT NULL CHECK (route_mode IN ('residential', 'direct')),
+    rotate_count INTEGER NOT NULL DEFAULT 0 CHECK (rotate_count >= 0),
+    last_rotated_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (channel_id, session_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX residential_client_sessions_channel
+    ON residential_client_sessions(channel_id, route_mode, session_index);
+`,
+	},
+	{
+		version: 18,
+		name:    "residential_client_upstream_route",
+		sql: `
+CREATE TABLE residential_client_sessions_v18 (
+    channel_id TEXT NOT NULL REFERENCES residential_channels(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    auth_username TEXT NOT NULL UNIQUE,
+    auth_password_encrypted BLOB NOT NULL,
+    session_index INTEGER NOT NULL DEFAULT -1 CHECK (session_index >= -1),
+    route_mode TEXT NOT NULL CHECK (route_mode IN ('residential', 'direct', 'upstream')),
+    rotate_count INTEGER NOT NULL DEFAULT 0 CHECK (rotate_count >= 0),
+    last_rotated_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (channel_id, session_id)
+) STRICT, WITHOUT ROWID;
+
+INSERT INTO residential_client_sessions_v18
+SELECT * FROM residential_client_sessions;
+
+DROP TABLE residential_client_sessions;
+ALTER TABLE residential_client_sessions_v18 RENAME TO residential_client_sessions;
+
+CREATE INDEX residential_client_sessions_channel
+    ON residential_client_sessions(channel_id, route_mode, session_index);
+`,
+	},
+	{
+		version: 19,
+		name:    "residential_sessions_lazy_allocation",
+		sql: `
+ALTER TABLE residential_providers
+    ADD COLUMN session_expiry_policy TEXT NOT NULL DEFAULT 'rotate'
+    CHECK (session_expiry_policy IN ('expire', 'rotate'));
+
+ALTER TABLE residential_client_sessions
+    ADD COLUMN node_fingerprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE residential_client_sessions
+    ADD COLUMN allocated_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE residential_client_sessions
+    ADD COLUMN expires_at TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX residential_client_sessions_expiry
+    ON residential_client_sessions(route_mode, expires_at)
+    WHERE route_mode = 'residential' AND expires_at <> '';
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

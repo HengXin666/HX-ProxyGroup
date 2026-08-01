@@ -32,6 +32,9 @@ type stubResidentialService struct {
 	providers          []residential.Provider
 	testResult         residential.TestResult
 	createdChannel     residential.CreateChannelRequest
+	clientSession      residential.ClientSession
+	clientSessionErr   error
+	clientSessionCalls [][3]string
 }
 
 func (s *stubResidentialService) ListProviders(context.Context) ([]residential.Provider, error) {
@@ -120,6 +123,31 @@ func (s *stubResidentialService) RotateChannelToken(context.Context, string) (re
 }
 
 func (s *stubResidentialService) RefreshChannelPool(context.Context, string) error { return nil }
+
+func (s *stubResidentialService) EnsureClientSessionByToken(_ context.Context, token, sessionID string) (residential.ClientSession, error) {
+	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"ensure", token, sessionID})
+	return s.clientSession, s.clientSessionErr
+}
+
+func (s *stubResidentialService) GetClientSessionByToken(_ context.Context, token, sessionID string) (residential.ClientSession, error) {
+	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"get", token, sessionID})
+	return s.clientSession, s.clientSessionErr
+}
+
+func (s *stubResidentialService) RotateClientSessionByToken(_ context.Context, token, sessionID string) (residential.ClientSession, error) {
+	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"next", token, sessionID})
+	return s.clientSession, s.clientSessionErr
+}
+
+func (s *stubResidentialService) SwitchClientSessionRouteByToken(_ context.Context, token, sessionID, routeMode string) (residential.ClientSession, error) {
+	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"route:" + routeMode, token, sessionID})
+	return s.clientSession, s.clientSessionErr
+}
+
+func (s *stubResidentialService) DeleteClientSessionByToken(_ context.Context, token, sessionID string) error {
+	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"delete", token, sessionID})
+	return s.clientSessionErr
+}
 
 func newResidentialTestServer(t *testing.T, service *stubResidentialService) *httptest.Server {
 	t.Helper()
@@ -336,6 +364,124 @@ func TestPublicRotateRejectsUnknownPathsAndMethods(t *testing.T) {
 	}
 }
 
+func TestPublicResidentialClientSessionLifecycleRoutesByTokenAndSessionID(t *testing.T) {
+	service := &stubResidentialService{clientSession: residential.ClientSession{
+		SessionID: "window-01", ProxyUsername: "hx-session-user",
+		ProxyPassword: "one-time-secret", RouteMode: residential.ClientRouteResidential,
+		SessionIndex: 2, PoolSize: 8,
+	}}
+	testServer := newResidentialTestServer(t, service)
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	request, err := http.NewRequest(http.MethodPut, testServer.URL+"/rot/shared-token/sessions/window-01", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ensured residential.ClientSession
+	if err := json.NewDecoder(response.Body).Decode(&ensured); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || ensured.ProxyPassword != "one-time-secret" {
+		t.Fatalf("ensure response = %d %+v", response.StatusCode, ensured)
+	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", response.Header.Get("Cache-Control"))
+	}
+
+	routeRequest, err := http.NewRequest(
+		http.MethodPost,
+		testServer.URL+"/rot/shared-token/sessions/window-01/route",
+		strings.NewReader(`{"route_mode":"direct"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeRequest.Header.Set("Content-Type", "application/json")
+	routeResponse, err := client.Do(routeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeResponse.Body.Close()
+	if routeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("route response status = %d", routeResponse.StatusCode)
+	}
+
+	wantCalls := [][3]string{
+		{"ensure", "shared-token", "window-01"},
+		{"route:direct", "shared-token", "window-01"},
+	}
+	if len(service.clientSessionCalls) != len(wantCalls) {
+		t.Fatalf("client session calls = %v", service.clientSessionCalls)
+	}
+	for index := range wantCalls {
+		if service.clientSessionCalls[index] != wantCalls[index] {
+			t.Fatalf("client session call %d = %v, want %v", index, service.clientSessionCalls[index], wantCalls[index])
+		}
+	}
+}
+
+func TestPublicResidentialClientSessionHidesInvalidTokenAndSession(t *testing.T) {
+	service := &stubResidentialService{clientSessionErr: residential.ErrNotFound}
+	testServer := newResidentialTestServer(t, service)
+	request, err := http.NewRequest(http.MethodPut, testServer.URL+"/rot/unknown/sessions/window-01", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown session token status = %d, want 404", response.StatusCode)
+	}
+}
+
+func TestPublicResidentialClientSessionReportsExpiredSession(t *testing.T) {
+	service := &stubResidentialService{clientSessionErr: residential.ErrSessionExpired}
+	testServer := newResidentialTestServer(t, service)
+	request, err := http.NewRequest(http.MethodPut, testServer.URL+"/rot/shared-token/sessions/window-01", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusGone {
+		t.Fatalf("expired session status = %d, want 410", response.StatusCode)
+	}
+}
+
+func TestPublicResidentialClientSessionReportsInvalidRouteMode(t *testing.T) {
+	service := &stubResidentialService{clientSessionErr: residential.ErrInvalid}
+	testServer := newResidentialTestServer(t, service)
+	request, err := http.NewRequest(
+		http.MethodPost,
+		testServer.URL+"/rot/shared-token/sessions/window-01/route",
+		strings.NewReader(`{"route_mode":"unsupported"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid route mode status = %d, want 422", response.StatusCode)
+	}
+}
+
 // The preset catalog drives the admin UI, including the unverified warning for
 // vendors whose gateway syntax has not been confirmed.
 func TestResidentialPresetsExposeVerificationState(t *testing.T) {
@@ -368,11 +514,11 @@ func TestResidentialPresetsExposeVerificationState(t *testing.T) {
 	for _, item := range payload.Items {
 		if item.Vendor == "bestproxy" {
 			found = true
-			if item.Verified {
-				t.Error("bestproxy preset must be reported as unverified")
+			if !item.Verified {
+				t.Error("bestproxy preset must be reported as verified")
 			}
 			if item.DocURL == "" {
-				t.Error("unverified preset must carry a doc URL")
+				t.Error("verified preset must still carry a doc URL")
 			}
 		}
 	}

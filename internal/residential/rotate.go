@@ -16,6 +16,11 @@ import (
 // default rather than opt-in.
 const defaultRotateInterval = 2 * time.Second
 
+// rotateProbeTimeout bounds the best-effort background probe started after a
+// successful rotation. It must not become the timeout of the public rotate
+// request itself.
+const rotateProbeTimeout = 2 * time.Second
+
 // maximumTrackedChannels bounds the limiter's memory. Entries are evicted oldest
 // first, so a large number of channels cannot grow it without limit.
 const maximumTrackedChannels = 4096
@@ -29,7 +34,8 @@ type RotationResult struct {
 	// ExitIP is the most recently observed egress address, carried over from the
 	// last provider test probe. Empty when it has never been measured.
 	ExitIP string `json:"exit_ip,omitempty"`
-	// LatencyMS is the post-rotation reachability latency, 0 when unmeasured.
+	// LatencyMS is retained for response compatibility. Rotation no longer waits
+	// for reachability probes, so this is 0 for the current request.
 	LatencyMS int       `json:"latency_ms,omitempty"`
 	RotatedAt time.Time `json:"rotated_at"`
 	// PoolRefreshed reports whether the pool was regenerated during this call.
@@ -148,7 +154,7 @@ func (s *Service) RotateChannelToken(ctx context.Context, channelID string) (Cha
 	if err != nil {
 		return Channel{}, mapStoreError(err)
 	}
-	return s.channelFromRecord(ctx, updated, provider.Name)
+	return s.channelFromRecord(ctx, updated, s.providerFromRecord(provider))
 }
 
 func (s *Service) channelByToken(ctx context.Context, token string) (store.ResidentialChannelRecord, error) {
@@ -199,12 +205,18 @@ func (s *Service) rotate(
 		return RotationResult{}, fmt.Errorf("%w: channel has no pooled sessions", ErrInvalid)
 	}
 
+	refreshDue, err := s.poolRefreshDue(ctx, record)
+	if err != nil {
+		return RotationResult{}, err
+	}
 	nextIndex := record.ActiveSessionIndex + 1
 	refreshed := false
-	if nextIndex >= len(pool) {
-		// The pool is exhausted. Regenerate it so the next cycle draws fresh
-		// residential IPs instead of replaying the previous ones.
-		if len(pool) > 1 {
+	if refreshDue || nextIndex >= len(pool) {
+		// The pool is exhausted or stale. Regenerate it so the next cycle draws
+		// fresh residential IPs instead of replaying expired session parameters.
+		// A stale single-session pool is refreshed too; it otherwise has no way
+		// to obtain a new exit address.
+		if len(pool) > 1 || refreshDue {
 			if err := s.RefreshChannelPool(ctx, record.ID); err != nil {
 				return RotationResult{}, err
 			}
@@ -216,23 +228,18 @@ func (s *Service) rotate(
 			if len(pool) == 0 {
 				return RotationResult{}, fmt.Errorf("%w: channel has no pooled sessions", ErrInvalid)
 			}
-		}
-		nextIndex = 0
-	}
-
-	if err := s.selectActiveSession(ctx, record, nextIndex); err != nil {
-		return RotationResult{}, err
-	}
-
-	// Verify the freshly selected session can egress. A failure is reported
-	// rather than fatal: the selector already moved, and the consumer's next
-	// request would surface the same problem anyway.
-	latencyMS := 0
-	if s.checker != nil && nextIndex < len(pool) {
-		if latency, err := s.checker.CheckProxyReachable(ctx, nodeProxyName(pool[nextIndex].Fingerprint)); err == nil {
-			latencyMS = latency
+			nextIndex = 0
+		} else {
+			nextIndex = 0
 		}
 	}
+
+	if !refreshed {
+		if err := s.selectActiveSession(ctx, record, nextIndex); err != nil {
+			return RotationResult{}, err
+		}
+	}
+
 	// The exit address is only known through the provider test probe, so the
 	// previously observed value is preserved rather than overwritten with a
 	// guess.
@@ -241,15 +248,68 @@ func (s *Service) rotate(
 	if err != nil {
 		return RotationResult{}, mapStoreError(err)
 	}
+	// Verify the freshly selected session in the background. The control-plane
+	// probe can wait up to several seconds when the upstream chain is slow, so
+	// it must never hold the public rotation request open.
+	if s.checker != nil && nextIndex < len(pool) {
+		s.checkSelectedSession(nodeProxyName(pool[nextIndex].Fingerprint))
+	}
 	return RotationResult{
 		ChannelID:     updated.ID,
 		SessionIndex:  updated.ActiveSessionIndex,
 		PoolSize:      len(pool),
 		ExitIP:        updated.LastExitIP,
-		LatencyMS:     latencyMS,
 		RotatedAt:     rotatedAt,
 		PoolRefreshed: refreshed,
 	}, nil
+}
+
+// poolRefreshDue uses the provider's configured session lifetime rather than
+// the last consumer rotation. A sticky channel can sit idle long enough for
+// every rendered session to expire, so rotation itself also checks this state
+// before selecting a node.
+func (s *Service) poolRefreshDue(
+	ctx context.Context,
+	record store.ResidentialChannelRecord,
+) (bool, error) {
+	if record.Mode != ModeSticky {
+		return false, nil
+	}
+	createdAt := record.PoolCreatedAt
+	if createdAt == nil {
+		// Pools created before the lifecycle migration use the channel creation
+		// time as a conservative age estimate until their first refresh.
+		if record.CreatedAt.IsZero() {
+			return true, nil
+		}
+		legacyCreatedAt := record.CreatedAt
+		createdAt = &legacyCreatedAt
+	}
+	providerRecord, err := s.repository.GetResidentialProvider(ctx, record.ProviderID)
+	if err != nil {
+		return false, mapStoreError(err)
+	}
+	refreshAge := SessionPoolRefreshAge(s.providerFromRecord(providerRecord))
+	if refreshAge <= 0 {
+		return false, nil
+	}
+	return !s.now().UTC().Before(createdAt.UTC().Add(refreshAge)), nil
+}
+
+// checkSelectedSession launches a bounded best-effort probe after the runtime
+// state has been committed. A probe result is intentionally not part of the
+// rotation response: callers need the selector switch immediately, even when
+// the chained upstream is temporarily slow.
+func (s *Service) checkSelectedSession(proxyName string) {
+	checker := s.checker
+	if checker == nil {
+		return
+	}
+	go func() {
+		probeContext, cancel := context.WithTimeout(context.Background(), rotateProbeTimeout)
+		defer cancel()
+		_, _ = checker.CheckProxyReachable(probeContext, proxyName)
+	}()
 }
 
 // selectActiveSession points the channel's proxy group at one pooled session.

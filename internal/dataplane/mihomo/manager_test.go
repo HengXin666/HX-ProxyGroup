@@ -29,6 +29,24 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/subscription"
 )
 
+func TestValidateEndpointAvailabilityRejectsPortOwnedByAnotherProcess(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	manager := &Manager{}
+	err = manager.validateEndpointAvailabilityLocked([]Endpoint{{BindAddress: "127.0.0.1", Port: port}})
+	if err == nil {
+		t.Fatal("validateEndpointAvailabilityLocked() succeeded for an occupied port")
+	}
+	if !strings.Contains(err.Error(), "listener") || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("unexpected occupied-port error: %v", err)
+	}
+}
+
 func TestManagerRunsDirectMixedListener(t *testing.T) {
 	binary, err := exec.LookPath("mihomo")
 	if err != nil {
@@ -103,6 +121,16 @@ func TestManagerRunsDirectMixedListener(t *testing.T) {
 	status := manager.Status()
 	if !status.Available || !status.Running || status.ListenerCount != 1 {
 		t.Fatalf("unexpected manager status: %+v", status)
+	}
+	initialPID := status.PID
+	if initialPID <= 0 {
+		t.Fatalf("managed Mihomo PID = %d, want a running process", initialPID)
+	}
+	if err := manager.Apply(ctx); err != nil {
+		t.Fatalf("hot reload unchanged config: %v", err)
+	}
+	if reloadedPID := manager.Status().PID; reloadedPID != initialPID {
+		t.Fatalf("hot reload changed managed Mihomo PID from %d to %d", initialPID, reloadedPID)
 	}
 	if status.EgressInterface != "lo" || status.MaxProcs != 2 || status.LogMaxBytes != 1<<20 {
 		t.Fatalf("unexpected manager safeguards: %+v", status)

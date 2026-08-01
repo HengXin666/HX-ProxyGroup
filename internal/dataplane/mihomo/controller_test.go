@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +36,56 @@ func TestMapTrafficConnectionsAttributesKnownResources(t *testing.T) {
 	}}, identities)
 	if len(snapshot.Connections) != 1 || len(snapshot.Connections[0].Resources) != 4 {
 		t.Fatalf("snapshot = %+v", snapshot)
+	}
+}
+
+func TestCloseConnectionsByInboundUserDoesNotTouchOtherSessions(t *testing.T) {
+	t.Parallel()
+	socketPath := filepath.Join(t.TempDir(), "mihomo.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		mu      sync.Mutex
+		deleted []string
+	)
+	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/connections":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"connections":[
+				{"id":"connection-a","metadata":{"inboundName":"hx-in-channel-a","inboundUser":"hx-session-a"}},
+				{"id":"connection-b","metadata":{"inboundName":"hx-in-channel-a","inboundUser":"hx-session-b"}},
+				{"id":"connection-c","metadata":{"inboundName":"hx-in-channel-b","inboundUser":"hx-session-a"}}
+            ]}`))
+		case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/connections/"):
+			mu.Lock()
+			deleted = append(deleted, strings.TrimPrefix(request.URL.Path, "/connections/"))
+			mu.Unlock()
+			writer.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(writer, request)
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+	})
+
+	manager := &Manager{
+		externalProcess:  true,
+		controllerSocket: socketPath,
+		status:           Status{Running: true},
+	}
+	if err := manager.CloseConnectionsByInboundUser(context.Background(), "listener-channel-a", "hx-session-a"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(deleted) != 1 || deleted[0] != "connection-a" {
+		t.Fatalf("deleted connections = %v, want only connection-a", deleted)
 	}
 }
 

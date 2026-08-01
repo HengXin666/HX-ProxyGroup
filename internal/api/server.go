@@ -139,6 +139,11 @@ type ResidentialService interface {
 	RotateChannel(context.Context, string) (residential.RotationResult, error)
 	RotateChannelByToken(context.Context, string) (residential.RotationResult, error)
 	ChannelStatusByToken(context.Context, string) (residential.ChannelStatus, error)
+	EnsureClientSessionByToken(context.Context, string, string) (residential.ClientSession, error)
+	GetClientSessionByToken(context.Context, string, string) (residential.ClientSession, error)
+	RotateClientSessionByToken(context.Context, string, string) (residential.ClientSession, error)
+	SwitchClientSessionRouteByToken(context.Context, string, string, string) (residential.ClientSession, error)
+	DeleteClientSessionByToken(context.Context, string, string) error
 	RotateChannelToken(context.Context, string) (residential.Channel, error)
 	RefreshChannelPool(context.Context, string) error
 }
@@ -689,8 +694,9 @@ func (s *Server) requestContext(next http.Handler) http.Handler {
 		startedAt := time.Now()
 		next.ServeHTTP(writer, request.WithContext(ctx))
 		loggedPath := request.URL.Path
-		if strings.HasPrefix(loggedPath, "/sub/") {
-			loggedPath = "/sub/[redacted]"
+		if strings.HasPrefix(loggedPath, "/sub/") || strings.HasPrefix(loggedPath, "/rot/") {
+			loggedPath = strings.SplitN(loggedPath, "/", 3)[1] + "/[redacted]"
+			loggedPath = "/" + loggedPath
 		}
 		s.logger.InfoContext(ctx, "HTTP request", "method", request.Method, "path", loggedPath, "duration_ms", time.Since(startedAt).Milliseconds(), "request_id", requestID)
 	})

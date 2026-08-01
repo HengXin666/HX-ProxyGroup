@@ -6,8 +6,55 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
+	"time"
+
+	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
+
+// SessionPoolLifetime returns the vendor lifetime represented by one rendered
+// residential session. BestProxy's `life` value is measured in minutes; the
+// generic provider field uses seconds as its name suggests.
+func SessionPoolLifetime(provider Provider) time.Duration {
+	if provider.SessionTTLSeconds <= 0 || provider.RotationMode == RotationPerRequest {
+		return 0
+	}
+	ttl := provider.SessionTTLSeconds
+	if strings.EqualFold(provider.Vendor, "bestproxy") && provider.RotationMode == RotationAPIList {
+		// API-list links carry the authoritative BestProxy `life` value. The
+		// form field is only a fallback for links without that parameter.
+		if parsed, err := url.Parse(provider.APIURL); err == nil {
+			if life, err := strconv.Atoi(parsed.Query().Get("life")); err == nil && life > 0 {
+				ttl = life
+			}
+		}
+	}
+	unit := time.Second
+	if strings.EqualFold(provider.Vendor, "bestproxy") {
+		unit = time.Minute
+	}
+	return time.Duration(ttl) * unit
+}
+
+// SessionPoolRefreshAge leaves a 20% margin before the vendor lifetime. This
+// keeps a pool from reaching the expiry boundary while it is idle or while a
+// refresh request is waiting behind other data-plane work.
+func SessionPoolRefreshAge(provider Provider) time.Duration {
+	lifetime := SessionPoolLifetime(provider)
+	if lifetime <= 0 {
+		return 0
+	}
+	margins := lifetime / 5
+	if margins < time.Second {
+		margins = time.Second
+	}
+	if margins >= lifetime {
+		return lifetime
+	}
+	return lifetime - margins
+}
 
 // Credentials are the vendor account secrets. They are stored AEAD-encrypted and
 // never returned by the API.
@@ -23,14 +70,24 @@ type Session struct {
 	Index int `json:"index"`
 	// ID is the sticky session identifier sent to the vendor.
 	ID string `json:"id"`
+	// Server and Port are the direct proxy endpoint for api-list sessions.
+	// They are empty for gateway-login sessions, which dial the provider
+	// gateway instead.
+	Server string `json:"-"`
+	Port   int    `json:"-"`
 	// Username is the fully rendered gateway username.
 	Username string `json:"-"`
+	// Password is only populated for API-list endpoints that include their own
+	// credentials. Gateway sessions use the provider credential envelope.
+	Password string `json:"-"`
 }
 
-// newSessionID returns an opaque sticky-session identifier. It is hex so it
+// newSessionID returns an opaque sticky-session identifier. It is 12 hex
+// characters (6 random bytes), which stays within the 4-12 alphanumeric session
+// id bound that BestProxy and similar residential gateways enforce, and hex
 // survives every vendor username dialect without escaping.
 func newSessionID() (string, error) {
-	var buffer [8]byte
+	var buffer [6]byte
 	if _, err := rand.Read(buffer[:]); err != nil {
 		return "", fmt.Errorf("generate residential session id: %w", err)
 	}
@@ -86,13 +143,25 @@ func buildSessions(provider Provider, credentials Credentials, region string, si
 // protocol support is required.
 func canonicalNodeConfig(provider Provider, session Session, password, displayName string) map[string]any {
 	protocol := provider.Protocol
+	server := provider.GatewayHost
+	port := provider.GatewayPort
+	if session.Server != "" {
+		server = session.Server
+		port = session.Port
+	}
+	sessionPassword := password
+	if session.Password != "" {
+		sessionPassword = session.Password
+	}
 	config := map[string]any{
-		"name":     displayName,
-		"type":     protocol,
-		"server":   provider.GatewayHost,
-		"port":     provider.GatewayPort,
-		"username": session.Username,
-		"password": password,
+		"name":   displayName,
+		"type":   protocol,
+		"server": server,
+		"port":   port,
+	}
+	if session.Username != "" {
+		config["username"] = session.Username
+		config["password"] = sessionPassword
 	}
 	if protocol == "https" {
 		config["type"] = "http"
@@ -103,6 +172,11 @@ func canonicalNodeConfig(provider Provider, session Session, password, displayNa
 		// hint when the gateway refuses it.
 		config["udp"] = true
 	}
+	if upstreamGroupID := strings.TrimSpace(provider.UpstreamProxyGroupID); upstreamGroupID != "" {
+		// This stable id is encrypted with the node and resolved to the current
+		// group name only while compiling Mihomo YAML.
+		config[store.ResidentialDialerProxyGroupIDKey] = upstreamGroupID
+	}
 	return config
 }
 
@@ -112,11 +186,17 @@ func canonicalNodeConfig(provider Provider, session Session, password, displayNa
 // node row, and the display name is excluded so renaming a channel does not
 // orphan traffic history. Credentials are hashed, never stored in the clear.
 func sessionFingerprint(channelID string, provider Provider, session Session) (string, error) {
+	server := provider.GatewayHost
+	port := provider.GatewayPort
+	if session.Server != "" {
+		server = session.Server
+		port = session.Port
+	}
 	payload := map[string]any{
 		"channel":  channelID,
 		"type":     provider.Protocol,
-		"server":   provider.GatewayHost,
-		"port":     provider.GatewayPort,
+		"server":   server,
+		"port":     port,
 		"username": session.Username,
 	}
 	encoded, err := json.Marshal(payload)

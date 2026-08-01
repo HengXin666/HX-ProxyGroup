@@ -24,6 +24,7 @@ type ResidentialChannelRecord struct {
 	RotateCount        int
 	LastRotatedAt      *time.Time
 	LastExitIP         string
+	PoolCreatedAt      *time.Time
 	Enabled            bool
 	Version            int
 	CreatedAt          time.Time
@@ -38,8 +39,8 @@ func (s *Store) CreateResidentialChannel(
 INSERT INTO residential_channels(
     id, name, provider_id, mode, proxy_group_id, listener_id, region,
     active_session_index, rotate_token, rotate_count, last_rotated_at,
-    last_exit_ip, enabled, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -53,6 +54,7 @@ INSERT INTO residential_channels(
 		record.RotateCount,
 		nullableTimeString(record.LastRotatedAt),
 		record.LastExitIP,
+		nullableTimeString(record.PoolCreatedAt),
 		boolToInteger(record.Enabled),
 		record.Version,
 		record.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -65,6 +67,36 @@ INSERT INTO residential_channels(
 		return ResidentialChannelRecord{}, fmt.Errorf("create residential channel: %w", err)
 	}
 	return record, nil
+}
+
+// SetResidentialChannelPoolCreatedAt records when the current session pool was
+// rendered. It is runtime state, so it deliberately does not bump the channel
+// configuration version.
+func (s *Store) SetResidentialChannelPoolCreatedAt(
+	ctx context.Context,
+	id string,
+	createdAt time.Time,
+) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE residential_channels
+SET pool_created_at = ?, updated_at = ?
+WHERE id = ?
+`,
+		createdAt.UTC().Format(time.RFC3339Nano),
+		createdAt.UTC().Format(time.RFC3339Nano),
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("set residential channel pool timestamp: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read residential channel pool timestamp result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) GetResidentialChannel(ctx context.Context, id string) (ResidentialChannelRecord, error) {
@@ -252,13 +284,14 @@ const residentialChannelSelect = `
 SELECT
     id, name, provider_id, mode, proxy_group_id, listener_id, region,
     active_session_index, rotate_token, rotate_count, last_rotated_at,
-    last_exit_ip, enabled, version, created_at, updated_at
+    last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
 FROM residential_channels`
 
 func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 	var record ResidentialChannelRecord
 	var enabled int
 	var lastRotatedAt string
+	var poolCreatedAt string
 	var createdAt string
 	var updatedAt string
 	if err := source.Scan(
@@ -274,6 +307,7 @@ func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 		&record.RotateCount,
 		&lastRotatedAt,
 		&record.LastExitIP,
+		&poolCreatedAt,
 		&enabled,
 		&record.Version,
 		&createdAt,
@@ -295,6 +329,13 @@ func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 			return ResidentialChannelRecord{}, fmt.Errorf("parse residential channel last_rotated_at: %w", err)
 		}
 		record.LastRotatedAt = &parsedRotatedAt
+	}
+	if poolCreatedAt != "" {
+		parsedPoolCreatedAt, err := time.Parse(time.RFC3339Nano, poolCreatedAt)
+		if err != nil {
+			return ResidentialChannelRecord{}, fmt.Errorf("parse residential channel pool_created_at: %w", err)
+		}
+		record.PoolCreatedAt = &parsedPoolCreatedAt
 	}
 	record.Enabled = enabled != 0
 	record.CreatedAt = parsedCreatedAt

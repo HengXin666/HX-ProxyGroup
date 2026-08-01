@@ -3,21 +3,25 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="dev"
-LISTEN_ADDRESS="127.0.0.1:19090"
+LISTEN_ADDRESS=""
 DATA_DIR="${SCRIPT_DIR}/.tmp/run-data"
 RUN_DIR="${SCRIPT_DIR}/.tmp/run"
 FRONTEND_DIR="${SCRIPT_DIR}/web"
 FRONTEND_HOST="127.0.0.1"
-FRONTEND_PORT="5173"
+FRONTEND_PORT=""
 MIHOMO_BINARY="mihomo"
 BINARY_SOURCE=""
 BACKEND_ONLY="false"
 REQUIRE_FRONTEND="false"
 INSTALL_FRONTEND_DEPS="true"
+RANDOM_PORT_MIN=49152
+RANDOM_PORT_MAX=65535
 
 BACKEND_BINARY=""
 BACKEND_PID=""
+BACKEND_PROCESS_GROUP=""
 FRONTEND_PID=""
+FRONTEND_PROCESS_GROUP=""
 
 log() {
     printf '[hx-proxygroup] %s\n' "$*"
@@ -43,11 +47,11 @@ Starts HX-ProxyGroup locally without root, systemd, service users, or files unde
 Options:
   --version VERSION          Backend build version. Default: dev
   --binary PATH              Run an existing hx-proxygroupd binary.
-  --listen ADDRESS           Backend listen address. Default: 127.0.0.1:19090
+  --listen ADDRESS           Backend listen address. Default: random loopback high port
   --data-dir PATH            Local runtime data. Default: ./.tmp/run-data
   --frontend-dir PATH        React project directory. Default: ./web
   --frontend-host HOST       Frontend development host. Default: 127.0.0.1
-  --frontend-port PORT       Frontend development port. Default: 5173
+  --frontend-port PORT       Frontend development port. Default: random high port
   --mihomo PATH              Mihomo executable path or command name. Default: mihomo
   --backend-only             Do not discover or start the frontend.
   --require-frontend         Fail when frontend/package.json is absent.
@@ -57,13 +61,62 @@ Options:
 
 The React frontend is discovered from web/package.json and starts automatically.
 When dependencies are missing, run.sh installs them from the lock file before
-starting Vite. If the requested frontend port is occupied, the next available
-port within the following 20 ports is selected and printed.
+starting Vite. Random defaults are selected from ports 49152-65535. Explicit
+ports remain supported; an occupied frontend port advances up to 20 ports.
 USAGE
 }
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+tcp_port_in_use() {
+    local host="$1"
+    local port="$2"
+    (exec 9<>"/dev/tcp/${host}/${port}") >/dev/null 2>&1
+}
+
+find_available_random_high_port() {
+    local host="$1"
+    local attempt
+    local candidate
+    local range=$((RANDOM_PORT_MAX - RANDOM_PORT_MIN + 1))
+    for ((attempt = 1; attempt <= 128; attempt++)); do
+        candidate=$((RANDOM_PORT_MIN + (((RANDOM << 15) | RANDOM) % range)))
+        if ! tcp_port_in_use "${host}" "${candidate}"; then
+            printf '%d\n' "${candidate}"
+            return
+        fi
+    done
+    fail "could not find an available high port between ${RANDOM_PORT_MIN} and ${RANDOM_PORT_MAX}"
+}
+
+assign_random_backend_address_if_needed() {
+    if [[ -z "${LISTEN_ADDRESS}" ]]; then
+        LISTEN_ADDRESS="127.0.0.1:$(find_available_random_high_port 127.0.0.1)"
+    fi
+}
+
+backend_address_in_use() {
+    local host
+    local port
+    if [[ "${LISTEN_ADDRESS}" =~ ^\[([^]]+)\]:([0-9]+)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+    elif [[ "${LISTEN_ADDRESS}" =~ ^([^:]+):([0-9]+)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+    else
+        return 1
+    fi
+
+    tcp_port_in_use "${host}" "${port}"
+}
+
+ensure_backend_address_available() {
+    if backend_address_in_use; then
+        fail "backend address ${LISTEN_ADDRESS} is already in use; stop the existing service or choose another address with --listen"
+    fi
 }
 
 absolute_path() {
@@ -146,11 +199,14 @@ parse_arguments() {
 
     [[ "${VERSION}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "version contains unsupported characters"
     [[ -n "${MIHOMO_BINARY// }" ]] || fail "mihomo executable cannot be empty"
-    [[ "${FRONTEND_PORT}" =~ ^[0-9]+$ ]] || fail "frontend port must be an integer"
-    ((FRONTEND_PORT >= 1 && FRONTEND_PORT <= 65535)) || fail "frontend port must be between 1 and 65535"
+    if [[ -n "${FRONTEND_PORT}" ]]; then
+        [[ "${FRONTEND_PORT}" =~ ^[0-9]+$ ]] || fail "frontend port must be an integer"
+        ((FRONTEND_PORT >= 1 && FRONTEND_PORT <= 65535)) || fail "frontend port must be between 1 and 65535"
+    fi
     if [[ "${BACKEND_ONLY}" == "true" && "${REQUIRE_FRONTEND}" == "true" ]]; then
         fail "--backend-only and --require-frontend cannot be used together"
     fi
+    assign_random_backend_address_if_needed
 }
 
 prepare_local_directories() {
@@ -204,7 +260,7 @@ build_or_copy_backend() {
 start_backend() {
     local binary="$1"
     log "starting backend at http://${LISTEN_ADDRESS}"
-    "${binary}" \
+    setsid "${binary}" \
         --listen "${LISTEN_ADDRESS}" \
         --data-dir "${DATA_DIR}" \
         --config "${RUN_DIR}/config.yaml" \
@@ -214,6 +270,7 @@ start_backend() {
         --snapshots "${DATA_DIR}/snapshots" \
         --mihomo "${MIHOMO_BINARY}" &
     BACKEND_PID="$!"
+    BACKEND_PROCESS_GROUP="${BACKEND_PID}"
 }
 
 wait_for_backend() {
@@ -232,8 +289,12 @@ wait_for_backend() {
             fail "backend exited before becoming ready"
         fi
         if curl --fail --silent --show-error --max-time 1 "${health_url}" >/dev/null 2>&1; then
-            log "backend is ready"
-            return
+            sleep 0.1
+            if kill -0 "${BACKEND_PID}" 2>/dev/null && \
+                curl --fail --silent --show-error --max-time 1 "${health_url}" >/dev/null 2>&1; then
+                log "backend is ready"
+                return
+            fi
         fi
         sleep 1
     done
@@ -301,24 +362,28 @@ start_frontend_if_available() {
         install_frontend_dependencies "${package_manager}"
     fi
 
-    local requested_port="${FRONTEND_PORT}"
     local probe_host="${FRONTEND_HOST}"
     if [[ "${probe_host}" == "0.0.0.0" || "${probe_host}" == "::" ]]; then
         probe_host="127.0.0.1"
     fi
-    local maximum_port=$((requested_port + 20))
-    ((maximum_port > 65535)) && maximum_port=65535
-    while ((FRONTEND_PORT <= maximum_port)); do
-        if ! (exec 9<>"/dev/tcp/${probe_host}/${FRONTEND_PORT}") 2>/dev/null; then
-            break
+    if [[ -z "${FRONTEND_PORT}" ]]; then
+        FRONTEND_PORT="$(find_available_random_high_port "${probe_host}")"
+    else
+        local requested_port="${FRONTEND_PORT}"
+        local maximum_port=$((requested_port + 20))
+        ((maximum_port > 65535)) && maximum_port=65535
+        while ((FRONTEND_PORT <= maximum_port)); do
+            if ! tcp_port_in_use "${probe_host}" "${FRONTEND_PORT}"; then
+                break
+            fi
+            FRONTEND_PORT=$((FRONTEND_PORT + 1))
+        done
+        if ((FRONTEND_PORT > maximum_port)); then
+            fail "no available frontend port between ${requested_port} and ${maximum_port}"
         fi
-        FRONTEND_PORT=$((FRONTEND_PORT + 1))
-    done
-    if ((FRONTEND_PORT > maximum_port)); then
-        fail "no available frontend port between ${requested_port} and ${maximum_port}"
-    fi
-    if [[ "${FRONTEND_PORT}" != "${requested_port}" ]]; then
-        warn "frontend port ${requested_port} is in use; using ${FRONTEND_PORT} instead"
+        if [[ "${FRONTEND_PORT}" != "${requested_port}" ]]; then
+            warn "frontend port ${requested_port} is in use; using ${FRONTEND_PORT} instead"
+        fi
     fi
 
     local api_base="http://${LISTEN_ADDRESS}"
@@ -326,21 +391,56 @@ start_frontend_if_available() {
     (
         cd "${FRONTEND_DIR}"
         export VITE_BACKEND_TARGET="${api_base}"
-        exec "${package_manager}" run dev -- --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}"
+        exec setsid "${package_manager}" run dev -- \
+            --host "${FRONTEND_HOST}" \
+            --port "${FRONTEND_PORT}" \
+            --strictPort \
+            --clearScreen false
     ) &
     FRONTEND_PID="$!"
+    FRONTEND_PROCESS_GROUP="${FRONTEND_PID}"
+}
+
+process_group_exists() {
+    local process_group="$1"
+    [[ -n "${process_group}" ]] && kill -0 -- "-${process_group}" 2>/dev/null
+}
+
+signal_process_group() {
+    local signal="$1"
+    local process_group="$2"
+    if process_group_exists "${process_group}"; then
+        kill "-${signal}" -- "-${process_group}" 2>/dev/null || true
+    fi
+}
+
+wait_for_process_group() {
+    local name="$1"
+    local process_group="$2"
+    local attempt
+    if ! process_group_exists "${process_group}"; then
+        return
+    fi
+
+    for ((attempt = 1; attempt <= 100; attempt++)); do
+        if ! process_group_exists "${process_group}"; then
+            return
+        fi
+        sleep 0.1
+    done
+
+    warn "${name} process group did not stop after 10 seconds; sending SIGKILL"
+    kill -KILL -- "-${process_group}" 2>/dev/null || true
 }
 
 cleanup() {
     local status="$?"
     trap - EXIT INT TERM HUP
 
-    if [[ -n "${FRONTEND_PID}" ]] && kill -0 "${FRONTEND_PID}" 2>/dev/null; then
-        kill -TERM "${FRONTEND_PID}" 2>/dev/null || true
-    fi
-    if [[ -n "${BACKEND_PID}" ]] && kill -0 "${BACKEND_PID}" 2>/dev/null; then
-        kill -TERM "${BACKEND_PID}" 2>/dev/null || true
-    fi
+    signal_process_group TERM "${FRONTEND_PROCESS_GROUP}"
+    signal_process_group TERM "${BACKEND_PROCESS_GROUP}"
+    wait_for_process_group frontend "${FRONTEND_PROCESS_GROUP}"
+    wait_for_process_group backend "${BACKEND_PROCESS_GROUP}"
 
     [[ -z "${FRONTEND_PID}" ]] || wait "${FRONTEND_PID}" 2>/dev/null || true
     [[ -z "${BACKEND_PID}" ]] || wait "${BACKEND_PID}" 2>/dev/null || true
@@ -364,6 +464,8 @@ wait_for_children() {
 
 main() {
     parse_arguments "$@"
+    require_command setsid
+    ensure_backend_address_available
     prepare_local_directories
     build_or_copy_backend
 
@@ -371,6 +473,7 @@ main() {
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
 
+    ensure_backend_address_available
     start_backend "${BACKEND_BINARY}"
     wait_for_backend
     start_frontend_if_available

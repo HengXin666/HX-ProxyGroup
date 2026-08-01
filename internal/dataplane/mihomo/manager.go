@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 var ErrUnavailable = errors.New("mihomo binary is unavailable")
@@ -202,6 +204,9 @@ func (m *Manager) Apply(ctx context.Context) error {
 		m.recordFailureLocked(err)
 		return err
 	}
+	if err := m.validateEndpointAvailabilityLocked(compiled.Endpoints); err != nil {
+		return m.failLocked(err)
+	}
 	if err := os.MkdirAll(m.runtimeDir, 0o700); err != nil {
 		return m.failLocked(fmt.Errorf("create mihomo runtime directory: %w", err))
 	}
@@ -226,7 +231,10 @@ func (m *Manager) Apply(ctx context.Context) error {
 	if err := publishCandidate(m.candidate, m.activePath); err != nil {
 		return m.failLocked(fmt.Errorf("publish mihomo config: %w", err))
 	}
-	if m.externalProcess {
+	// Both systemd-managed and locally managed Mihomo expose the same Unix
+	// Controller. Once a local process is running, hot reload preserves other
+	// residential client sessions while one IN-USER route changes.
+	if m.externalProcess || m.process != nil {
 		if err := m.reloadExternalLocked(ctx); err != nil {
 			rollbackErr := m.rollbackAndRestartLocked(ctx, hadOldConfig, oldEndpoints)
 			return m.failLocked(errors.Join(err, rollbackErr))
@@ -239,7 +247,11 @@ func (m *Manager) Apply(ctx context.Context) error {
 		m.lastCompiled = compiled
 		m.status.State = "running"
 		m.status.Running = true
-		m.status.PID = 0
+		if m.externalProcess {
+			m.status.PID = 0
+		} else {
+			m.status.PID = m.process.command.Process.Pid
+		}
 		m.status.ListenerCount = len(compiled.Endpoints)
 		m.status.ProxyCount = compiled.ProxyCount
 		m.status.ActiveListeners = append([]Endpoint(nil), compiled.Endpoints...)
@@ -464,6 +476,65 @@ func (m *Manager) waitReadyLocked(ctx context.Context, endpoints []Endpoint, pro
 	return errors.New("mihomo listeners did not become ready")
 }
 
+// validateEndpointAvailabilityLocked catches a port owned by another process
+// before publishing a configuration that Mihomo cannot fully bind. Existing
+// endpoints from the currently managed configuration are exempt so a normal
+// reload can keep them in place.
+func (m *Manager) validateEndpointAvailabilityLocked(endpoints []Endpoint) error {
+	reserved := m.currentEndpointKeysLocked()
+	for _, endpoint := range endpoints {
+		key := endpointKey(endpoint.BindAddress, endpoint.Port)
+		if _, alreadyManaged := reserved[key]; alreadyManaged {
+			continue
+		}
+		address := net.JoinHostPort(strings.TrimSpace(endpoint.BindAddress), strconv.Itoa(endpoint.Port))
+		probe, err := net.Listen("tcp", address)
+		if err != nil {
+			return fmt.Errorf("Mihomo listener %s is unavailable: %w", address, err)
+		}
+		_ = probe.Close()
+	}
+	return nil
+}
+
+func (m *Manager) currentEndpointKeysLocked() map[string]struct{} {
+	keys := make(map[string]struct{})
+	if m.isRunningLocked() {
+		for _, endpoint := range m.lastCompiled.Endpoints {
+			keys[endpointKey(endpoint.BindAddress, endpoint.Port)] = struct{}{}
+		}
+	}
+	if !m.externalProcess {
+		return keys
+	}
+
+	// The systemd-managed data plane may already be running when the control
+	// plane starts, so recover its expected endpoints from the last active file.
+	contents, err := os.ReadFile(m.activePath)
+	if err != nil {
+		return keys
+	}
+	var document struct {
+		Listeners []struct {
+			BindAddress string `yaml:"listen"`
+			Port        int    `yaml:"port"`
+		} `yaml:"listeners"`
+	}
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return keys
+	}
+	for _, listener := range document.Listeners {
+		if listener.BindAddress != "" && listener.Port > 0 {
+			keys[endpointKey(listener.BindAddress, listener.Port)] = struct{}{}
+		}
+	}
+	return keys
+}
+
+func endpointKey(bindAddress string, port int) string {
+	return net.JoinHostPort(strings.TrimSpace(bindAddress), strconv.Itoa(port))
+}
+
 func (m *Manager) refreshProcessLocked() {
 	if m.externalProcess {
 		m.status.Running = m.externalSocketReadyLocked()
@@ -514,15 +585,27 @@ func (m *Manager) rollbackAndRestartLocked(ctx context.Context, hadOldConfig boo
 	if !hadOldConfig {
 		return nil
 	}
-	if m.externalProcess {
+	if m.externalProcess || m.process != nil {
 		if err := m.reloadExternalLocked(ctx); err != nil {
-			return fmt.Errorf("reload previous mihomo config: %w", err)
+			if m.externalProcess {
+				return fmt.Errorf("reload previous mihomo config: %w", err)
+			}
+			if stopErr := m.stopLocked(ctx); stopErr != nil {
+				return errors.Join(err, stopErr)
+			}
+			if startErr := m.startLocked(m.activePath); startErr != nil {
+				return errors.Join(err, startErr)
+			}
 		}
 		if err := m.waitReadyLocked(ctx, oldEndpoints, m.lastCompiled.ProxyCount); err != nil {
 			return fmt.Errorf("previous mihomo config did not recover: %w", err)
 		}
 		m.status.Running = true
-		m.status.PID = 0
+		if m.externalProcess {
+			m.status.PID = 0
+		} else {
+			m.status.PID = m.process.command.Process.Pid
+		}
 		m.status.ListenerCount = len(oldEndpoints)
 		m.status.ActiveListeners = append([]Endpoint(nil), oldEndpoints...)
 		return nil

@@ -9,7 +9,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
-func (c *Compiler) decryptNode(record store.NodeConfigRecord, proxyName string) (map[string]any, error) {
+func (c *Compiler) decryptNode(record store.NodeConfigRecord, proxyName string, groupNameByID map[string]string) (map[string]any, error) {
 	plaintext, err := c.cipher.Open(
 		record.CanonicalConfigEncrypted,
 		[]byte("node:"+record.Fingerprint),
@@ -24,6 +24,13 @@ func (c *Compiler) decryptNode(record store.NodeConfigRecord, proxyName string) 
 	config, err := convertNodeConfig(canonical)
 	if err != nil {
 		return nil, fmt.Errorf("convert node %q: %w", record.DisplayName, err)
+	}
+	if groupID := stringValue(canonical[store.ResidentialDialerProxyGroupIDKey]); groupID != "" {
+		groupName, exists := groupNameByID[groupID]
+		if !exists {
+			return nil, fmt.Errorf("residential dialer proxy group %q is missing or disabled", groupID)
+		}
+		config["dialer-proxy"] = groupName
 	}
 	config["name"] = proxyName
 	return config, nil
@@ -71,6 +78,7 @@ func convertNodeConfig(canonical map[string]any) (map[string]any, error) {
 	applyQuery(config)
 	delete(config, "ps")
 	delete(config, "query")
+	delete(config, store.ResidentialDialerProxyGroupIDKey)
 	return config, nil
 }
 

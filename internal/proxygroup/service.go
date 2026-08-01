@@ -37,7 +37,9 @@ type Reconciler interface {
 }
 
 type SourceSpec struct {
-	NodeIDs []string `json:"node_ids"`
+	// AllowEmpty permits a deliberately dormant fail-closed group.
+	AllowEmpty bool     `json:"allow_empty,omitempty"`
+	NodeIDs    []string `json:"node_ids"`
 	// GroupIDs reference other proxy groups as ordered members, enabling
 	// serial (fallback chain) and parallel (url-test / load-balance)
 	// composition. References must stay acyclic.
@@ -252,7 +254,7 @@ func (s *Service) normalize(
 	spec.NodeIDs = deduplicateIDs(spec.NodeIDs)
 	spec.GroupIDs = deduplicateIDs(spec.GroupIDs)
 	spec.SubscriptionIDs = deduplicateIDs(spec.SubscriptionIDs)
-	if len(spec.NodeIDs) == 0 && len(spec.GroupIDs) == 0 && len(spec.SubscriptionIDs) == 0 && !spec.IncludeDirect {
+	if len(spec.NodeIDs) == 0 && len(spec.GroupIDs) == 0 && len(spec.SubscriptionIDs) == 0 && !spec.IncludeDirect && !spec.AllowEmpty {
 		return normalizedGroup{}, fmt.Errorf("%w: at least one node, group, subscription, or DIRECT is required", ErrInvalid)
 	}
 	if len(spec.GroupIDs) > 0 {

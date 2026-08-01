@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -49,11 +48,11 @@ func (s *Service) TestProvider(ctx context.Context, providerID, echoURL string) 
 		return TestResult{}, mapStoreError(err)
 	}
 	provider := s.providerFromRecord(record)
-	credentials, err := s.openCredentials(record)
+	credentials, err := s.providerCredentials(record)
 	if err != nil {
 		return TestResult{}, err
 	}
-	sessions, err := buildSessions(provider, credentials, provider.DefaultRegion, 1)
+	sessions, err := s.providerSessions(ctx, provider, credentials, provider.DefaultRegion, 1)
 	if err != nil {
 		return TestResult{Success: false, Error: err.Error()}, nil
 	}
@@ -66,7 +65,20 @@ func (s *Service) TestProvider(ctx context.Context, providerID, echoURL string) 
 	preview := maskUsername(session.Username, credentials.Username)
 
 	started := time.Now()
-	exitIP, err := probeThroughGateway(ctx, provider, session.Username, credentials.Password, endpoint)
+	scheme := provider.Protocol
+	server := provider.GatewayHost
+	port := provider.GatewayPort
+	username := session.Username
+	password := credentials.Password
+	if session.Server != "" {
+		// api-list sessions normally have no login, but some extraction APIs
+		// return an authenticated endpoint alongside host and port.
+		server = session.Server
+		port = session.Port
+		username = session.Username
+		password = session.Password
+	}
+	exitIP, err := probeEndpoint(ctx, scheme, server, port, username, password, endpoint, provider.APIProxyURL)
 	latency := int(time.Since(started).Milliseconds())
 	if err != nil {
 		return TestResult{
@@ -84,34 +96,17 @@ func (s *Service) TestProvider(ctx context.Context, providerID, echoURL string) 
 	}, nil
 }
 
-// probeThroughGateway performs one HTTP GET through the vendor gateway.
-func probeThroughGateway(
+// probeEndpoint performs one HTTP GET through a proxy endpoint.
+func probeEndpoint(
 	ctx context.Context,
-	provider Provider,
+	scheme, server string,
+	port int,
 	username, password, endpoint string,
+	upstreamProxyURL string,
 ) (string, error) {
-	scheme := "http"
-	switch provider.Protocol {
-	case "https":
-		scheme = "https"
-	case "socks5":
-		scheme = "socks5"
-	}
-	proxyURL := &url.URL{
-		Scheme: scheme,
-		User:   url.UserPassword(username, password),
-		Host:   net.JoinHostPort(provider.GatewayHost, strconv.Itoa(provider.GatewayPort)),
-	}
-	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxyURL),
-		ForceAttemptHTTP2:     false,
-		MaxIdleConns:          1,
-		MaxIdleConnsPerHost:   1,
-		IdleConnTimeout:       10 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: probeTimeout,
-		ExpectContinueTimeout: time.Second,
-		DisableKeepAlives:     true,
+	transport, err := newChainedProxyTransport(scheme, server, port, username, password, upstreamProxyURL)
+	if err != nil {
+		return "", fmt.Errorf("configure residential probe proxy: %w", sanitizeProxyError(err, upstreamProxyURL))
 	}
 	defer transport.CloseIdleConnections()
 
@@ -138,7 +133,7 @@ func probeThroughGateway(
 	request.Header.Set("Accept", "application/json, text/plain")
 	response, err := client.Do(request)
 	if err != nil {
-		return "", sanitizeProbeError(err, username, password)
+		return "", sanitizeProbeError(sanitizeProxyError(err, upstreamProxyURL), username, password)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

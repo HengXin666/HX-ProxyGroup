@@ -23,6 +23,7 @@ type Repository interface {
 	ListListeners(context.Context) ([]store.ListenerRecord, error)
 	ListNodeConfigs(context.Context, []string) ([]store.NodeConfigRecord, error)
 	ListGroupNodeCandidates(context.Context) ([]store.GroupNodeCandidate, error)
+	ListResidentialClientRoutes(context.Context) ([]store.ResidentialClientRouteRecord, error)
 	GetMetadata(context.Context, string) (string, error)
 }
 
@@ -99,6 +100,10 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 		enabledGroups[group.ID] = group
 		groupNames[group.Name] = group.ID
 	}
+	groupNameByID := make(map[string]string, len(enabledGroups))
+	for id, record := range enabledGroups {
+		groupNameByID[id] = record.Name
+	}
 	nodeRecords, err := c.repository.ListNodeConfigs(ctx, nil)
 	if err != nil {
 		return Compiled{}, err
@@ -107,25 +112,28 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	if err != nil {
 		return Compiled{}, err
 	}
+	clientRoutes, err := c.repository.ListResidentialClientRoutes(ctx)
+	if err != nil {
+		return Compiled{}, err
+	}
 	nodeByID := make(map[string]compiledNode, len(nodeRecords))
 	proxies := make([]map[string]any, 0, len(nodeRecords))
 	for _, record := range nodeRecords {
 		proxyName := nodeProxyName(record.Fingerprint)
-		config, err := c.decryptNode(record, proxyName)
+		config, err := c.decryptNode(record, proxyName, groupNameByID)
 		if err != nil {
 			return Compiled{}, err
 		}
 		nodeByID[record.ID] = compiledNode{Name: proxyName, Config: config}
 		proxies = append(proxies, config)
 	}
+	if err := validateResidentialDialerChains(groups, nodeRecords, nodeByID, candidates, groupNameByID); err != nil {
+		return Compiled{}, err
+	}
 	sort.Slice(proxies, func(left, right int) bool {
 		return fmt.Sprint(proxies[left]["name"]) < fmt.Sprint(proxies[right]["name"])
 	})
 
-	groupNameByID := make(map[string]string, len(enabledGroups))
-	for id, record := range enabledGroups {
-		groupNameByID[id] = record.Name
-	}
 	proxyGroups := make([]map[string]any, 0, len(enabledGroups))
 	for _, record := range sortGroupsByDependency(groups) {
 		if !record.Enabled {
@@ -140,7 +148,14 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 
 	listenerConfigs := make([]map[string]any, 0, len(listeners))
 	endpoints := make([]Endpoint, 0, len(listeners))
+	residentialFallbackRules := make([]string, 0)
 	usedEndpoints := make(map[string]string)
+	routesByListener := make(map[string][]store.ResidentialClientRouteRecord)
+	for _, route := range clientRoutes {
+		if route.ChannelEnabled {
+			routesByListener[route.ListenerID] = append(routesByListener[route.ListenerID], route)
+		}
+	}
 	for _, record := range listeners {
 		if !record.Enabled {
 			continue
@@ -154,9 +169,16 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 			return Compiled{}, fmt.Errorf("listeners %q and %q use the same endpoint %s", other, record.Name, endpointKey)
 		}
 		usedEndpoints[endpointKey] = record.Name
-		config, err := c.compileListener(record, group.Name)
+		clientRoutesForListener := routesByListener[record.ID]
+		config, err := c.compileListener(record, group.Name, clientRoutesForListener)
 		if err != nil {
 			return Compiled{}, err
+		}
+		if len(clientRoutesForListener) > 0 {
+			residentialFallbackRules = append(
+				residentialFallbackRules,
+				"IN-NAME,"+listenerConfigName(record.ID)+","+group.Name,
+			)
 		}
 		listenerConfigs = append(listenerConfigs, config)
 		endpoints = append(endpoints, Endpoint{
@@ -171,7 +193,12 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 		return Compiled{}, err
 	}
 
-	compiledRules := routingrules.Compile(routeConfig, groups, listeners, listenerConfigName)
+	compiledRules, err := compileResidentialClientRules(clientRoutes, nodeByID)
+	if err != nil {
+		return Compiled{}, err
+	}
+	compiledRules = append(compiledRules, routingrules.Compile(routeConfig, groups, listeners, listenerConfigName)...)
+	compiledRules = append(compiledRules, residentialFallbackRules...)
 	compiledRules = append(compiledRules, "MATCH,DIRECT")
 	document := map[string]any{
 		"mode":      "rule",
@@ -380,18 +407,26 @@ func compileGroup(record store.ProxyGroupRecord, nodes map[string]compiledNode, 
 	return group, nil
 }
 
-func (c *Compiler) compileListener(record store.ListenerRecord, groupName string) (map[string]any, error) {
+func (c *Compiler) compileListener(
+	record store.ListenerRecord,
+	groupName string,
+	clientRoutes []store.ResidentialClientRouteRecord,
+) (map[string]any, error) {
 	config := map[string]any{
 		"name":   listenerConfigName(record.ID),
 		"type":   record.Kind,
 		"listen": record.BindAddress,
 		"port":   record.Port,
-		"proxy":  groupName,
 		"users":  []any{},
+	}
+	if len(clientRoutes) == 0 {
+		config["proxy"] = groupName
 	}
 	if record.Kind == "http" || record.Kind == "socks" || record.Kind == "mixed" {
 		config["udp"] = true
 	}
+	users := make([]map[string]any, 0, len(clientRoutes)+1)
+	seenUsers := make(map[string]struct{}, len(clientRoutes)+1)
 	if record.AuthMode == "userpass" {
 		plaintext, err := c.cipher.Open(record.AuthConfigEncrypted, []byte("listener:"+record.ID))
 		if err != nil {
@@ -414,8 +449,30 @@ func (c *Compiler) compileListener(record store.ListenerRecord, groupName string
 		default:
 			user["password"] = auth.Password
 		}
-		config["users"] = []map[string]any{user}
+		users = append(users, user)
+		seenUsers[auth.Username] = struct{}{}
 	}
+	for _, route := range clientRoutes {
+		if _, duplicate := seenUsers[route.AuthUsername]; duplicate {
+			return nil, fmt.Errorf("listener %q has duplicate residential client username", record.Name)
+		}
+		password, err := c.cipher.Open(
+			route.AuthPasswordEncrypted,
+			[]byte("residential-client-session:"+route.ChannelID+":"+route.SessionID),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt listener %q residential client auth: %w", record.Name, err)
+		}
+		if route.AuthUsername == "" || len(password) == 0 {
+			return nil, fmt.Errorf("listener %q has incomplete residential client authentication", record.Name)
+		}
+		users = append(users, map[string]any{
+			"username": route.AuthUsername,
+			"password": string(password),
+		})
+		seenUsers[route.AuthUsername] = struct{}{}
+	}
+	config["users"] = users
 	if isWebSocketListener(record.Kind) {
 		var transport listener.Transport
 		if err := json.Unmarshal([]byte(record.TransportJSON), &transport); err != nil {

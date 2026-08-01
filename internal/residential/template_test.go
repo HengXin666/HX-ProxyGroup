@@ -2,6 +2,7 @@ package residential
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -117,8 +118,12 @@ func TestValidateTemplateAcceptsRegisteredPresets(t *testing.T) {
 	t.Parallel()
 
 	for _, preset := range Presets() {
-		if err := ValidateTemplate(preset.UsernameTemplate); err != nil {
-			t.Errorf("preset %q template %q is invalid: %v", preset.Vendor, preset.UsernameTemplate, err)
+		// api-list presets have no username template: their endpoints come from
+		// an extraction API instead of a gateway login.
+		if preset.RotationMode != RotationAPIList {
+			if err := ValidateTemplate(preset.UsernameTemplate); err != nil {
+				t.Errorf("preset %q template %q is invalid: %v", preset.Vendor, preset.UsernameTemplate, err)
+			}
 		}
 		if preset.RotationMode == RotationSessionTemplate && !TemplateUsesSession(preset.UsernameTemplate) {
 			t.Errorf("preset %q claims session rotation but omits {session}", preset.Vendor)
@@ -132,23 +137,65 @@ func TestValidateTemplateAcceptsRegisteredPresets(t *testing.T) {
 	}
 }
 
-// The BestProxy preset ships unverified on purpose; the flag drives a UI warning
-// telling the operator to confirm the gateway syntax with a test connection.
-func TestBestProxyPresetIsRegisteredAndFlaggedUnverified(t *testing.T) {
+// The BestProxy preset is verified against the syntax the operator's own
+// production tool (hx-auto-outlook) uses: `账号_area-国家_life-分钟_session-会话ID`.
+func TestBestProxyPresetIsRegisteredAndVerified(t *testing.T) {
 	t.Parallel()
 
 	preset, found := PresetByVendor("bestproxy")
 	if !found {
 		t.Fatal("PresetByVendor(\"bestproxy\") not found")
 	}
-	if preset.Verified {
-		t.Fatal("BestProxy preset must stay unverified until its gateway syntax is confirmed")
+	if !preset.Verified {
+		t.Fatal("BestProxy preset syntax is verified and must stay verified")
 	}
 	if preset.DocURL == "" || preset.Notes == "" {
-		t.Fatal("an unverified preset must carry a doc URL and operator guidance")
+		t.Fatal("a verified preset must still carry a doc URL and operator guidance")
 	}
 	if !TemplateUsesSession(preset.UsernameTemplate) {
 		t.Fatal("BestProxy preset must support sticky sessions for rotation")
+	}
+	if preset.GatewayHost != "proxy.bestproxy.com" || preset.GatewayPort != 2312 {
+		t.Fatalf("BestProxy preset gateway = %s:%d, want proxy.bestproxy.com:2312", preset.GatewayHost, preset.GatewayPort)
+	}
+}
+
+func TestBestProxyPresetRendersVerifiedGatewaySyntax(t *testing.T) {
+	t.Parallel()
+
+	preset, found := PresetByVendor("bestproxy")
+	if !found {
+		t.Fatal("PresetByVendor(\"bestproxy\") not found")
+	}
+	rendered, err := Render(preset.UsernameTemplate, Variables{
+		User:    "acct123",
+		Region:  "US",
+		Session: "stable1234",
+		TTL:     strconv.Itoa(preset.SessionTTLSeconds),
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	const want = "acct123_area-US_life-60_session-stable1234"
+	if rendered != want {
+		t.Fatalf("Render() = %q, want %q", rendered, want)
+	}
+}
+
+// Region codes like BestProxy's area parameter are case-significant to the
+// vendor, so uppercase two-letter country codes must survive validation.
+func TestValidateRegionPreservesCase(t *testing.T) {
+	t.Parallel()
+
+	for _, region := range []string{"US", "us", "HongKong", "US-CA"} {
+		if err := validateRegion(region); err != nil {
+			t.Errorf("validateRegion(%q) error = %v", region, err)
+		}
+	}
+	for _, region := range []string{"u s", "us:west", "美国", "us\n"} {
+		if err := validateRegion(region); err == nil {
+			t.Errorf("validateRegion(%q) = nil, want error", region)
+		}
 	}
 }
 

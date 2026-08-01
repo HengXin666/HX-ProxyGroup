@@ -16,10 +16,18 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
-type stubReconciler struct{ calls int }
+type stubReconciler struct {
+	calls    int
+	failNext error
+}
 
 func (reconciler *stubReconciler) Apply(context.Context) error {
 	reconciler.calls++
+	if reconciler.failNext != nil {
+		err := reconciler.failNext
+		reconciler.failNext = nil
+		return err
+	}
 	return nil
 }
 
@@ -50,6 +58,27 @@ func (selector *recordingSelector) calls() [][2]string {
 type stubProber struct {
 	ip  string
 	err error
+}
+
+type recordingSessionRouter struct {
+	applyCalls int
+	closed     []string
+	failApply  error
+}
+
+func (router *recordingSessionRouter) Apply(context.Context) error {
+	router.applyCalls++
+	if router.failApply != nil {
+		err := router.failApply
+		router.failApply = nil
+		return err
+	}
+	return nil
+}
+
+func (router *recordingSessionRouter) CloseConnectionsByInboundUser(_ context.Context, _ string, username string) error {
+	router.closed = append(router.closed, username)
+	return nil
 }
 
 func (prober *stubProber) ProbeExitIP(context.Context, string) (string, error) {
@@ -152,6 +181,186 @@ func TestCreateProviderEncryptsCredentialsAndHidesPassword(t *testing.T) {
 	}
 }
 
+func TestClientSessionsShareOneChannelButKeepIndependentRoutes(t *testing.T) {
+	t.Parallel()
+	router := &recordingSessionRouter{}
+	harness := newHarness(t, WithSessionRouter(router))
+	ctx := context.Background()
+	provider := harness.createProvider(t)
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "multi-window", ProviderID: provider.ID, Mode: ModeSticky, PoolSize: 4,
+		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29301},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := harness.store.GetResidentialChannel(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := harness.service.EnsureClientSessionByToken(ctx, record.RotateToken, "window-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionIndex != -1 || first.AllocatedAt == nil || first.ExpiresAt == nil {
+		t.Fatalf("first lazy allocation = %+v", first)
+	}
+	encodedFirst, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encodedFirst), `"session_index":-1`) {
+		t.Fatalf("lazy session marker missing from JSON: %s", encodedFirst)
+	}
+	second, err := harness.service.EnsureClientSessionByToken(ctx, record.RotateToken, "window-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ProxyUsername == second.ProxyUsername || first.ProxyPassword == second.ProxyPassword {
+		t.Fatal("independent sessions received duplicate proxy credentials")
+	}
+	if first.ProxyPassword == "" || second.ProxyPassword == "" {
+		t.Fatal("ensure session must return usable proxy credentials")
+	}
+
+	direct, err := harness.service.SwitchClientSessionRouteByToken(
+		ctx, record.RotateToken, first.SessionID, ClientRouteDirect,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.RouteMode != ClientRouteDirect || direct.SessionIndex != -1 {
+		t.Fatalf("direct route = %+v", direct)
+	}
+	secondStatus, err := harness.service.GetClientSessionByToken(ctx, record.RotateToken, second.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondStatus.RouteMode != ClientRouteResidential || secondStatus.ExpiresAt == nil {
+		t.Fatalf("switching first session changed second: %+v", secondStatus)
+	}
+	if len(router.closed) != 1 || router.closed[0] != first.ProxyUsername {
+		t.Fatalf("closed users = %v, want only %q", router.closed, first.ProxyUsername)
+	}
+
+	restored, err := harness.service.SwitchClientSessionRouteByToken(
+		ctx, record.RotateToken, first.SessionID, ClientRouteResidential,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.RouteMode != ClientRouteResidential || restored.ExpiresAt == nil {
+		t.Fatalf("restored session did not receive a fresh allocation: %+v", restored)
+	}
+}
+
+func TestClientSessionApplyFailureRollsBackCreation(t *testing.T) {
+	t.Parallel()
+	router := &recordingSessionRouter{failApply: errors.New("apply failed")}
+	harness := newHarness(t, WithSessionRouter(router))
+	ctx := context.Background()
+	provider := harness.createProvider(t)
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "multi-window-rollback", ProviderID: provider.ID, Mode: ModeSticky,
+		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29302},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := harness.store.GetResidentialChannel(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.service.EnsureClientSessionByToken(ctx, record.RotateToken, "window-01"); err == nil {
+		t.Fatal("EnsureClientSessionByToken() succeeded despite apply failure")
+	}
+	if _, err := harness.store.GetResidentialClientSession(ctx, channel.ID, "window-01"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("failed creation left a session record: %v", err)
+	}
+}
+
+func TestExpiredClientSessionRotatesAllocationAndKeepsCredentials(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 8, 0, 0, 0, time.UTC)
+	harness := newHarness(t, WithClock(func() time.Time { return now }))
+	ctx := context.Background()
+	provider, err := harness.service.CreateProvider(ctx, CreateProviderRequest{
+		Name: "ttl-rotate", Vendor: "custom", Protocol: "http",
+		GatewayHost: "gateway.example.com", GatewayPort: 8000,
+		Credentials:      &Credentials{Username: "acct", Password: "secret"},
+		UsernameTemplate: "{user}-session-{session}", RotationMode: RotationSessionTemplate,
+		SessionTTLSeconds: 60, SessionExpiryPolicy: "rotate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "ttl-rotate-channel", ProviderID: provider.ID, Mode: ModeSticky,
+		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29303},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channelRecord, _ := harness.store.GetResidentialChannel(ctx, channel.ID)
+	first, err := harness.service.EnsureClientSessionByToken(ctx, channelRecord.RotateToken, "window-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRecord, _ := harness.store.GetResidentialClientSession(ctx, channel.ID, first.SessionID)
+	now = now.Add(61 * time.Second)
+	rotated, err := harness.service.EnsureClientSessionByToken(ctx, channelRecord.RotateToken, first.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRecord, _ := harness.store.GetResidentialClientSession(ctx, channel.ID, first.SessionID)
+	if rotated.ProxyUsername != first.ProxyUsername || rotated.ProxyPassword != first.ProxyPassword {
+		t.Fatal("expiry rotation changed client proxy credentials")
+	}
+	if firstRecord.NodeFingerprint == secondRecord.NodeFingerprint || secondRecord.RotateCount != 1 {
+		t.Fatalf("allocation was not rotated: before=%+v after=%+v", firstRecord, secondRecord)
+	}
+}
+
+func TestExpiredClientSessionCanBeConfiguredToExpire(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 8, 0, 0, 0, time.UTC)
+	harness := newHarness(t, WithClock(func() time.Time { return now }))
+	ctx := context.Background()
+	provider, err := harness.service.CreateProvider(ctx, CreateProviderRequest{
+		Name: "ttl-expire", Vendor: "custom", Protocol: "http",
+		GatewayHost: "gateway.example.com", GatewayPort: 8000,
+		Credentials:      &Credentials{Username: "acct", Password: "secret"},
+		UsernameTemplate: "{user}-session-{session}", RotationMode: RotationSessionTemplate,
+		SessionTTLSeconds: 60, SessionExpiryPolicy: "expire",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "ttl-expire-channel", ProviderID: provider.ID, Mode: ModeSticky,
+		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29304},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channelRecord, _ := harness.store.GetResidentialChannel(ctx, channel.ID)
+	if _, err := harness.service.EnsureClientSessionByToken(ctx, channelRecord.RotateToken, "window-01"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(61 * time.Second)
+	if _, err := harness.service.EnsureClientSessionByToken(ctx, channelRecord.RotateToken, "window-01"); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("expired session error = %v, want ErrSessionExpired", err)
+	}
+	if _, err := harness.store.GetResidentialClientSession(ctx, channel.ID, "window-01"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired session was not deleted: %v", err)
+	}
+	nodes, err := harness.store.ListResidentialSessionNodes(ctx, channel.ID)
+	if err != nil || len(nodes) != 0 {
+		t.Fatalf("expired session nodes = %d, error = %v", len(nodes), err)
+	}
+}
+
 func TestCreateProviderRejectsInvalidConfiguration(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t)
@@ -227,7 +436,7 @@ func TestPerRequestProviderCannotBackStickyChannel(t *testing.T) {
 	}
 }
 
-func TestCreateStickyChannelProvisionsPoolGroupAndListener(t *testing.T) {
+func TestCreateStickyChannelDefersIPAllocationUntilClientSession(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t)
 	ctx := context.Background()
@@ -238,17 +447,16 @@ func TestCreateStickyChannelProvisionsPoolGroupAndListener(t *testing.T) {
 		ProviderID: provider.ID,
 		Mode:       ModeSticky,
 		Region:     "us",
-		PoolSize:   4,
 		Listener:   ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29102},
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)
 	}
-	if channel.PoolSize != 4 {
-		t.Fatalf("PoolSize = %d, want 4", channel.PoolSize)
+	if channel.ActiveSessionCount != 0 || channel.PoolSize != 0 {
+		t.Fatalf("channel allocated IPs during creation: %+v", channel)
 	}
-	if !channel.CanRotate {
-		t.Fatal("a sticky channel with a pool must be rotatable")
+	if channel.CanRotate {
+		t.Fatal("an empty lazy channel must not expose global pool rotation")
 	}
 	if !strings.HasPrefix(channel.RotatePath, "/rot/") {
 		t.Fatalf("RotatePath = %q, want a /rot/ path", channel.RotatePath)
@@ -257,45 +465,20 @@ func TestCreateStickyChannelProvisionsPoolGroupAndListener(t *testing.T) {
 		t.Fatalf("unexpected endpoint %+v", channel.Endpoint)
 	}
 
-	// The pool must be materialized as selectable group candidates, each with a
-	// distinct sticky session encoded in its username.
+	// Creating the channel must not consume an expiring vendor IP.
 	pool, err := harness.store.ListResidentialSessionNodes(ctx, channel.ID)
 	if err != nil {
 		t.Fatalf("ListResidentialSessionNodes() error = %v", err)
 	}
-	if len(pool) != 4 {
-		t.Fatalf("pool size = %d, want 4", len(pool))
+	if len(pool) != 0 {
+		t.Fatalf("channel creation materialized %d nodes, want none", len(pool))
 	}
-	usernames := map[string]bool{}
-	for _, node := range pool {
-		plaintext, err := harness.box.Open(node.CanonicalConfigEncrypted, []byte("node:"+node.Fingerprint))
-		if err != nil {
-			t.Fatalf("decrypt pooled node: %v", err)
-		}
-		var canonical map[string]any
-		if err := json.Unmarshal(plaintext, &canonical); err != nil {
-			t.Fatalf("decode pooled node: %v", err)
-		}
-		username, _ := canonical["username"].(string)
-		if !strings.HasPrefix(username, "acct123-region-us-session-") {
-			t.Fatalf("pooled username %q does not follow the template", username)
-		}
-		if usernames[username] {
-			t.Fatalf("duplicate session username %q in pool", username)
-		}
-		usernames[username] = true
-		if canonical["server"] != "gate.bestproxy.com" {
-			t.Fatalf("pooled node server = %v", canonical["server"])
-		}
+	group, err := harness.store.GetProxyGroup(ctx, channel.ProxyGroupID)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Creation should immediately pin the first session.
-	calls := harness.selector.calls()
-	if len(calls) != 1 {
-		t.Fatalf("selector calls = %d, want 1", len(calls))
-	}
-	if !strings.HasPrefix(calls[0][1], "hx-node-") {
-		t.Fatalf("selector targeted %q, want a compiled node name", calls[0][1])
+	if !strings.Contains(group.SourceSpecJSON, `"allow_empty":true`) {
+		t.Fatalf("dormant group is not explicitly fail-closed: %s", group.SourceSpecJSON)
 	}
 }
 

@@ -23,6 +23,17 @@ import type {
   ProxyServiceRecord,
   RoutingRulesConfig,
   RefreshResult,
+  CreateResidentialChannelRequest,
+  CreateResidentialProviderRequest,
+  ResidentialChannel,
+  ResidentialChannelList,
+  ResidentialPresetCatalog,
+  ResidentialProvider,
+  ResidentialProviderList,
+  ResidentialRotationResult,
+  ResidentialTestResult,
+  UpdateResidentialChannelRequest,
+  UpdateResidentialProviderRequest,
   Subscription,
   SubscriptionList,
 	SystemInfo,
@@ -538,5 +549,88 @@ export const api = {
   artifactDownloadURL(kind: ArtifactKind, id: string): string {
     const collection = kind === "backup" ? "backups" : "exports"
     return `/api/v1/${collection}/${encodeURIComponent(id)}/download`
+  },
+
+  residentialPresets(): Promise<ResidentialPresetCatalog> {
+    return request("/api/v1/residential/presets")
+  },
+
+  listResidentialProviders(): Promise<ResidentialProviderList> {
+    return request("/api/v1/residential/providers")
+  },
+
+  createResidentialProvider(payload: CreateResidentialProviderRequest): Promise<ResidentialProvider> {
+    return request("/api/v1/residential/providers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  updateResidentialProvider(
+    id: string,
+    payload: UpdateResidentialProviderRequest,
+  ): Promise<ResidentialProvider> {
+    return request(`/api/v1/residential/providers/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  deleteResidentialProvider(id: string, version: number): Promise<void> {
+    return request(`/api/v1/residential/providers/${encodeURIComponent(id)}?version=${version}`, {
+      method: "DELETE",
+    })
+  },
+
+  testResidentialProvider(id: string, exitIPEndpoint?: string): Promise<ResidentialTestResult> {
+    return request(`/api/v1/residential/providers/${encodeURIComponent(id)}/test`, {
+      method: "POST",
+      body: JSON.stringify(exitIPEndpoint ? { exit_ip_endpoint: exitIPEndpoint } : {}),
+    })
+  },
+
+  listResidentialChannels(): Promise<ResidentialChannelList> {
+    return request("/api/v1/residential/channels")
+  },
+
+  createResidentialChannel(payload: CreateResidentialChannelRequest): Promise<ResidentialChannel> {
+    return request("/api/v1/residential/channels", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  updateResidentialChannel(
+    id: string,
+    payload: UpdateResidentialChannelRequest,
+  ): Promise<ResidentialChannel> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  deleteResidentialChannel(id: string, version: number): Promise<void> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}?version=${version}`, {
+      method: "DELETE",
+    })
+  },
+
+  rotateResidentialChannel(id: string): Promise<ResidentialRotationResult> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/rotate`, {
+      method: "POST",
+    })
+  },
+
+  rotateResidentialChannelToken(id: string): Promise<ResidentialChannel> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/rotate-token`, {
+      method: "POST",
+    })
+  },
+
+  refreshResidentialChannelPool(id: string): Promise<ResidentialChannel> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/refresh-pool`, {
+      method: "POST",
+    })
   },
 }

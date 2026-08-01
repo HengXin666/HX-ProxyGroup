@@ -4,6 +4,7 @@ import {
   BellRing,
   CheckCircle2,
   CircleX,
+  Globe,
   Info,
   LayoutDashboard,
   LogOut,
@@ -28,11 +29,12 @@ import { AuthPage } from "@/pages/auth-page"
 import { InventoryPage } from "@/pages/inventory-page"
 import { OverviewPage } from "@/pages/overview-page"
 import { RoutingPage } from "@/pages/routing-page"
+import { ResidentialPage } from "@/pages/residential-page"
 import { RulesPage } from "@/pages/rules-page"
 import { SettingsPage } from "@/pages/settings-page"
 import { TerminalPage } from "@/pages/terminal-page"
 
-type Page = "overview" | "subscriptions" | "routing" | "rules" | "settings" | "alerts" | "artifacts" | "terminal" | "about"
+type Page = "overview" | "subscriptions" | "routing" | "residential" | "rules" | "settings" | "alerts" | "artifacts" | "terminal" | "about"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 const sidebarStorageKey = "hx-proxygroup.sidebar-collapsed"
 
@@ -45,6 +47,7 @@ const pages: Array<{
   { id: "overview", label: "总览", description: "流量与路由", icon: LayoutDashboard },
   { id: "subscriptions", label: "订阅与节点", description: "来源、刷新与质量", icon: Radio },
   { id: "routing", label: "代理服务", description: "代理组与 Listener", icon: Route },
+  { id: "residential", label: "住宅代理", description: "动态住宅 IP 渠道", icon: Globe },
   { id: "rules", label: "站点别名", description: "可复用网页组", icon: ListFilter },
   { id: "settings", label: "全局配置", description: "测速、DNS 与性能", icon: Settings2 },
   { id: "alerts", label: "告警", description: "状态与邮件通知", icon: BellRing },
@@ -280,6 +283,7 @@ export default function App() {
           {page === "overview" && <OverviewPage onNotice={showNotice} />}
           {page === "subscriptions" && <InventoryPage initialView={window.location.hash.includes("nodes") ? "nodes" : "subscriptions"} onNotice={showNotice} />}
           {page === "routing" && <RoutingPage onNotice={showNotice} />}
+          {page === "residential" && <ResidentialPage onNotice={showNotice} />}
           {page === "rules" && <RulesPage onNotice={showNotice} />}
           {page === "settings" && <SettingsPage onNotice={showNotice} username={authGate.username} onSignedOut={requireLogin} />}
           {page === "alerts" && <AlertsPage onNotice={showNotice} />}

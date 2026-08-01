@@ -18,11 +18,17 @@ type ResidentialProviderRecord struct {
 	Protocol             string
 	GatewayHost          string
 	GatewayPort          int
+	UpstreamProxyGroupID string
+	// APIURL is a v14 compatibility field for api-list providers. New values are
+	// stored in the encrypted credentials envelope by the residential service;
+	// an edit upgrades legacy rows and clears this column.
+	APIURL               string
 	CredentialsEncrypted []byte
 	UsernameTemplate     string
 	RotationMode         string
 	SessionTTLSeconds    int
 	PoolSize             int
+	SessionExpiryPolicy  string
 	DefaultRegion        string
 	Enabled              bool
 	Version              int
@@ -34,13 +40,16 @@ func (s *Store) CreateResidentialProvider(
 	ctx context.Context,
 	record ResidentialProviderRecord,
 ) (ResidentialProviderRecord, error) {
+	if record.SessionExpiryPolicy == "" {
+		record.SessionExpiryPolicy = "rotate"
+	}
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO residential_providers(
     id, name, vendor, protocol, gateway_host, gateway_port,
-    credentials_encrypted, username_template, rotation_mode,
-    session_ttl_seconds, pool_size, default_region, enabled, version,
+    api_url, upstream_proxy_group_id, credentials_encrypted, username_template, rotation_mode,
+    session_ttl_seconds, pool_size, session_expiry_policy, default_region, enabled, version,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -48,11 +57,14 @@ INSERT INTO residential_providers(
 		record.Protocol,
 		record.GatewayHost,
 		record.GatewayPort,
+		record.APIURL,
+		record.UpstreamProxyGroupID,
 		record.CredentialsEncrypted,
 		record.UsernameTemplate,
 		record.RotationMode,
 		record.SessionTTLSeconds,
 		record.PoolSize,
+		record.SessionExpiryPolicy,
 		record.DefaultRegion,
 		boolToInteger(record.Enabled),
 		record.Version,
@@ -104,12 +116,15 @@ func (s *Store) UpdateResidentialProvider(
 	record ResidentialProviderRecord,
 	expectedVersion int,
 ) (ResidentialProviderRecord, error) {
+	if record.SessionExpiryPolicy == "" {
+		record.SessionExpiryPolicy = "rotate"
+	}
 	result, err := s.db.ExecContext(ctx, `
 UPDATE residential_providers
 SET
     name = ?, vendor = ?, protocol = ?, gateway_host = ?, gateway_port = ?,
-    credentials_encrypted = ?, username_template = ?, rotation_mode = ?,
-    session_ttl_seconds = ?, pool_size = ?, default_region = ?, enabled = ?,
+    api_url = ?, upstream_proxy_group_id = NULLIF(?, ''), credentials_encrypted = ?, username_template = ?, rotation_mode = ?,
+    session_ttl_seconds = ?, pool_size = ?, session_expiry_policy = ?, default_region = ?, enabled = ?,
     version = version + 1, updated_at = ?
 WHERE id = ? AND version = ?
 `,
@@ -118,11 +133,14 @@ WHERE id = ? AND version = ?
 		record.Protocol,
 		record.GatewayHost,
 		record.GatewayPort,
+		record.APIURL,
+		record.UpstreamProxyGroupID,
 		record.CredentialsEncrypted,
 		record.UsernameTemplate,
 		record.RotationMode,
 		record.SessionTTLSeconds,
 		record.PoolSize,
+		record.SessionExpiryPolicy,
 		record.DefaultRegion,
 		boolToInteger(record.Enabled),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
@@ -177,8 +195,8 @@ func (s *Store) DeleteResidentialProvider(ctx context.Context, id string, expect
 const residentialProviderSelect = `
 SELECT
     id, name, vendor, protocol, gateway_host, gateway_port,
-    credentials_encrypted, username_template, rotation_mode,
-    session_ttl_seconds, pool_size, default_region, enabled, version,
+    api_url, COALESCE(upstream_proxy_group_id, ''), credentials_encrypted, username_template, rotation_mode,
+    session_ttl_seconds, pool_size, session_expiry_policy, default_region, enabled, version,
     created_at, updated_at
 FROM residential_providers`
 
@@ -194,11 +212,14 @@ func scanResidentialProvider(source scanner) (ResidentialProviderRecord, error) 
 		&record.Protocol,
 		&record.GatewayHost,
 		&record.GatewayPort,
+		&record.APIURL,
+		&record.UpstreamProxyGroupID,
 		&record.CredentialsEncrypted,
 		&record.UsernameTemplate,
 		&record.RotationMode,
 		&record.SessionTTLSeconds,
 		&record.PoolSize,
+		&record.SessionExpiryPolicy,
 		&record.DefaultRegion,
 		&enabled,
 		&record.Version,

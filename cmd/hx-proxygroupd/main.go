@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
 	"github.com/HengXin666/HX-ProxyGroup/internal/config"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
+	"github.com/HengXin666/HX-ProxyGroup/internal/instance"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
 	"github.com/HengXin666/HX-ProxyGroup/internal/node"
@@ -74,6 +76,16 @@ func run(logger *slog.Logger) error {
 	if err := cfg.EnsureDirectories(); err != nil {
 		return err
 	}
+	instanceLock, err := instance.Acquire(cfg.DataDirectory)
+	if err != nil {
+		return err
+	}
+	defer instanceLock.Close()
+	managementListener, err := net.Listen("tcp", cfg.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("listen on management API address %s: %w", cfg.ListenAddress, err)
+	}
+	defer managementListener.Close()
 
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelStartup()
@@ -167,6 +179,7 @@ func run(logger *slog.Logger) error {
 		listenerService,
 		residential.WithSelector(mihomoManager),
 		residential.WithReachabilityChecker(mihomoManager),
+		residential.WithSessionRouter(mihomoManager),
 	)
 	if err != nil {
 		return err
@@ -351,7 +364,7 @@ func run(logger *slog.Logger) error {
 			"database_schema", databaseStatus.SchemaVersion,
 			"database_journal", databaseStatus.JournalMode,
 		)
-		if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		if err := httpServer.Serve(managementListener); !errors.Is(err, http.ErrServerClosed) {
 			serverErrors <- err
 			return
 		}

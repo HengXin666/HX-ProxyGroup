@@ -11,6 +11,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -38,11 +41,133 @@ func TestRunScriptSyntaxAndHelp(t *testing.T) {
 		"--no-install-frontend-deps",
 		"--mihomo",
 		"Ctrl+C stops all child processes",
+		"random loopback high port",
+		"ports 49152-65535",
 	} {
 		if !strings.Contains(help, expected) {
 			t.Errorf("run.sh help is missing %q", expected)
 		}
 	}
+}
+
+func TestRunScriptUsesAndReleasesRandomHighPorts(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "run.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create run log: %v", err)
+	}
+	defer logFile.Close()
+
+	command := exec.Command(
+		"bash",
+		"run.sh",
+		"--data-dir", t.TempDir(),
+	)
+	command.Stdout = logFile
+	command.Stderr = logFile
+	if err := command.Start(); err != nil {
+		t.Fatalf("run.sh Start() error = %v", err)
+	}
+	waitResult := make(chan error, 1)
+	go func() { waitResult <- command.Wait() }()
+	stopped := false
+	defer func() {
+		if stopped {
+			return
+		}
+		_ = command.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-waitResult:
+		case <-time.After(5 * time.Second):
+			_ = command.Process.Kill()
+			<-waitResult
+		}
+	}()
+
+	backendPattern := regexp.MustCompile(`starting backend at http://127\.0\.0\.1:([0-9]+)`)
+	frontendPattern := regexp.MustCompile(`starting frontend at http://127\.0\.0\.1:([0-9]+)`)
+	backendPort := 0
+	frontendPort := 0
+	client := &http.Client{Timeout: 500 * time.Millisecond, Transport: &http.Transport{Proxy: nil}}
+	deadline := time.Now().Add(30 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-waitResult:
+			stopped = true
+			content, _ := os.ReadFile(logPath)
+			t.Fatalf("run.sh exited before random ports were ready: %v\n%s", waitErr, content)
+		default:
+		}
+
+		content, readErr := os.ReadFile(logPath)
+		if readErr != nil {
+			t.Fatalf("read run log: %v", readErr)
+		}
+		if backendPort == 0 {
+			backendPort = capturedPort(t, backendPattern, content)
+		}
+		if frontendPort == 0 {
+			frontendPort = capturedPort(t, frontendPattern, content)
+		}
+		if backendPort != 0 && frontendPort != 0 {
+			response, requestErr := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health/ready", frontendPort))
+			if requestErr == nil {
+				response.Body.Close()
+				if response.StatusCode == http.StatusOK {
+					ready = true
+					break
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ready {
+		content, _ := os.ReadFile(logPath)
+		t.Fatalf("random backend and frontend did not become ready\n%s", content)
+	}
+
+	for name, port := range map[string]int{"backend": backendPort, "frontend": frontendPort} {
+		if port < 49152 || port > 65535 {
+			t.Fatalf("%s port = %d, want random high port", name, port)
+		}
+	}
+	if backendPort == frontendPort {
+		t.Fatalf("backend and frontend selected the same port %d", backendPort)
+	}
+
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal run.sh: %v", err)
+	}
+	select {
+	case <-waitResult:
+		stopped = true
+	case <-time.After(12 * time.Second):
+		t.Fatal("run.sh did not clean up random-port process groups")
+	}
+
+	for name, port := range map[string]int{"backend": backendPort, "frontend": frontendPort} {
+		listener, listenErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if listenErr != nil {
+			t.Fatalf("%s port %d was not released: %v", name, port, listenErr)
+		}
+		if closeErr := listener.Close(); closeErr != nil {
+			t.Fatalf("close %s port probe: %v", name, closeErr)
+		}
+	}
+}
+
+func capturedPort(t *testing.T, pattern *regexp.Regexp, content []byte) int {
+	t.Helper()
+	match := pattern.FindSubmatch(content)
+	if len(match) != 2 {
+		return 0
+	}
+	port, err := strconv.Atoi(string(match[1]))
+	if err != nil {
+		t.Fatalf("parse captured port %q: %v", match[1], err)
+	}
+	return port
 }
 
 func TestRunScriptStartsAndStopsBackend(t *testing.T) {
@@ -123,6 +248,76 @@ func TestRunScriptStartsAndStopsBackend(t *testing.T) {
 	if requestErr == nil {
 		response.Body.Close()
 		t.Fatal("backend still accepts requests after run.sh stopped")
+	}
+}
+
+func TestRunScriptRejectsOccupiedBackendAddressBeforeBuild(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	command := exec.Command(
+		"bash",
+		"run.sh",
+		"--backend-only",
+		"--listen", listener.Addr().String(),
+		"--binary", filepath.Join(t.TempDir(), "missing-hx-proxygroupd"),
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("run.sh unexpectedly succeeded\n%s", output)
+	}
+	message := string(output)
+	if !strings.Contains(message, "backend address "+listener.Addr().String()+" is already in use") {
+		t.Fatalf("run.sh output = %q, want occupied-address error", message)
+	}
+	if strings.Contains(message, "binary does not exist") || strings.Contains(message, "building backend") {
+		t.Fatalf("run.sh did not reject the occupied address before build preparation: %q", message)
+	}
+}
+
+func TestBackendRejectsOccupiedAddressBeforeOpeningPersistentState(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	buildDirectory := t.TempDir()
+	binary := filepath.Join(buildDirectory, "hx-proxygroupd")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/hx-proxygroupd")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build backend: %v\n%s", err, output)
+	}
+
+	dataDirectory := t.TempDir()
+	databasePath := filepath.Join(dataDirectory, "hx-proxygroup.db")
+	masterKeyPath := filepath.Join(dataDirectory, "master.key")
+	command := exec.Command(
+		binary,
+		"--listen", listener.Addr().String(),
+		"--data-dir", dataDirectory,
+		"--config", filepath.Join(dataDirectory, "config.yaml"),
+		"--database", databasePath,
+		"--master-key", masterKeyPath,
+		"--runtime-config", filepath.Join(dataDirectory, "runtime", "active.yaml"),
+		"--snapshots", filepath.Join(dataDirectory, "snapshots"),
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("backend unexpectedly succeeded\n%s", output)
+	}
+	if !strings.Contains(string(output), "listen on management API address "+listener.Addr().String()) {
+		t.Fatalf("backend output = %q, want occupied-address error", output)
+	}
+	for _, unexpected := range []string{databasePath, masterKeyPath} {
+		if _, statErr := os.Stat(unexpected); !os.IsNotExist(statErr) {
+			t.Fatalf("persistent state %q exists after early listen failure (Stat error = %v)", unexpected, statErr)
+		}
 	}
 }
 
@@ -384,6 +579,9 @@ func TestRunScriptDoesNotRegisterSystemServices(t *testing.T) {
 		"--mihomo",
 		"package.json",
 		"VITE_BACKEND_TARGET",
+		"--strictPort",
+		"--clearScreen false",
+		"setsid",
 		"wait -n",
 	} {
 		if !strings.Contains(script, expected) {

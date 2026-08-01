@@ -142,16 +142,34 @@ func TestResidentialChannelRotationState(t *testing.T) {
 		ListenerID:   listenerRecord.ID,
 		Region:       "us",
 		RotateToken:  "rotate-token-1",
-		Enabled:      true,
-		Version:      1,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		PoolCreatedAt: func() *time.Time {
+			value := now.Add(-time.Minute)
+			return &value
+		}(),
+		Enabled:   true,
+		Version:   1,
+		CreatedAt: now,
+		UpdatedAt: now,
 	})
 	if err != nil {
 		t.Fatalf("CreateResidentialChannel() error = %v", err)
 	}
 	if channel.LastRotatedAt != nil {
 		t.Fatalf("a new channel must not carry a rotation timestamp")
+	}
+	if channel.PoolCreatedAt == nil {
+		t.Fatal("pool creation timestamp was not persisted")
+	}
+	refreshedAt := now.Add(time.Minute)
+	if err := storage.SetResidentialChannelPoolCreatedAt(ctx, channel.ID, refreshedAt); err != nil {
+		t.Fatalf("SetResidentialChannelPoolCreatedAt() error = %v", err)
+	}
+	updatedPoolState, err := storage.GetResidentialChannel(ctx, channel.ID)
+	if err != nil {
+		t.Fatalf("GetResidentialChannel(after pool timestamp) error = %v", err)
+	}
+	if updatedPoolState.PoolCreatedAt == nil || !updatedPoolState.PoolCreatedAt.Equal(refreshedAt) {
+		t.Fatalf("pool creation timestamp = %v, want %v", updatedPoolState.PoolCreatedAt, refreshedAt)
 	}
 
 	byToken, err := storage.GetResidentialChannelByRotateToken(ctx, "rotate-token-1")

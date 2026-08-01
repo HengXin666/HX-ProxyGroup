@@ -285,6 +285,26 @@ Listener
 
 当前 `source_spec` 可同时保存固定 `node_ids` 与动态选择条件：`subscription_ids`、名称地区标签、协议、生命周期、最大延迟、排序字段和数量上限。数据库只保存用户意图；Mihomo 编译器每次从活动订阅快照与最新节点质量记录重新解析成员，并稳定排序输出。地区当前来自节点展示名称标签，后续结构化 Geo Enricher 上线后应替换为带采样时间的地区字段。
 
+### 6.8 住宅客户端会话
+
+`residential_client_sessions` 保存一个住宅渠道下由客户端显式命名的逻辑会话、加密代理
+密码、当前节点指纹、分配时间、过期时间和 `residential | upstream | direct` 路由状态。
+一个渠道仍只有一个 Listener 和一个公共 token，但不保存或预建 IP 池。
+
+sticky 渠道创建时生成显式允许为空的 fail-closed Proxy Group，其唯一成员为 `REJECT`。
+客户端调用会话建立 API 后，应用服务才向供应商获取或生成一个节点，将节点直接绑定到
+该逻辑会话并完整校验、发布配置。供应商的并发配置只限制活跃会话数量，不代表预取数量。
+
+编译器将会话账号加入该 Listener 的 Mihomo `users`，并在普通站点路由规则之前生成
+`IN-USER` 规则。切流属于 Desired State 变更，必须经过完整配置校验和应用；应用成功后
+控制面通过 Mihomo Controller 删除该 `inboundUser` 的旧连接。流量本身始终留在 Mihomo
+数据面。完整外部协议见 [住宅代理客户端会话 API](RESIDENTIAL_SESSION_API.md)。
+
+注册后的会话可切到供应商配置的普通上游代理组，避免继续消耗住宅代理流量；物理
+`DIRECT` 仍作为显式选项保留，适用于服务器自身具备公网直连能力的部署。
+供应商定义会话 TTL 和 `expire | rotate` 到期策略。`expire` 删除认证、路由和节点；
+`rotate` 为同一客户端认证现场分配新节点并关闭旧连接。后台任务以有界批次执行相同状态迁移。
+
 ---
 
 ## 7. 订阅刷新事务

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,8 +31,18 @@ type Repository interface {
 	DeleteResidentialChannel(context.Context, string, int) error
 
 	ReplaceResidentialSessionPool(context.Context, string, []store.ResidentialSessionNode, time.Time) ([]string, error)
+	UpsertResidentialSessionNode(context.Context, string, store.ResidentialSessionNode, time.Time) (string, error)
+	DeleteResidentialSessionNode(context.Context, string, string) error
 	ListResidentialSessionNodes(context.Context, string) ([]store.NodeConfigRecord, error)
+	SetResidentialChannelPoolCreatedAt(context.Context, string, time.Time) error
 	DeleteResidentialSessionPool(context.Context, string) error
+	CreateResidentialClientSession(context.Context, store.ResidentialClientSessionRecord) (store.ResidentialClientSessionRecord, error)
+	GetResidentialClientSession(context.Context, string, string) (store.ResidentialClientSessionRecord, error)
+	ListResidentialClientSessions(context.Context, string) ([]store.ResidentialClientSessionRecord, error)
+	UpdateResidentialClientSessionRoute(context.Context, string, string, string, int, *time.Time) (store.ResidentialClientSessionRecord, error)
+	UpdateResidentialClientSessionAllocation(context.Context, string, string, string, time.Time, *time.Time, bool) (store.ResidentialClientSessionRecord, error)
+	RestoreResidentialClientSessionState(context.Context, store.ResidentialClientSessionRecord) error
+	DeleteResidentialClientSession(context.Context, string, string) error
 
 	GetProxyGroup(context.Context, string) (store.ProxyGroupRecord, error)
 	GetListener(context.Context, string) (store.ListenerRecord, error)
@@ -70,15 +81,25 @@ type ReachabilityChecker interface {
 	CheckProxyReachable(ctx context.Context, proxyName string) (int, error)
 }
 
+// SessionRouter republishes IN-USER routes and terminates only the connections
+// owned by the logical client session being switched.
+type SessionRouter interface {
+	Apply(context.Context) error
+	CloseConnectionsByInboundUser(context.Context, string, string) error
+}
+
 // Service is the residential proxy application service.
 type Service struct {
-	repository Repository
-	cipher     Cipher
-	groups     GroupService
-	listeners  ListenerService
-	selector   Selector
-	checker    ReachabilityChecker
-	now        func() time.Time
+	repository          Repository
+	cipher              Cipher
+	groups              GroupService
+	listeners           ListenerService
+	selector            Selector
+	checker             ReachabilityChecker
+	sessionRouter       SessionRouter
+	fetchNodes          NodeFetcher
+	fetchNodesWithProxy func(context.Context, string, string) ([]FetchedNode, error)
+	now                 func() time.Time
 
 	// rotateLimiter bounds how often each channel may rotate. Rotation is
 	// consumer-triggered over a public route, so it needs its own limit
@@ -88,6 +109,10 @@ type Service struct {
 	// refreshMutex serializes pool refreshes so two concurrent top-ups cannot
 	// interleave their node replacements for the same channel.
 	refreshMutex sync.Mutex
+	// clientSessionMutex serializes slot allocation and route changes. The
+	// critical section is bounded by one database update and one data-plane
+	// apply; no goroutine or queue is created per client session.
+	clientSessionMutex sync.Mutex
 }
 
 type Option func(*Service)
@@ -111,6 +136,15 @@ func WithReachabilityChecker(checker ReachabilityChecker) Option {
 	}
 }
 
+// WithSessionRouter enables one-listener, multi-session residential routing.
+func WithSessionRouter(router SessionRouter) Option {
+	return func(service *Service) {
+		if router != nil {
+			service.sessionRouter = router
+		}
+	}
+}
+
 // WithClock overrides the clock, for tests.
 func WithClock(now func() time.Time) Option {
 	return func(service *Service) {
@@ -126,6 +160,17 @@ func WithRotateInterval(interval time.Duration) Option {
 	return func(service *Service) {
 		if interval > 0 {
 			service.rotateLimiter.minimumInterval = interval
+		}
+	}
+}
+
+// WithNodeFetcher overrides how api-list providers fetch their endpoint lists.
+// The default implementation performs one bounded HTTPS GET per pool render.
+func WithNodeFetcher(fetcher NodeFetcher) Option {
+	return func(service *Service) {
+		if fetcher != nil {
+			service.fetchNodes = fetcher
+			service.fetchNodesWithProxy = nil
 		}
 	}
 }
@@ -147,12 +192,14 @@ func NewService(
 		return nil, errors.New("residential proxy group and listener services are required")
 	}
 	service := &Service{
-		repository:    repository,
-		cipher:        cipher,
-		groups:        groups,
-		listeners:     listeners,
-		now:           time.Now,
-		rotateLimiter: newRotateLimiter(defaultRotateInterval),
+		repository:          repository,
+		cipher:              cipher,
+		groups:              groups,
+		listeners:           listeners,
+		fetchNodes:          fetchNodesFromAPI,
+		fetchNodesWithProxy: fetchNodesFromAPIWithProxy,
+		now:                 time.Now,
+		rotateLimiter:       newRotateLimiter(defaultRotateInterval),
 	}
 	for _, option := range options {
 		if option == nil {
@@ -166,6 +213,40 @@ func NewService(
 
 // materializePool renders the session pool for one channel and persists it as
 // node rows. It returns the node ids in pool order.
+//
+// providerSessions returns the pool sessions for one channel. api-list
+// providers fetch their endpoints from the extraction API; every other mode
+// renders gateway-login sessions from the username template.
+func (s *Service) providerSessions(
+	ctx context.Context,
+	provider Provider,
+	credentials Credentials,
+	region string,
+	size int,
+) ([]Session, error) {
+	if provider.RotationMode == RotationAPIList {
+		if strings.TrimSpace(provider.APIURL) == "" {
+			return nil, fmt.Errorf("%w: api-list provider has no api_url", ErrInvalid)
+		}
+		var nodes []FetchedNode
+		var err error
+		if s.fetchNodesWithProxy != nil {
+			nodes, err = s.fetchNodesWithProxy(ctx, provider.APIURL, provider.APIProxyURL)
+		} else {
+			nodes, err = s.fetchNodes(ctx, provider.APIURL)
+		}
+		if err != nil {
+			return nil, err
+		}
+		sessions := sessionsFromNodes(nodes, size)
+		if len(sessions) == 0 {
+			return nil, fmt.Errorf("%w: api-list endpoint returned no nodes", ErrInvalid)
+		}
+		return sessions, nil
+	}
+	return buildSessions(provider, credentials, region, size)
+}
+
 func (s *Service) materializePool(
 	ctx context.Context,
 	channelID string,
@@ -175,7 +256,7 @@ func (s *Service) materializePool(
 	region string,
 	size int,
 ) ([]string, error) {
-	sessions, err := buildSessions(provider, credentials, region, size)
+	sessions, err := s.providerSessions(ctx, provider, credentials, region, size)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -236,14 +317,21 @@ func (s *Service) RefreshChannelPool(ctx context.Context, channelID string) erro
 	if err != nil {
 		return mapStoreError(err)
 	}
+	if record.Mode == ModeSticky {
+		return fmt.Errorf("%w: sticky channels allocate IPs per client session; rotate that session instead", ErrInvalid)
+	}
 	providerRecord, err := s.repository.GetResidentialProvider(ctx, record.ProviderID)
 	if err != nil {
 		return mapStoreError(err)
 	}
 	provider := s.providerFromRecord(providerRecord)
-	credentials, err := s.openCredentials(providerRecord)
+	credentials, err := s.providerCredentials(providerRecord)
 	if err != nil {
 		return err
+	}
+	groupRecord, err := s.repository.GetProxyGroup(ctx, record.ProxyGroupID)
+	if err != nil {
+		return mapStoreError(err)
 	}
 	existingPool, err := s.repository.ListResidentialSessionNodes(ctx, record.ID)
 	if err != nil {
@@ -259,13 +347,10 @@ func (s *Service) RefreshChannelPool(ctx context.Context, channelID string) erro
 	if record.Mode == ModePassthrough {
 		size = 1
 	}
+	poolCreatedAt := s.now().UTC()
 	nodeIDs, err := s.materializePool(ctx, record.ID, record.Name, provider, credentials, record.Region, size)
 	if err != nil {
 		return err
-	}
-	groupRecord, err := s.repository.GetProxyGroup(ctx, record.ProxyGroupID)
-	if err != nil {
-		return mapStoreError(err)
 	}
 	// Republishing the group is what actually pushes the new sessions into the
 	// data plane; it validates and applies the candidate configuration.
@@ -273,16 +358,72 @@ func (s *Service) RefreshChannelPool(ctx context.Context, channelID string) erro
 		Version:       groupRecord.Version,
 		Name:          groupRecord.Name,
 		Strategy:      groupRecord.Strategy,
-		SourceSpec:    proxygroup.SourceSpec{NodeIDs: nodeIDs},
+		SourceSpec:    proxygroup.SourceSpec{NodeIDs: nodeIDs, AllowEmpty: record.Mode == ModeSticky},
 		Enabled:       groupRecord.Enabled,
 		EmptyBehavior: groupRecord.EmptyBehavior,
 	}); err != nil {
+		restoreErr := s.restoreResidentialPoolAndGroup(ctx, record, existingPool)
+		if restoreErr != nil {
+			return fmt.Errorf("republish residential proxy group: %w; restore previous pool: %v", err, restoreErr)
+		}
 		return fmt.Errorf("republish residential proxy group: %w", err)
 	}
 	if record.Mode == ModeSticky {
 		if err := s.selectActiveSession(ctx, record, 0); err != nil {
+			restoreErr := s.restoreResidentialPoolAndGroup(ctx, record, existingPool)
+			if restoreErr != nil {
+				return fmt.Errorf("select refreshed residential session: %w; restore previous pool: %v", err, restoreErr)
+			}
 			return err
 		}
+	}
+	if err := s.repository.SetResidentialChannelPoolCreatedAt(ctx, record.ID, poolCreatedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+// restoreResidentialPoolAndGroup puts the previous node rows back after a
+// group publish failure. Pool replacement is transactional by itself, but the
+// data-plane publish is a separate operation and can fail after replacement.
+func (s *Service) restoreResidentialPoolAndGroup(
+	ctx context.Context,
+	record store.ResidentialChannelRecord,
+	previousPool []store.NodeConfigRecord,
+) error {
+	if len(previousPool) == 0 {
+		return nil
+	}
+	sessions := make([]store.ResidentialSessionNode, 0, len(previousPool))
+	for _, node := range previousPool {
+		sessions = append(sessions, store.ResidentialSessionNode{
+			ID:                       node.ID,
+			Fingerprint:              node.Fingerprint,
+			DisplayName:              node.DisplayName,
+			Protocol:                 node.Protocol,
+			CanonicalConfigEncrypted: node.CanonicalConfigEncrypted,
+		})
+	}
+	nodeIDs, err := s.repository.ReplaceResidentialSessionPool(ctx, record.ID, sessions, s.now().UTC())
+	if err != nil {
+		return err
+	}
+	groupRecord, err := s.repository.GetProxyGroup(ctx, record.ProxyGroupID)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	if _, err := s.groups.Update(ctx, groupRecord.ID, proxygroup.UpdateRequest{
+		Version:       groupRecord.Version,
+		Name:          groupRecord.Name,
+		Strategy:      groupRecord.Strategy,
+		SourceSpec:    proxygroup.SourceSpec{NodeIDs: nodeIDs, AllowEmpty: record.Mode == ModeSticky},
+		Enabled:       groupRecord.Enabled,
+		EmptyBehavior: groupRecord.EmptyBehavior,
+	}); err != nil {
+		return err
+	}
+	if record.Mode == ModeSticky {
+		return s.selectActiveSession(ctx, record, 0)
 	}
 	return nil
 }

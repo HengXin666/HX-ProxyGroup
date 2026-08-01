@@ -34,12 +34,19 @@ type Channel struct {
 	Region       string `json:"region,omitempty"`
 	// Endpoint describes where consumers connect.
 	Endpoint ChannelEndpoint `json:"endpoint"`
-	// PoolSize is how many sticky sessions are currently materialized.
-	PoolSize           int        `json:"pool_size"`
+	// ActiveSessionCount is the number of IPs currently allocated because a
+	// client session requested one. Channels do not have a prebuilt IP pool.
+	ActiveSessionCount int        `json:"active_session_count"`
+	PoolSize           int        `json:"pool_size,omitempty"` // pre-v19 response compatibility
 	ActiveSessionIndex int        `json:"active_session_index"`
 	RotateCount        int        `json:"rotate_count"`
 	LastRotatedAt      *time.Time `json:"last_rotated_at,omitempty"`
 	LastExitIP         string     `json:"last_exit_ip,omitempty"`
+	PoolCreatedAt      *time.Time `json:"pool_created_at,omitempty"`
+	// PoolRefreshAfterSeconds is the proactive refresh age derived from the
+	// provider's session lifetime and its safety margin.
+	PoolRefreshAfterSeconds int `json:"pool_refresh_after_seconds,omitempty"`
+	SessionTTLSeconds       int `json:"session_ttl_seconds,omitempty"`
 	// RotatePath is the public, token-addressed rotate endpoint. The token is
 	// the credential, so it is only returned to an authenticated administrator.
 	RotatePath string    `json:"rotate_path,omitempty"`
@@ -62,7 +69,7 @@ type CreateChannelRequest struct {
 	ProviderID string                 `json:"provider_id"`
 	Mode       string                 `json:"mode"`
 	Region     string                 `json:"region,omitempty"`
-	PoolSize   int                    `json:"pool_size,omitempty"`
+	PoolSize   int                    `json:"pool_size,omitempty"` // ignored for sticky channels
 	Listener   ChannelListenerRequest `json:"listener"`
 	Enabled    *bool                  `json:"enabled,omitempty"`
 }
@@ -90,13 +97,13 @@ func (s *Service) ListChannels(ctx context.Context) ([]Channel, error) {
 	if err != nil {
 		return nil, err
 	}
-	providerNames := make(map[string]string, len(providers))
+	providerRecords := make(map[string]store.ResidentialProviderRecord, len(providers))
 	for _, provider := range providers {
-		providerNames[provider.ID] = provider.Name
+		providerRecords[provider.ID] = provider
 	}
 	channels := make([]Channel, 0, len(records))
 	for _, record := range records {
-		channel, err := s.channelFromRecord(ctx, record, providerNames[record.ProviderID])
+		channel, err := s.channelFromRecord(ctx, record, s.providerFromRecord(providerRecords[record.ProviderID]))
 		if err != nil {
 			return nil, err
 		}
@@ -114,13 +121,12 @@ func (s *Service) GetChannel(ctx context.Context, id string) (Channel, error) {
 	if err != nil {
 		return Channel{}, mapStoreError(err)
 	}
-	return s.channelFromRecord(ctx, record, provider.Name)
+	return s.channelFromRecord(ctx, record, s.providerFromRecord(provider))
 }
 
-// CreateChannel provisions a residential entry point end to end: it materializes
-// the session pool, creates the proxy group over those sessions, then creates the
-// listener bound to that group. Every step is compensated on failure so a
-// half-built channel is never left behind.
+// CreateChannel provisions an entry point without preallocating sticky IPs.
+// The fail-closed empty group compiles to REJECT until a client creates its
+// first logical session. Passthrough still needs one vendor gateway node.
 func (s *Service) CreateChannel(ctx context.Context, request CreateChannelRequest) (Channel, error) {
 	providerRecord, err := s.repository.GetResidentialProvider(ctx, strings.TrimSpace(request.ProviderID))
 	if errors.Is(err, store.ErrNotFound) {
@@ -150,23 +156,12 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 			ModePassthrough,
 		)
 	}
-	region := strings.ToLower(strings.TrimSpace(request.Region))
+	region := strings.TrimSpace(request.Region)
 	if region == "" {
 		region = provider.DefaultRegion
 	}
 	if err := validateRegion(region); err != nil {
 		return Channel{}, err
-	}
-	poolSize := request.PoolSize
-	if poolSize == 0 {
-		poolSize = provider.PoolSize
-	}
-	if mode == ModePassthrough {
-		// Passthrough leaves rotation to the vendor, so one upstream is enough.
-		poolSize = 1
-	}
-	if poolSize < 1 || poolSize > 64 {
-		return Channel{}, fmt.Errorf("%w: pool_size must be between 1 and 64", ErrInvalid)
 	}
 	enabled := request.Enabled == nil || *request.Enabled
 
@@ -179,13 +174,19 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		return Channel{}, err
 	}
 
-	credentials, err := s.openCredentials(providerRecord)
-	if err != nil {
-		return Channel{}, err
-	}
-	nodeIDs, err := s.materializePool(ctx, channelID, name, provider, credentials, region, poolSize)
-	if err != nil {
-		return Channel{}, err
+	var nodeIDs []string
+	var poolCreatedAt *time.Time
+	if mode == ModePassthrough {
+		credentials, err := s.providerCredentials(providerRecord)
+		if err != nil {
+			return Channel{}, err
+		}
+		now := s.now().UTC()
+		nodeIDs, err = s.materializePool(ctx, channelID, name, provider, credentials, region, 1)
+		if err != nil {
+			return Channel{}, err
+		}
+		poolCreatedAt = &now
 	}
 
 	cleanupPool := func() {
@@ -196,7 +197,7 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		Name:     channelGroupName(name),
 		Strategy: "manual",
 		SourceSpec: proxygroup.SourceSpec{
-			NodeIDs: nodeIDs,
+			NodeIDs: nodeIDs, AllowEmpty: mode == ModeSticky,
 		},
 		Enabled:       &enabled,
 		EmptyBehavior: "fail-closed",
@@ -226,18 +227,19 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 
 	now := s.now().UTC()
 	created, err := s.repository.CreateResidentialChannel(ctx, store.ResidentialChannelRecord{
-		ID:           channelID,
-		Name:         name,
-		ProviderID:   provider.ID,
-		Mode:         mode,
-		ProxyGroupID: group.ID,
-		ListenerID:   createdListener.ID,
-		Region:       region,
-		RotateToken:  rotateToken,
-		Enabled:      enabled,
-		Version:      1,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            channelID,
+		Name:          name,
+		ProviderID:    provider.ID,
+		Mode:          mode,
+		ProxyGroupID:  group.ID,
+		ListenerID:    createdListener.ID,
+		Region:        region,
+		RotateToken:   rotateToken,
+		PoolCreatedAt: poolCreatedAt,
+		Enabled:       enabled,
+		Version:       1,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	})
 	if err != nil {
 		_ = s.listeners.Delete(ctx, createdListener.ID, createdListener.Version)
@@ -245,12 +247,7 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		cleanupPool()
 		return Channel{}, mapStoreError(err)
 	}
-	// Point the selector at the first pooled session so a sticky channel has a
-	// deterministic exit from the moment it is created.
-	if mode == ModeSticky {
-		_ = s.selectActiveSession(ctx, created, 0)
-	}
-	return s.channelFromRecord(ctx, created, provider.Name)
+	return s.channelFromRecord(ctx, created, provider)
 }
 
 func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateChannelRequest) (Channel, error) {
@@ -265,12 +262,10 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	if len(name) < 1 || len(name) > 128 {
 		return Channel{}, fmt.Errorf("%w: name must contain 1 to 128 characters", ErrInvalid)
 	}
-	region := strings.ToLower(strings.TrimSpace(request.Region))
+	region := strings.TrimSpace(request.Region)
 	if err := validateRegion(region); err != nil {
 		return Channel{}, err
 	}
-	regionChanged := region != existing.Region
-
 	existing.Name = name
 	existing.Region = region
 	existing.Enabled = request.Enabled
@@ -279,23 +274,13 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	if err != nil {
 		return Channel{}, mapStoreError(err)
 	}
-	if regionChanged {
-		// The region is encoded in the gateway username, so the pool must be
-		// re-rendered for the new region.
-		if err := s.RefreshChannelPool(ctx, updated.ID); err != nil {
-			return Channel{}, err
-		}
-		refreshed, err := s.repository.GetResidentialChannel(ctx, updated.ID)
-		if err != nil {
-			return Channel{}, mapStoreError(err)
-		}
-		updated = refreshed
-	}
+	// Existing client allocations retain their current vendor session. The new
+	// region is used only by subsequent allocation or rotation requests.
 	provider, err := s.repository.GetResidentialProvider(ctx, updated.ProviderID)
 	if err != nil {
 		return Channel{}, mapStoreError(err)
 	}
-	return s.channelFromRecord(ctx, updated, provider.Name)
+	return s.channelFromRecord(ctx, updated, s.providerFromRecord(provider))
 }
 
 // DeleteChannel removes the channel and everything it provisioned, in reverse
@@ -336,31 +321,49 @@ func (s *Service) DeleteChannel(ctx context.Context, id string, version int) err
 func (s *Service) channelFromRecord(
 	ctx context.Context,
 	record store.ResidentialChannelRecord,
-	providerName string,
+	provider Provider,
 ) (Channel, error) {
 	pool, err := s.repository.ListResidentialSessionNodes(ctx, record.ID)
 	if err != nil {
 		return Channel{}, err
 	}
+	activeSessionCount := 0
+	if record.Mode == ModeSticky {
+		sessions, err := s.repository.ListResidentialClientSessions(ctx, record.ID)
+		if err != nil {
+			return Channel{}, err
+		}
+		for _, session := range sessions {
+			if session.RouteMode == ClientRouteResidential && session.NodeFingerprint != "" {
+				activeSessionCount++
+			}
+		}
+	} else {
+		activeSessionCount = len(pool)
+	}
 	channel := Channel{
-		ID:                 record.ID,
-		Name:               record.Name,
-		ProviderID:         record.ProviderID,
-		ProviderName:       providerName,
-		Mode:               record.Mode,
-		ProxyGroupID:       record.ProxyGroupID,
-		ListenerID:         record.ListenerID,
-		Region:             record.Region,
-		PoolSize:           len(pool),
-		ActiveSessionIndex: record.ActiveSessionIndex,
-		RotateCount:        record.RotateCount,
-		LastRotatedAt:      record.LastRotatedAt,
-		LastExitIP:         record.LastExitIP,
-		CanRotate:          record.Mode == ModeSticky && len(pool) > 1,
-		Enabled:            record.Enabled,
-		Version:            record.Version,
-		CreatedAt:          record.CreatedAt,
-		UpdatedAt:          record.UpdatedAt,
+		ID:                      record.ID,
+		Name:                    record.Name,
+		ProviderID:              record.ProviderID,
+		ProviderName:            provider.Name,
+		Mode:                    record.Mode,
+		ProxyGroupID:            record.ProxyGroupID,
+		ListenerID:              record.ListenerID,
+		Region:                  record.Region,
+		ActiveSessionCount:      activeSessionCount,
+		PoolSize:                len(pool),
+		ActiveSessionIndex:      record.ActiveSessionIndex,
+		RotateCount:             record.RotateCount,
+		LastRotatedAt:           record.LastRotatedAt,
+		LastExitIP:              record.LastExitIP,
+		PoolCreatedAt:           record.PoolCreatedAt,
+		PoolRefreshAfterSeconds: int(SessionPoolRefreshAge(provider).Seconds()),
+		SessionTTLSeconds:       provider.SessionTTLSeconds,
+		CanRotate:               false,
+		Enabled:                 record.Enabled,
+		Version:                 record.Version,
+		CreatedAt:               record.CreatedAt,
+		UpdatedAt:               record.UpdatedAt,
 	}
 	if record.Mode == ModeSticky && record.RotateToken != "" {
 		channel.RotatePath = "/rot/" + record.RotateToken

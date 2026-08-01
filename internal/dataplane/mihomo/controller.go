@@ -38,6 +38,7 @@ type runtimeConnection struct {
 
 type connectionMetadata struct {
 	InboundName  string `json:"inboundName"`
+	InboundUser  string `json:"inboundUser"`
 	SpecialProxy string `json:"specialProxy"`
 }
 
@@ -280,6 +281,69 @@ func (m *Manager) SelectProxy(ctx context.Context, groupName, proxyName string) 
 		response.StatusCode,
 		controllerMessage(response.Body),
 	)
+}
+
+// CloseConnectionsByInboundUser drains only the tunnels authenticated as one
+// logical residential client. This makes a route switch take effect for future
+// bytes without disturbing other sessions sharing the listener port.
+func (m *Manager) CloseConnectionsByInboundUser(ctx context.Context, listenerID, username string) error {
+	listenerID = strings.TrimSpace(listenerID)
+	username = strings.TrimSpace(username)
+	if listenerID == "" || username == "" {
+		return errors.New("listener id and inbound username are required")
+	}
+	inboundName := listenerConfigName(listenerID)
+	m.mu.Lock()
+	m.refreshProcessLocked()
+	if !m.isRunningLocked() || !m.status.Running {
+		m.mu.Unlock()
+		return ErrNotRunning
+	}
+	socketPath := m.controllerSocket
+	m.mu.Unlock()
+
+	client, transport := controllerClient(socketPath, 5*time.Second)
+	defer transport.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/connections", nil)
+	if err != nil {
+		return fmt.Errorf("create Mihomo connections request: %w", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("list Mihomo connections: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("Mihomo connections returned status %d", response.StatusCode)
+	}
+	var payload connectionsResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, 16<<20)).Decode(&payload); err != nil {
+		return fmt.Errorf("decode Mihomo connections: %w", err)
+	}
+	for _, connection := range payload.Connections {
+		if connection.Metadata.InboundName != inboundName || connection.Metadata.InboundUser != username {
+			continue
+		}
+		closeRequest, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodDelete,
+			"http://unix/connections/"+url.PathEscape(connection.ID),
+			nil,
+		)
+		if err != nil {
+			return fmt.Errorf("create Mihomo connection close request: %w", err)
+		}
+		closeResponse, err := client.Do(closeRequest)
+		if err != nil {
+			return fmt.Errorf("close Mihomo connection: %w", err)
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(closeResponse.Body, 1024))
+		closeResponse.Body.Close()
+		if closeResponse.StatusCode != http.StatusNoContent && closeResponse.StatusCode != http.StatusOK {
+			return fmt.Errorf("Mihomo connection close returned status %d", closeResponse.StatusCode)
+		}
+	}
+	return nil
 }
 
 // CheckProxyReachable confirms that one proxy can reach the public internet.

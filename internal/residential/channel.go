@@ -38,6 +38,11 @@ type Channel struct {
 	// Endpoint describes where consumers connect.
 	Endpoint       ChannelEndpoint         `json:"endpoint"`
 	PublicEndpoint listener.PublicEndpoint `json:"public_endpoint"`
+	// SubscriptionURL is only emitted for passthrough WebSocket channels,
+	// whose static credentials can safely be represented by a client profile.
+	// Sticky channels must first create a session through RotationURL.
+	SubscriptionURL string `json:"subscription_url,omitempty"`
+	RotationURL     string `json:"rotation_url,omitempty"`
 	// ActiveSessionCount is the number of IPs currently allocated because a
 	// client session requested one. Channels do not have a prebuilt IP pool.
 	ActiveSessionCount int        `json:"active_session_count"`
@@ -180,6 +185,15 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 	}
 	region := regionSelection.Region
 	enabled := request.Enabled == nil || *request.Enabled
+	bindAddress, err := residentialBindAddress(request.Listener.BindAddress)
+	if err != nil {
+		return Channel{}, err
+	}
+	if isResidentialWebSocketKind(request.Listener.Kind) && request.PublicEndpoint.Host != "" {
+		if err := validateResidentialWebSocketEndpoint(request.PublicEndpoint); err != nil {
+			return Channel{}, err
+		}
+	}
 
 	channelID, err := newID("residential-channel")
 	if err != nil {
@@ -229,7 +243,7 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 	createdListener, err := s.listeners.Create(ctx, listener.CreateRequest{
 		Name:           channelListenerName(name),
 		Kind:           request.Listener.Kind,
-		BindAddress:    request.Listener.BindAddress,
+		BindAddress:    bindAddress,
 		Port:           request.Listener.Port,
 		ProxyGroupID:   group.ID,
 		Auth:           request.Listener.Auth,
@@ -313,6 +327,11 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 		if err != nil {
 			return Channel{}, err
 		}
+		if isResidentialWebSocketKind(currentListener.Kind) {
+			if err := validateResidentialWebSocketEndpoint(*request.PublicEndpoint); err != nil {
+				return Channel{}, err
+			}
+		}
 		if err := listener.ValidatePublicEndpoint(*request.PublicEndpoint, currentListener.Port); err != nil {
 			return Channel{}, err
 		}
@@ -329,6 +348,7 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 			BindAddress:    currentListener.BindAddress,
 			Port:           currentListener.Port,
 			ProxyGroupID:   currentListener.ProxyGroupID,
+			Transport:      currentListener.Transport,
 			PublicEndpoint: *request.PublicEndpoint,
 			Enabled:        currentListener.Enabled,
 		}); err != nil {
@@ -444,11 +464,20 @@ func (s *Service) channelFromRecord(
 			AuthEnabled: listenerRecord.AuthMode != "none" && len(listenerRecord.AuthConfigEncrypted) > 0,
 			Transport:   transport,
 		}
-		if listenerRecord.ShareToken != "" {
-			channel.Endpoint.SharePath = "/sub/" + listenerRecord.ShareToken
-		}
 		if err := json.Unmarshal([]byte(listenerRecord.PublicEndpointJSON), &channel.PublicEndpoint); err != nil {
 			return Channel{}, fmt.Errorf("decode residential public endpoint: %w", err)
+		}
+		if listenerRecord.ShareToken != "" {
+			channel.Endpoint.SharePath = "/sub/" + listenerRecord.ShareToken
+			if record.Mode == ModePassthrough && isResidentialWebSocketKind(listenerRecord.Kind) {
+				channel.SubscriptionURL = listener.PublicPathURL(
+					channel.PublicEndpoint,
+					channel.Endpoint.SharePath+"?format=clash",
+				)
+			}
+		}
+		if channel.RotatePath != "" && channel.PublicEndpoint.TLS {
+			channel.RotationURL = listener.PublicPathURL(channel.PublicEndpoint, channel.RotatePath)
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return Channel{}, err

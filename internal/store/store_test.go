@@ -133,6 +133,107 @@ INSERT INTO subscriptions(
 	}
 }
 
+func TestOpenMigrationClosesLegacyResidentialListenerBoundary(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "legacy-residential.db")
+	legacy, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	transaction, err := legacy.BeginTx(ctx, nil)
+	if err != nil {
+		legacy.Close()
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    applied_at TEXT NOT NULL
+) STRICT;
+`); err != nil {
+		transaction.Rollback()
+		legacy.Close()
+		t.Fatalf("create migration table: %v", err)
+	}
+	for _, migration := range migrations[:len(migrations)-1] {
+		if _, err := transaction.ExecContext(ctx, migration.sql); err != nil {
+			transaction.Rollback()
+			legacy.Close()
+			t.Fatalf("apply migration %d: %v", migration.version, err)
+		}
+		if _, err := transaction.ExecContext(ctx, `
+INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)
+`, migration.version, migration.name, "2026-07-25T00:00:00Z"); err != nil {
+			transaction.Rollback()
+			legacy.Close()
+			t.Fatalf("record migration %d: %v", migration.version, err)
+		}
+	}
+	if _, err := transaction.ExecContext(ctx, `
+INSERT INTO proxy_groups(
+    id, name, source_spec_json, rule_pipeline_json, strategy,
+    empty_behavior, enabled, version, created_at, updated_at
+) VALUES ('legacy-res-group', 'legacy-res-group', '{}', '{}', 'manual',
+          'fail-closed', 1, 1, '2026-07-25T00:00:00Z', '2026-07-25T00:00:00Z');
+INSERT INTO listeners(
+    id, name, listener_type, kind, bind_address, port, proxy_group_id,
+    auth_mode, transport_json, public_endpoint_json, share_token,
+    enabled, version, created_at, updated_at
+) VALUES ('legacy-res-listener', 'legacy-res-listener', 'mixed', 'mixed',
+          '0.0.0.0', 32825, 'legacy-res-group', 'none', '{}',
+          '{"host":"proxy.example.com","port":32825,"tls":true}',
+          'legacy-res-token', 1, 1, '2026-07-25T00:00:00Z', '2026-07-25T00:00:00Z');
+INSERT INTO residential_providers(
+    id, name, vendor, protocol, gateway_host, gateway_port,
+    credentials_encrypted, username_template, rotation_mode,
+    session_ttl_seconds, pool_size, default_region, enabled, version,
+    created_at, updated_at
+) VALUES ('legacy-res-provider', 'legacy-res-provider', 'custom', 'http',
+          'gateway.example.com', 8000, X'01', '{user}', 'session-template',
+          600, 1, 'US', 1, 1, '2026-07-25T00:00:00Z', '2026-07-25T00:00:00Z');
+INSERT INTO residential_channels(
+    id, name, provider_id, mode, proxy_group_id, listener_id,
+    rotate_token, enabled, version, created_at, updated_at
+) VALUES ('legacy-res-channel', 'legacy-res-channel', 'legacy-res-provider',
+          'passthrough', 'legacy-res-group', 'legacy-res-listener',
+          'legacy-res-rotate-token', 1, 1, '2026-07-25T00:00:00Z', '2026-07-25T00:00:00Z');
+`); err != nil {
+		transaction.Rollback()
+		legacy.Close()
+		t.Fatalf("insert legacy residential state: %v", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		legacy.Close()
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("legacy Close() error = %v", err)
+	}
+
+	upgraded, err := Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("Open(upgrade) error = %v", err)
+	}
+	defer upgraded.Close()
+	var bindAddress string
+	var publicPort int
+	if err := upgraded.db.QueryRowContext(ctx, `
+SELECT bind_address, json_extract(public_endpoint_json, '$.port')
+FROM listeners WHERE id = 'legacy-res-listener'
+`).Scan(&bindAddress, &publicPort); err != nil {
+		t.Fatalf("read migrated residential listener: %v", err)
+	}
+	if bindAddress != "127.0.0.1" {
+		t.Fatalf("migrated bind address = %q, want 127.0.0.1", bindAddress)
+	}
+	if publicPort != 443 {
+		t.Fatalf("migrated public port = %d, want 443", publicPort)
+	}
+}
+
 func TestGetMetadataNotFound(t *testing.T) {
 	t.Parallel()
 

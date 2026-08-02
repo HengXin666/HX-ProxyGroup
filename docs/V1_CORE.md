@@ -240,6 +240,7 @@ v1 将用户提出的会话需求映射为可组合策略：
 - [x] 端口变更经过候选配置校验、受控重启和失败回滚。
 - [x] Listener 通过 Mihomo `proxy` 字段直接绑定代理组；普通入口流量无需经过 Go 控制面，Cloudflare / 雷池 WebSocket 入口可选经过固定路径 Edge Relay。
 - [x] 住宅渠道支持 VLESS / VMess / Trojan over WebSocket 入口；住宅节点继续由 Mihomo `dialer-proxy` 串到上游 Proxy Group，HTTP/SOCKS/Mixed 仍要求四层或原生字节流转发。
+- [x] 住宅 Listener 强制只绑定环回地址；WS 公网端点固定为雷池 HTTPS 443，`/sub/` 和 `/rot/` 链接省略默认端口，历史住宅公网绑定由迁移收回。
 - [x] 支持为 Listener 配置用户名和密码。
 - [x] API 不回显凭据，后端以 AEAD 密文保存并仅在配置编译时解密。
 - [ ] 支持连接数、空闲超时、最大并发和速率限制。
@@ -253,6 +254,7 @@ v1 将用户提出的会话需求映射为可组合策略：
 - [x] 支持生成 sing-box JSON。
 - [x] 支持输出单节点 URI 和二维码所需文本数据。
 - [x] 导出内容指向当前服务器 Listener，而不是泄露上游机场节点凭据。
+- [x] 配置公网端点时生成路径化订阅/会话 URL；未配置公网端点的环回 Listener 不回退导出内部端口。
 - [ ] 支持按客户端类型覆盖域名、端口、TLS、SNI、WS Path 和备注。
 - [ ] 订阅请求支持限速、访问日志和异常频率告警。
 
@@ -300,7 +302,7 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 - [x] WebSocket 模板支持配置域名（同时作为 SNI/Host）、规范化 WS Path 和外部 TLS 端口；所有路径统一使用 `/__hx-proxy__/` 前缀，gRPC Service Name 尚未开放。
 - [x] WebSocket 数据面 Listener 强制仅绑定环回地址，由反向代理转发。
 - [x] Edge Relay 只接受 `/__hx-proxy__/` 下的 WebSocket Upgrade，并按 Host 与完整路径转发到环回 Mihomo Listener；不接受任意 URL、TCP、UDP 或 QUIC。
-- [x] 管理 API、前端和 `/sub/` 与代理路径保持独立，不经过 Edge Relay。
+- [x] 管理 API、前端以及 `/sub/`、`/rot/` 与代理路径保持独立，不经过 Edge Relay。
 - [ ] 正确处理 WebSocket Upgrade、HTTP/2 gRPC 和真实来源 IP Header。
 - [x] 文档明确：普通 Cloudflare 代理不转发任意原生 TCP/UDP；raw TCP/UDP 需要直连、Cloudflare Spectrum 或其他四层转发能力。
 - [ ] 提供雷池健康检查路径，且该路径不泄露节点或版本信息。

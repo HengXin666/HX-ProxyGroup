@@ -136,7 +136,7 @@ func TestShareExportRendersAuthenticatedURIs(t *testing.T) {
 	created, err := service.Create(ctx, CreateRequest{
 		Name:         "边缘出口",
 		Kind:         "mixed",
-		BindAddress:  "127.0.0.1",
+		BindAddress:  "192.168.1.20",
 		Port:         7890,
 		ProxyGroupID: groupID,
 		Auth:         &Auth{Username: "user", Password: "pa:ss@word"},
@@ -157,8 +157,8 @@ func TestShareExportRendersAuthenticatedURIs(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("mixed listener should export two URIs, got %v", lines)
 	}
-	// Loopback bind must be replaced with the host the admin API was
-	// reached on, and credentials must be URL-escaped.
+	// A non-loopback listener can use its bind address, and credentials must be
+	// URL-escaped.
 	if !strings.Contains(lines[0], "192.168.1.20:7890") {
 		t.Fatalf("unexpected host in %q", lines[0])
 	}
@@ -176,6 +176,21 @@ func TestShareExportRendersAuthenticatedURIs(t *testing.T) {
 
 	if _, err := service.ExportByShareToken(ctx, "0000000000000000", "host"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown token error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestShareExportDoesNotExposeLoopbackPortThroughExternalHost(t *testing.T) {
+	service, database, ctx := newShareTestService(t)
+	groupID := createShareTestGroup(t, ctx, database)
+	created, err := service.Create(ctx, CreateRequest{
+		Name: "internal-only", Kind: "http", BindAddress: "127.0.0.1", Port: 32825, ProxyGroupID: groupID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.ExportByShareToken(ctx, strings.TrimPrefix(created.SharePath, "/sub/"), "proxy.example.com")
+	if !errors.Is(err, ErrShareDisabled) {
+		t.Fatalf("external loopback export error = %v, want ErrShareDisabled", err)
 	}
 }
 

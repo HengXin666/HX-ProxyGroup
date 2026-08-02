@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -213,7 +214,7 @@ func TestManagerRunsAuthenticatedHTTPSConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	port := reservePort(t)
-	created, err := listenerService.Create(ctx, listenerservice.CreateRequest{
+	_, err = listenerService.Create(ctx, listenerservice.CreateRequest{
 		Name: "authenticated-connect", Kind: "mixed", BindAddress: "127.0.0.1", Port: port, ProxyGroupID: group.ID,
 		Auth: &listenerservice.Auth{Username: "proxy-user", Password: "proxy-password"},
 	})
@@ -228,12 +229,7 @@ func TestManagerRunsAuthenticatedHTTPSConnect(t *testing.T) {
 		_, _ = writer.Write([]byte("https-through-connect"))
 	}))
 	defer origin.Close()
-	token := strings.TrimPrefix(created.SharePath, "/sub/")
-	export, err := listenerService.ExportByShareToken(ctx, token, "127.0.0.1:19090")
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxyURL, err := url.Parse(strings.Split(strings.TrimSpace(export.Body), "\n")[0])
+	proxyURL, err := url.Parse("http://proxy-user:proxy-password@" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
 		t.Fatal(err)
 	}

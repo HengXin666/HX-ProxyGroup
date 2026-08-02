@@ -178,6 +178,16 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
     onNotice(ok ? "入口地址已复制" : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
+  async function copyResidentialPath() {
+    const pathURL = residential?.subscription_url || residential?.rotation_url
+    if (!pathURL) {
+      onNotice("请先配置雷池 HTTPS 443 公网端点", "error")
+      return
+    }
+    const ok = await copyText(pathURL)
+    onNotice(ok ? "住宅路径链接已复制" : "复制失败，请手动复制", ok ? "success" : "error")
+  }
+
   async function copyConnectionURI() {
     if (!listener.share_path) return
     try {
@@ -194,7 +204,7 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
   const publicEndpoint = residential?.public_endpoint ?? listener.public_endpoint
   function runAction(value: string) {
     setAction(value)
-    if (value === "address") void copyEndpoint()
+    if (value === "address") void (residential ? copyResidentialPath() : copyEndpoint())
     else if (value === "auth-uri") void copyConnectionURI()
     else if (value === "edit") { setDetailTab("edit"); onEdit() }
     else if (value === "delete") onDelete()
@@ -211,7 +221,7 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
       </div>
       <div className="min-w-0"><div className="flex items-center gap-1.5 text-xs font-medium"><Network className="size-3.5" />{group ? strategyLabel(group.strategy) : "组已缺失"}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={sourceText}>{sourceText}</div></div>
       <div className="w-full lg:w-[200px]">
-        <Select value={action} onValueChange={runAction}><SelectTrigger onClick={(event) => event.stopPropagation()} className="h-8"><Link2 className="mr-1 size-3.5" /><SelectValue placeholder="服务操作" /></SelectTrigger><SelectContent><SelectItem value="edit">编辑服务</SelectItem>{!residential && listener.share_path && <><SelectItem value="clash:Clash / Mihomo">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="v2rayn:v2rayN / v2rayNG">复制 v2rayN / v2rayNG 订阅</SelectItem><SelectItem value="v2rayn:Shadowrocket">复制 Shadowrocket 订阅</SelectItem><SelectItem value="sing-box:sing-box / NekoBox">复制 sing-box / NekoBox 订阅</SelectItem><SelectItem value="auth-uri">复制认证连接 URI</SelectItem></>}<SelectItem value="address">复制入口地址</SelectItem><SelectItem value="delete" className="text-destructive">删除服务</SelectItem></SelectContent></Select>
+        <Select value={action} onValueChange={runAction}><SelectTrigger onClick={(event) => event.stopPropagation()} className="h-8"><Link2 className="mr-1 size-3.5" /><SelectValue placeholder="服务操作" /></SelectTrigger><SelectContent><SelectItem value="edit">编辑服务</SelectItem>{!residential && listener.share_path && <><SelectItem value="clash:Clash / Mihomo">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="v2rayn:v2rayN / v2rayNG">复制 v2rayN / v2rayNG 订阅</SelectItem><SelectItem value="v2rayn:Shadowrocket">复制 Shadowrocket 订阅</SelectItem><SelectItem value="sing-box:sing-box / NekoBox">复制 sing-box / NekoBox 订阅</SelectItem><SelectItem value="auth-uri">复制认证连接 URI</SelectItem></>}{residential ? <SelectItem value="address">复制住宅路径链接</SelectItem> : <SelectItem value="address">复制入口地址</SelectItem>}<SelectItem value="delete" className="text-destructive">删除服务</SelectItem></SelectContent></Select>
       </div>
     </div>
     {expanded && <div className="border-t bg-muted/70 px-3 py-3 sm:px-4">

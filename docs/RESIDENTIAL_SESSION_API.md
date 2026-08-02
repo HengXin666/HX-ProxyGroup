@@ -5,7 +5,7 @@ sticky 渠道，不扩展普通 Proxy Group 或 Listener 的公共语义。
 
 ## 目标
 
-一个住宅渠道只需要一个 Listener、一个端口和一个公共 token。多个客户端窗口使用
+一个住宅渠道只需要一个环回 Listener、一个内部端口和一个公共 token。多个客户端窗口使用
 不同 `session_id`，服务端为每个逻辑会话签发独立的代理认证账号，并将它们路由到不同
 住宅出口：
 
@@ -20,10 +20,23 @@ sticky 渠道，不扩展普通 Proxy Group 或 Listener 的公共语义。
 代理流量仍由 Mihomo 转发。Go 控制面只管理会话状态、编译 `IN-USER` 规则，并在切流后
 通过 Mihomo Controller 关闭该入站用户的旧连接，不复制或转发业务流量。
 
+公网只通过雷池 HTTPS `443` 的路径访问控制面；`19090` 和 Listener 内部端口不应暴露到公网。
+配置了 `public_endpoint.host` 的 WS 渠道会提供以下无端口链接：
+
+```text
+https://proxy.example.com/sub/<token>?format=clash
+https://proxy.example.com/rot/<token>/sessions/<session_id>
+```
+
+`/sub/` 只返回 Clash/Mihomo 配置，不能直接作为 HTTP/SOCKS5 代理地址填入 Playwright。
+同机的 OutlookRegister 等客户端应使用 `127.0.0.1:<listener-port>` 连接业务流量，使用
+`https://proxy.example.com` 或本机控制面地址作为会话 API 根地址。
+
 ## 前置条件
 
 - 渠道必须启用且模式为 `sticky`。
-- 客户端仍连接渠道原有 Listener 地址。
+- 同机客户端连接渠道原有环回 Listener 地址；远程 WS 客户端连接雷池 443 下的 WS 路径。
+- HTTP/SOCKS/Mixed 不能通过 Cloudflare/雷池七层路径承载，远程使用必须另配四层或协议级反向代理。
 - 供应商的 `max_concurrent_sessions` 是安全容量上限，不会预取任何 IP。
 - 供应商必须配置 TTL 和 `session_expiry_policy`：`rotate` 到期换 IP，`expire` 到期终止会话。
 - `DIRECT` 表示 HX-ProxyGroup 所在服务器的网络出口，不表示运行客户端的电脑本地直连。
@@ -71,7 +84,7 @@ PUT /rot/<token>/sessions/<session_id>
 }
 ```
 
-对于 HTTP/SOCKS/Mixed Listener，客户端将响应中的账号和密码写入原 Listener URL：
+对于 HTTP/SOCKS/Mixed Listener，同机客户端将响应中的账号和密码写入原 Listener URL：
 
 ```text
 http://<proxy_username>:<proxy_password>@proxy-host:18088

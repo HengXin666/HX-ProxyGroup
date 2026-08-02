@@ -312,12 +312,63 @@ func TestResidentialChannelSupportsCloudflareWebSocketEntry(t *testing.T) {
 	if channel.Endpoint.SharePath == "" {
 		t.Fatal("WebSocket residential channel did not expose its subscription path")
 	}
+	if !strings.HasPrefix(channel.SubscriptionURL, "https://proxy.example.com/sub/") || !strings.HasSuffix(channel.SubscriptionURL, "?format=clash") {
+		t.Fatalf("subscription URL = %q, want a portless Clash path URL", channel.SubscriptionURL)
+	}
+	if strings.Contains(channel.SubscriptionURL, ":443") {
+		t.Fatalf("subscription URL exposes default port: %q", channel.SubscriptionURL)
+	}
 	listenerRecord, err := harness.store.GetListener(ctx, channel.ListenerID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if listenerRecord.Kind != "vless" || !strings.Contains(listenerRecord.TransportJSON, listener.WebSocketPathPrefix+"residential") {
 		t.Fatalf("stored listener = %+v", listenerRecord)
+	}
+
+	updated, err := harness.service.UpdateChannel(ctx, channel.ID, UpdateChannelRequest{
+		Version: channel.Version,
+		Name:    channel.Name,
+		PublicEndpoint: &listener.PublicEndpoint{
+			Host: "proxy-updated.example.com", Port: 443, TLS: true,
+		},
+		Enabled: channel.Enabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateChannel() error = %v", err)
+	}
+	if updated.Endpoint.Transport.WSPath != listener.WebSocketPathPrefix+"residential" {
+		t.Fatalf("updated WebSocket path = %q, want %q", updated.Endpoint.Transport.WSPath, listener.WebSocketPathPrefix+"residential")
+	}
+	if !strings.HasPrefix(updated.SubscriptionURL, "https://proxy-updated.example.com/sub/") {
+		t.Fatalf("updated subscription URL = %q", updated.SubscriptionURL)
+	}
+}
+
+func TestResidentialChannelRejectsPublicBindAndNon443WebSocketEndpoint(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t)
+	provider := harness.createProvider(t)
+
+	_, err := harness.service.CreateChannel(context.Background(), CreateChannelRequest{
+		Name: "public-bind-rejected", ProviderID: provider.ID, Mode: ModeSticky,
+		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "0.0.0.0", Port: 29309},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("public bind error = %v, want ErrInvalid", err)
+	}
+
+	_, err = harness.service.CreateChannel(context.Background(), CreateChannelRequest{
+		Name: "public-port-rejected", ProviderID: provider.ID, Mode: ModePassthrough,
+		Listener: ChannelListenerRequest{
+			Kind: "vless", BindAddress: "127.0.0.1", Port: 29310,
+			Auth:      &listener.Auth{Username: "entry", Password: "550e8400-e29b-41d4-a716-446655440000"},
+			Transport: listener.Transport{Type: "ws", WSPath: "/non443"},
+		},
+		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 32825, TLS: true},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("non-443 WebSocket endpoint error = %v, want ErrInvalid", err)
 	}
 }
 
@@ -340,6 +391,9 @@ func TestResidentialWebSocketSessionGetsUUIDCredential(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.HasPrefix(channel.RotationURL, "https://proxy.example.com/rot/") || strings.Contains(channel.RotationURL, ":443") {
+		t.Fatalf("rotation URL = %q, want a portless HTTPS path URL", channel.RotationURL)
 	}
 	record, err := harness.store.GetResidentialChannel(ctx, channel.ID)
 	if err != nil {
@@ -639,7 +693,7 @@ func TestPassthroughChannelHasSingleUpstreamAndCannotRotate(t *testing.T) {
 		PoolSize:   8,
 		Listener: ChannelListenerRequest{
 			Kind:        "mixed",
-			BindAddress: "0.0.0.0",
+			BindAddress: "127.0.0.1",
 			Port:        29103,
 			Auth:        &listener.Auth{Username: "consumer", Password: "consumer-pass"},
 		},
@@ -654,7 +708,7 @@ func TestPassthroughChannelHasSingleUpstreamAndCannotRotate(t *testing.T) {
 		t.Fatalf("passthrough channel must not expose rotation: %+v", channel)
 	}
 	if !channel.Endpoint.AuthEnabled {
-		t.Fatal("a non-loopback passthrough listener must require authentication")
+		t.Fatal("configured passthrough listener credentials were not preserved")
 	}
 	if _, err := harness.service.RotateChannel(ctx, channel.ID); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("RotateChannel(passthrough) error = %v, want ErrInvalid", err)

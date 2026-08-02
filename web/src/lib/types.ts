@@ -603,6 +603,8 @@ export interface ResidentialChannel {
   random_regions?: string[]
   endpoint: ResidentialChannelEndpoint
   public_endpoint: ListenerPublicEndpoint
+  subscription_url?: string
+  rotation_url?: string
   active_session_count: number
   pool_size?: number
   active_session_index: number

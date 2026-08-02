@@ -551,6 +551,28 @@ ALTER TABLE admin_sessions
     ADD COLUMN two_factor_verified_at TEXT;
 `,
 	},
+	{
+		version: 23,
+		name:    "residential_public_path_boundary",
+		sql: `
+-- Residential data-plane listeners are internal implementation details. Keep
+-- them on loopback even when an older release allowed a public bind address.
+UPDATE listeners
+SET bind_address = '127.0.0.1'
+WHERE id IN (SELECT listener_id FROM residential_channels)
+  AND bind_address NOT IN ('127.0.0.1', '::1');
+
+-- HTTPS path routes terminate at the reverse proxy's standard 443 port. Older
+-- releases could accidentally persist the internal Mihomo port as the public
+-- endpoint; normalize only residential HTTPS endpoints during upgrade.
+UPDATE listeners
+SET public_endpoint_json = json_set(public_endpoint_json, '$.port', 443)
+WHERE id IN (SELECT listener_id FROM residential_channels)
+  AND json_valid(public_endpoint_json)
+  AND json_extract(public_endpoint_json, '$.host') <> ''
+  AND json_extract(public_endpoint_json, '$.tls') = 1;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

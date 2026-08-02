@@ -84,6 +84,11 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 	}
 	host := exportHost(record.BindAddress, requestHost)
 	port := record.Port
+	if endpoint.Host == "" && isLoopbackBind(record.BindAddress) {
+		// Do not turn an internal Mihomo port into an externally advertised
+		// subscription just because a reverse proxy forwarded the request.
+		return ShareExport{}, ErrShareDisabled
+	}
 	if endpoint.Host != "" {
 		host = endpoint.Host
 		if endpoint.Port > 0 {
@@ -104,6 +109,11 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 		Name:     record.Name, Kind: record.Kind, Host: host, Port: port,
 		Auth: auth, Transport: transport, Endpoint: endpoint,
 	}, nil
+}
+
+func isLoopbackBind(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	return ip != nil && ip.IsLoopback()
 }
 
 // EncodeSubscription renders the conventional base64 subscription body used

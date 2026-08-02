@@ -1,14 +1,17 @@
 # Cloudflare 反向代理接入
 
-HX-ProxyGroup 仍由 Mihomo 提供实际服务端协议。为了让雷池只配置一个 HX 上游，控制面
+HX-ProxyGroup 仍由 Mihomo 提供实际服务端协议。公网只开放雷池 HTTPS `443`；控制面
+`19090`、Mihomo Listener 和住宅内部端口均只监听环回。为了让雷池只配置一个 HX 上游，控制面
 内置一个受限的 WebSocket Edge Relay：它只识别固定的 `/__hx-proxy__/` 路由前缀，按
 `Host + 完整路径` 查找已启用的环回 Mihomo Listener，再把 Upgrade 连接转发过去。
 它不解析 VLESS、VMess 或 Trojan，也不接受任意 URL、TCP、UDP 或 QUIC 转发。
 
 ```text
-客户端 -> Cloudflare :443 -> Nginx/Caddy/雷池 :443
+客户端 -> Cloudflare :443 -> 雷池 :443
        -> 127.0.0.1:19090 -> HX Edge Relay
        -> 127.0.0.1:<listener-port> -> Mihomo -> Proxy Group/DIRECT
+
+订阅/会话控制：客户端 -> HTTPS 443 `/sub/` 或 `/rot/` -> 雷池 -> 127.0.0.1:19090
 ```
 
 ## 创建入口
@@ -47,6 +50,14 @@ location ^~ /sub/ {
     proxy_read_timeout 30s;
 }
 
+# 住宅会话申请、查询、轮换和释放也必须回源 HX 控制面。
+location ^~ /rot/ {
+    proxy_pass http://127.0.0.1:19090;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 30s;
+}
+
 # HX Edge Relay 处理所有规范化的 WebSocket 代理路径，再转给对应 Mihomo Listener。
 location ^~ /__hx-proxy__/ {
     proxy_pass http://127.0.0.1:19090;
@@ -62,19 +73,20 @@ location ^~ /__hx-proxy__/ {
 雷池中使用同一拓扑时：
 
 1. 创建域名为 `proxy.example.com` 的 HTTPS 站点并启用 WebSocket。
-2. 代理路径 `/__hx-proxy__/` 和订阅路径 `/sub/` 都回源到同一个
+2. 代理路径 `/__hx-proxy__/`、订阅路径 `/sub/` 和住宅会话路径 `/rot/` 都回源到同一个
    `http://127.0.0.1:19090`，不要把 WebSocket 路径直接回源到某个 Mihomo 端口。
 3. 保留原始 `Host` 和完整 URI Path，启用 WebSocket Upgrade，代理读取超时至少设置为
    `300s` 或按雷池的长连接配置处理。
 4. 不把 `/api/`、管理页面或 Mihomo External Controller 加入这个公网站点。
 
 「代理服务」页会根据已创建的高级入口显示实际域名、环回端口和 WebSocket Path，并提供客户端订阅；
-雷池配置必须与这些值完全一致。
+住宅代理页会提供路径化的 `subscription_url` / `rotation_url`。这些 URL 默认省略 `:443`，雷池配置
+必须保留原始 Host 和完整 Path，不能把页面里的环回端口配置成公网回源。
 
-示例中的 `19090` 是 HX 控制面和 Edge Relay 端口，`18088` 是 Mihomo Listener 端口；
+示例中的 `19090` 是 HX 控制面和 Edge Relay 端口，`18088` 是 Mihomo Listener 内部端口；
 使用该拓扑时雷池的代理 WebSocket 和 `/sub/` 都回源到 `19090`，不能把代理路径直接回源到
 `18088`。HX 会依据 Host 和 `/__hx-proxy__/...` 完整路径选择 `18088` 或其他 Listener。
-`/sub/` 路由需要放在通用 SPA fallback 或默认 `location /` 之前，并保留原始查询参数。不要将
+`/sub/` 和 `/rot/` 路由需要放在通用 SPA fallback 或默认 `location /` 之前，并保留原始查询参数。不要将
 `/api/`、管理页面或 Mihomo External Controller 一并公开。Cloudflare 对 `/sub/*` 应关闭缓存、
 浏览器完整性检查和交互式质询，否则代理客户端可能下载到 HTML 质询页面。
 
@@ -84,12 +96,13 @@ location ^~ /__hx-proxy__/ {
 
 ## 客户端订阅
 
-每个入口生成一个可轮换 Token。管理面可复制三类链接：
+每个入口生成一个可轮换 Token。管理面可复制三类路径链接（以下域名仅为占位值）：
 
 ```text
-/sub/<token>?format=v2rayn
-/sub/<token>?format=clash
-/sub/<token>?format=sing-box
+https://proxy.example.com/sub/<token>?format=v2rayn
+https://proxy.example.com/sub/<token>?format=clash
+https://proxy.example.com/sub/<token>?format=sing-box
+https://proxy.example.com/rot/<token>/sessions/<session_id>
 ```
 
 默认格式为 v2rayN Base64 URI 列表；Clash/Mihomo 和 sing-box 客户端访问无参数旧链接时，
@@ -103,7 +116,10 @@ WebSocket 协议。Cloudflare 橙云或仅支持 WebSocket 的雷池不能把它
 字节流；这些入口必须使用直连、VPS 四层转发或真正的 HTTP/SOCKS5 反向代理。
 
 住宅渠道现在也可以在「住宅代理」页选择 `VLESS WS`、`VMess WS` 或 `Trojan WS`。这类入口由
-Mihomo 原生提供，允许复用本页的 Edge Relay：
+Mihomo 原生提供，允许复用本页的 Edge Relay。透传渠道会提供
+`https://proxy.example.com/sub/<token>?format=clash`；sticky 渠道必须先通过
+`https://proxy.example.com/rot/<token>/sessions/<session_id>` 获取会话凭据，不能把静态入口账号
+当作住宅会话使用：
 
 ```text
 客户端 -> Cloudflare -> 雷池 -> 127.0.0.1:19090
@@ -116,8 +132,10 @@ VLESS/VMess UUID 或 Trojan 密码。sticky 渠道通过 `/rot/<token>/sessions/
 VLESS/VMess 会话密码是合法 UUID，`proxy_username` 只用于控制面编译 `IN-USER` 路由，不拼入
 VLESS URI。`/rot/` 仍是普通 HTTP API 路径，必须由 HTTP 反向代理单独转发，不能让 Edge Relay 处理。
 
-住宅 HTTP/SOCKS/Mixed 页面只复制原生代理地址；WS 入口显示 `ws(s)://host/path` 端点，客户端
-协议参数和凭据应按 Mihomo/v2rayN/sing-box 的 WS 配置填写。没有公网端点时不会复制 `127.0.0.1`。
+住宅 HTTP/SOCKS/Mixed 只允许同机使用环回 Listener，或由明确配置的四层/协议反向代理承载；它们
+不能通过 Cloudflare/雷池七层路径变成 HTTP CONNECT/SOCKS5。WS 入口使用路径化订阅/会话 URL，
+不会把 `127.0.0.1:<listener-port>` 复制给远程客户端。`/sub/` 是配置下载地址，不是
+OutlookRegister Playwright 的 `proxy` 字段；同机运行时 Playwright 仍使用环回 HTTP/SOCKS URL。
 
 ### Clash Verge 导入诊断
 

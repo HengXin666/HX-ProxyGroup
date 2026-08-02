@@ -199,10 +199,12 @@ Proxy Group。实际数据面链路为：
   - 控制面 API 上游代理：可选填写 `http://`、`https://` 或 `socks5://` 代理，
     仅用于 BestProxy API 提取和服务端测试连接；它不转发客户端业务流量，地址和代理认证信息均加密保存。
 - **渠道**：一个渠道 = 一个客户端入口（Listener）和客户端会话命名空间。渠道创建时
-  不预取住宅 IP；透传渠道直接把流量转发给供应商网关，由供应商自行轮换。客户端入口的本机绑定地址
-  通常是 `127.0.0.1`，必须另外配置真实可达的公网端点；管理页不会把本机地址复制给远程客户端。
-- **客户端**：HTTP/SOCKS/Mixed 渠道连接入口（`http(s)/socks5://[账号:密码@]主机:端口`）即可使用；
-  sticky 渠道支持一个 token、一个端口承载多个显式 `session_id`。客户端通过会话 API
+  不预取住宅 IP；透传渠道直接把流量转发给供应商网关，由供应商自行轮换。住宅 Listener
+  强制绑定 `127.0.0.1` 或其他环回地址；公网端点只描述雷池/反向代理的 HTTPS 域名，
+  不代表 Mihomo 监听端口，也不会把内部端口发布给远程客户端。
+- **客户端**：HTTP/SOCKS/Mixed 渠道在 HX-ProxyGroup 同机使用
+  `http://127.0.0.1:<listener-port>`、`socks5://127.0.0.1:<listener-port>`；sticky
+  渠道支持一个 token、一个内部端口承载多个显式 `session_id`。客户端通过会话 API
   获取独立代理账号，此时才实时分配住宅 IP；完成高成本阶段后可按会话切到 `DIRECT`。
   需要跨国家轮换的客户端应在每个业务 flow 开始时选择一个国家并提交
   `{"country_code":"XX"}`，在该 flow 内固定 session 和国家；国家池的随机选择属于客户端，
@@ -221,8 +223,12 @@ Edge Relay 只转发固定 `/__hx-proxy__/` WebSocket 连接，协议认证、�
 Mihomo 负责。VLESS/VMess 入口需要 UUID；sticky 渠道的会话 API 会为每个会话生成合法 UUID，
 `proxy_username` 继续作为 Mihomo `IN-USER` 路由标识。HTTP CONNECT、SOCKS5 和 Mixed 仍不能
 经过 Cloudflare 橙云或仅支持 WebSocket 的 Edge Relay；这些入口必须使用可转发原生字节流的
-VPS 四层代理或 HTTP/SOCKS5 反向代理。未配置公网端点时只能在服务器本机使用，页面不会复制
-`127.0.0.1`。
+VPS 四层代理或 HTTP/SOCKS5 反向代理。对外只使用雷池 HTTPS 443 下的路径：透传 WS 渠道提供
+`https://proxy.example.com/sub/<token>?format=clash`，sticky 渠道通过
+`https://proxy.example.com/rot/<token>/sessions/<session_id>` 获取会话；链接省略默认 `:443`。
+`/sub/` 是订阅下载，不是 HTTP/SOCKS 代理端点；OutlookRegister 等同机程序仍把本机 Listener
+地址填入 Playwright，把 `/rot/` 的公网或本机控制面地址作为会话 API 根地址。未配置公网端点时
+只能在服务器本机使用，页面不会复制 `127.0.0.1`。
 
 定制会话 API、并发容量、切流语义和安全边界见
 [住宅代理客户端会话 API](docs/RESIDENTIAL_SESSION_API.md)。
@@ -243,9 +249,10 @@ Proxy Group，最后在住宅供应商编辑框的「上游海外 Proxy Group」
 `runtime/active.yaml` 中每个住宅节点是否出现 `dialer-proxy: <上游组名>`；没有该字段时，
 住宅网关仍然是直连，无法满足需要通过订阅访问住宅网关的网络环境。
 
-客户端使用渠道的 Listener 地址，不使用控制面 `19090`。`7890` 通常已被本机其他
-Mihomo/Clash 占用，住宅渠道建议使用独立端口（例如 `18088`）；Listener 端口占用现在
-会在数据面应用前直接报错。
+同机程序使用住宅渠道的环回 Listener 地址，不使用控制面 `19090`，也不把 `/sub/` 订阅 URL
+填入 Playwright 的 `proxy` 字段。`7890` 通常已被本机其他 Mihomo/Clash 占用，住宅渠道建议
+使用独立内部端口（例如 `18088`）；Listener 端口占用现在会在数据面应用前直接报错。公网
+入口只开放雷池的 `443`，控制面和 Mihomo Listener 端口均不应暴露到公网。
 
 首次启动会生成：
 

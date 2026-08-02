@@ -18,15 +18,16 @@ flowchart LR
     CP <-->|External Controller API| DP
     DP --> UP[Subscription Nodes]
     DP --> DIRECT[Server DIRECT Egress]
-    Client[Proxy Clients] -->|HTTP / SOCKS5 / VLESS / VMess / Trojan| DP
-    RP[Cloudflare / LeiChi / Reverse Proxy] -->|fixed WS path| CP
+    Client[Proxy Clients] -->|local HTTP/SOCKS or public WS| DP
+    RP[Cloudflare / LeiChi / Reverse Proxy] -->|HTTPS 443 /sub /rot /__hx-proxy__| CP
     CP -->|Edge Relay| DP
 ```
 
-关键约束：**协议处理和目标连接建立始终属于 Mihomo 数据面。** 普通入口不经过控制面；为兼容
-Cloudflare / 雷池单上游拓扑，控制面只在固定 `/__hx-proxy__/` 命名空间内提供受限 WebSocket
+关键约束：**协议处理和目标连接建立始终属于 Mihomo 数据面。** HTTP/SOCKS/Mixed Listener
+和 Mihomo 的内部端口只绑定环回；公网雷池只暴露 HTTPS 443，并按 `/sub/`、`/rot/` 和固定
+`/__hx-proxy__/` 路径回源控制面。控制面只在 `__hx-proxy__` 命名空间内提供受限 WebSocket
 Edge Relay，转发已经升级的连接，不解析 VLESS、VMess 或 Trojan，不接受任意目标地址。控制面退出
-时，直接监听的数据面仍应继续使用最后一版有效配置提供代理；Edge Relay 的新连接需等待控制面恢复。
+时，直接监听的数据面仍应继续使用最后一版有效配置提供代理；Edge Relay 与路径 API 的新请求需等待控制面恢复。
 
 ---
 
@@ -283,7 +284,8 @@ Listener
 └── version
 ```
 
-`public_endpoint` 描述对外域名和端口，可与实际监听地址不同，用于 Cloudflare / 雷池之后的订阅导出。
+`public_endpoint` 只描述雷池/反向代理使用的对外域名、TLS 和端口；住宅 WS 入口固定使用 HTTPS
+443。它与实际 Mihomo `bind_address:port` 完全不同，后者是环回内部状态，不得由公网客户端直接连接。
 
 ### 6.7 Proxy Service 应用聚合
 
@@ -554,6 +556,15 @@ Client
   -> assigned Proxy Group or DIRECT
 ```
 
+订阅和会话控制 API 使用同一个 HTTPS 443 虚拟主机，但仍是普通 HTTP 路径：
+
+```text
+Client -> HTTPS 443 /sub/<token> or /rot/<token>/... -> LeiChi -> hx-proxygroupd:19090
+```
+
+发布给外部客户端的链接省略默认 `:443`。`19090` 和 Listener 内部端口只允许环回访问；
+雷池不应直接回源某个住宅 Listener 端口。
+
 雷池负责 TLS 终止时，内部 Mihomo Listener 仍只监听环回地址；控制面 Edge Relay 根据公网
 `Host` 和完整 WebSocket Path 精确选择 Listener。所有高级 Listener 的路径都规范化为
 `/__hx-proxy__/` 前缀，`/sub/` 只用于订阅下载，不是代理数据路径。Edge Relay 的目标地址只
@@ -620,9 +631,9 @@ v1 只提供进程内注册表，不引入动态插件 ABI：
 HX 上游，`hx-proxygroupd` 在保留的 `/__hx-proxy__/` 路径下提供受限 WebSocket Edge Relay。
 普通 HTTP、SOCKS5、Mixed 和直接 WebSocket Listener 仍由 Mihomo 直接承载。
 
-**原因**：不在 Go 中实现代理协议，同时允许雷池不为每个 Mihomo 端口维护上游。Relay 只在
-WebSocket Upgrade 后复制连接字节，使用 Host 和规范化路径做白名单路由，设有并发上限；
-需要最低延迟或控制面独立生命周期的部署仍可让雷池直接回源 Mihomo Listener。
+**原因**：不在 Go 中实现代理协议，同时允许雷池只维护一个 HTTPS 443 上游，不为每个 Mihomo
+端口开放公网入口。Relay 只在 WebSocket Upgrade 后复制连接字节，使用 Host 和规范化路径做
+白名单路由，设有并发上限；`/sub/` 和 `/rot/` 只处理订阅与会话控制，不复制代理业务流量。
 
 ### ADR-002：v1 使用 SQLite
 

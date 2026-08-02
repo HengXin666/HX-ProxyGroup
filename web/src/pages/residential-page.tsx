@@ -124,7 +124,7 @@ const emptyChannelForm: ChannelForm = {
   authUsername: "",
   authPassword: "",
   publicHost: "",
-  publicPort: "18088",
+  publicPort: "443",
   publicTLS: false,
   enabled: true,
 }
@@ -196,7 +196,7 @@ export function ResidentialPage({
         <div>
           <h1 className="text-lg font-semibold">住宅代理</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            动态住宅 IP 渠道：服务端切换出口，客户端通过渠道凭证与公共轮换地址取用。
+            动态住宅 IP 渠道：客户端通过雷池 HTTPS 路径访问，住宅出口由 HX 代理组维护。
           </p>
         </div>
         <button
@@ -269,27 +269,24 @@ export function ResidentialPage({
                               <button type="button" title="配置公网端点" onClick={() => setEndpointChannel(channel)} className="text-muted-foreground hover:text-foreground"><Pencil className="size-3" /></button>
                             </div>
                             {channel.endpoint.auth_enabled && <KeyRound className="size-3 text-muted-foreground" aria-label="需要登录凭证" />}
-                            {proxyAddresses(channel).map((address) => (
-                              <div key={address} className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                                <code className="max-w-[240px] truncate rounded bg-muted px-1.5 py-0.5" title={address}>{address}</code>
-                                <button type="button" title={`复制 ${address.split(":")[0]} 代理地址`} onClick={() => void copyText(address, "代理地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
-                              </div>
-                            ))}
-                            {isResidentialWebSocketKind(channel.endpoint.kind) && channel.mode === "passthrough" && channel.endpoint.share_path && (
+                            {channel.subscription_url && (
                               <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                                <code className="max-w-[240px] truncate rounded bg-muted px-1.5 py-0.5" title="WebSocket 客户端订阅">{publicPath(channel, channel.endpoint.share_path)}</code>
-                                <button type="button" title="复制 WebSocket 客户端订阅" onClick={() => void copyText(publicPath(channel, channel.endpoint.share_path!), "WebSocket 订阅地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
+                                <code className="max-w-[240px] truncate rounded bg-success-muted px-1.5 py-0.5" title="Clash / Mihomo 客户端订阅">{channel.subscription_url}</code>
+                                <button type="button" title="复制 Clash / Mihomo 订阅地址" onClick={() => void copyText(channel.subscription_url, "Clash / Mihomo 订阅地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
                               </div>
                             )}
+                            {!isResidentialWebSocketKind(channel.endpoint.kind) && (
+                              <span className="text-[11px] text-warning">HTTP / SOCKS5 / Mixed 仅供本机或四层转发使用，不能通过雷池路径承载。</span>
+                            )}
                             {isResidentialWebSocketKind(channel.endpoint.kind) && channel.mode === "sticky" && (
-                              <span className="text-[11px] text-muted-foreground">粘滞 WS 凭据由 /rot 会话 API 按需签发</span>
+                              <span className="text-[11px] text-muted-foreground">粘滞 WS 凭据由无端口的 /rot 会话 API 按需签发。</span>
                             )}
                             {!hasPublicEndpoint(channel) && <span className="text-[11px] text-warning">未配置公网端点，禁止复制本机地址</span>}
                           </div>
-                          {channel.rotate_path && (
+                          {channel.rotation_url && (
                             <div className="mt-0.5 flex items-center gap-1.5 text-muted-foreground">
-                              <code className="rounded bg-muted px-1.5 py-0.5">/rot/{channel.rotate_path.split("/").filter(Boolean).pop()}</code>
-                              <button type="button" disabled={!hasPublicEndpoint(channel)} onClick={() => void copyText(publicPath(channel, channel.rotate_path!), "轮换地址")} className="hover:text-foreground disabled:opacity-40"><Copy className="size-3" /></button>
+                              <code className="max-w-[240px] truncate rounded bg-muted px-1.5 py-0.5" title="住宅会话控制地址">{channel.rotation_url}</code>
+                              <button type="button" onClick={() => void copyText(channel.rotation_url, "住宅会话控制地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
                             </div>
                           )}
                         </td>
@@ -908,7 +905,7 @@ function ChannelDialog({
             : undefined,
         },
         public_endpoint: form.publicHost.trim()
-          ? { host: form.publicHost.trim(), port: Number(form.publicPort) || Number(form.port), tls: form.publicTLS }
+          ? { host: form.publicHost.trim(), port: isResidentialWebSocketKind(form.listenerKind) ? 443 : Number(form.publicPort) || Number(form.port), tls: form.publicTLS }
           : undefined,
         enabled: form.enabled,
       }
@@ -988,7 +985,7 @@ function ChannelDialog({
                   ...current,
                   listenerKind: value,
                   publicTLS: isResidentialWebSocketKind(value) ? true : current.publicTLS,
-                  publicPort: isResidentialWebSocketKind(value) && current.publicPort === current.port ? "443" : current.publicPort,
+                  publicPort: isResidentialWebSocketKind(value) ? "443" : current.publicPort,
                 }))
               }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1023,7 +1020,7 @@ function ChannelDialog({
             </label>
             <label className="grid gap-1 text-xs">
               公网端口
-              <Input value={form.publicPort} onChange={(event) => update("publicPort", event.target.value)} inputMode="numeric" placeholder={form.port} />
+              <Input value={isResidentialWebSocketKind(form.listenerKind) ? "443" : form.publicPort} onChange={(event) => update("publicPort", event.target.value)} inputMode="numeric" placeholder={form.port} disabled={isResidentialWebSocketKind(form.listenerKind)} />
             </label>
             <label className="flex items-center gap-2 self-end rounded-md border px-3 py-2 text-xs">
               <Checkbox checked={form.publicTLS} onCheckedChange={(value) => update("publicTLS", value === true)} />
@@ -1031,7 +1028,7 @@ function ChannelDialog({
             </label>
             <div className="sm:col-span-2 rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning">
               {isResidentialWebSocketKind(form.listenerKind)
-                ? "WebSocket 入口可走 Cloudflare -> 雷池 -> HX Edge Relay；公网端点必须填写雷池域名，路径会自动纳入 /__hx-proxy__/ 命名空间。VLESS/VMess 的入口密码必须是 UUID。"
+                ? "WebSocket 入口可走 Cloudflare -> 雷池 -> HX Edge Relay；公网端点必须填写雷池域名并使用 443，客户端通过 /sub/<token>?format=clash 路径订阅。VLESS/VMess 的入口密码必须是 UUID。"
                 : "住宅 HTTP / SOCKS5 / Mixed 仍不能经过 Cloudflare 橙云或仅支持 WebSocket 的 Edge Relay；公网端点必须指向可转发原生字节流的 VPS 四层代理或 HTTP/SOCKS5 反向代理。"}
             </div>
             <label className="grid gap-1 text-xs">
@@ -1062,38 +1059,16 @@ function publicHostPort(channel: ResidentialChannel): string {
   const endpoint = channel.public_endpoint
   if (!hasPublicEndpoint(channel)) return "未配置公网端点"
   const host = endpoint.host.includes(":") && !endpoint.host.startsWith("[") ? `[${endpoint.host}]` : endpoint.host
-  return `${host}:${endpoint.port}`
+  const defaultPort = endpoint.tls ? 443 : 80
+  return endpoint.port === defaultPort ? host : `${host}:${endpoint.port}`
 }
 
 function formatPublicEndpoint(channel: ResidentialChannel): string {
   return hasPublicEndpoint(channel) ? `公网 ${publicHostPort(channel)}` : "未配置公网端点"
 }
 
-function proxyAddresses(channel: ResidentialChannel): string[] {
-  if (!hasPublicEndpoint(channel)) return []
-  const endpoint = channel.public_endpoint
-  const hostPort = publicHostPort(channel)
-  if (isResidentialWebSocketKind(channel.endpoint.kind)) {
-    const path = channel.endpoint.transport?.ws_path ?? ""
-    return [`${endpoint.tls ? "wss" : "ws"}://${hostPort}${path}`]
-  }
-  const httpScheme = endpoint.tls ? "https" : "http"
-  if (channel.endpoint.kind === "http") return [`${httpScheme}://${hostPort}`]
-  if (channel.endpoint.kind === "socks") return [`socks5://${hostPort}`]
-  return [`${httpScheme}://${hostPort}`, `socks5://${hostPort}`]
-}
-
 function isResidentialWebSocketKind(kind: string): boolean {
   return kind === "vless" || kind === "vmess" || kind === "trojan"
-}
-
-function publicPath(channel: ResidentialChannel, path: string): string {
-  if (!hasPublicEndpoint(channel)) return path
-  const endpoint = channel.public_endpoint
-  const host = endpoint.host.includes(":") && !endpoint.host.startsWith("[") ? `[${endpoint.host}]` : endpoint.host
-  const defaultPort = endpoint.tls ? 443 : 80
-  const port = endpoint.port === defaultPort ? "" : `:${endpoint.port}`
-  return `${endpoint.tls ? "https" : "http"}://${host}${port}${path}`
 }
 
 function ChannelEndpointDialog({
@@ -1108,7 +1083,11 @@ function ChannelEndpointDialog({
   onNotice: (message: string, tone?: "success" | "error") => void
 }) {
   const [host, setHost] = useState(channel.public_endpoint?.host ?? "")
-  const [port, setPort] = useState(String(channel.public_endpoint?.port || channel.endpoint.port))
+  const [port, setPort] = useState(
+    isResidentialWebSocketKind(channel.endpoint.kind)
+      ? "443"
+      : String(channel.public_endpoint?.port || channel.endpoint.port),
+  )
   const [tls, setTLS] = useState(channel.public_endpoint?.tls ?? false)
   const [saving, setSaving] = useState(false)
 
@@ -1122,7 +1101,11 @@ function ChannelEndpointDialog({
         region: channel.region,
         region_mode: channel.region_mode,
         random_regions: channel.random_regions,
-        public_endpoint: { host: host.trim(), port: Number(port), tls },
+        public_endpoint: {
+          host: host.trim(),
+          port: isResidentialWebSocketKind(channel.endpoint.kind) ? 443 : Number(port),
+          tls: isResidentialWebSocketKind(channel.endpoint.kind) || tls,
+        },
         enabled: channel.enabled,
       })
       await onSaved()
@@ -1149,7 +1132,7 @@ function ChannelEndpointDialog({
             </label>
             <label className="grid gap-1 text-xs">
               公网端口
-              <Input value={port} onChange={(event) => setPort(event.target.value)} inputMode="numeric" required />
+              <Input value={isResidentialWebSocketKind(channel.endpoint.kind) ? "443" : port} onChange={(event) => setPort(event.target.value)} inputMode="numeric" required disabled={isResidentialWebSocketKind(channel.endpoint.kind)} />
             </label>
             <label className="flex items-center gap-2 self-end rounded-md border px-3 py-2 text-xs">
               <Checkbox checked={tls} onCheckedChange={(value) => setTLS(value === true)} />
@@ -1157,7 +1140,7 @@ function ChannelEndpointDialog({
             </label>
             <div className="rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning sm:col-span-2">
               {isResidentialWebSocketKind(channel.endpoint.kind)
-                ? "仅填写 Cloudflare / 雷池实际使用的域名；WebSocket 路径必须保留，客户端凭据仍由 Mihomo Listener 校验。"
+                ? "仅填写 Cloudflare / 雷池实际使用的域名；公网路径固定走 HTTPS 443，订阅和会话 API 不会暴露 Mihomo 内部端口。"
                 : "仅填写已配置反向代理或四层转发的地址。住宅 Mixed 的两种复制地址分别是 HTTP 和 SOCKS5，不能导入为 Clash / v2rayN 节点。"}
             </div>
           </div>

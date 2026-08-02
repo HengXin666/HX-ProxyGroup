@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   Activity,
   ArrowDownToLine,
@@ -29,6 +29,12 @@ type OverviewData = {
   ruleSets: RoutingRuleSet[]
   listenerTotals: Map<string, TrafficSummary>
   listenerToday: Map<string, TrafficSummary>
+}
+
+type ChartTransition = {
+  key: string
+  samples: OverviewSample[]
+  step: number
 }
 
 const windows = [30, 60, 120] as const
@@ -101,7 +107,7 @@ export function OverviewPage({ onNotice }: OverviewPageProps) {
     return () => source.close()
   }, [])
 
-  const visibleSamples = samples.slice(-windowSeconds)
+  const visibleSamples = useMemo(() => samples.slice(-windowSeconds), [samples, windowSeconds])
   const latest = samples.at(-1)
   const routes = useMemo(() => (data?.listeners ?? []).map((listener) => ({
     listener,
@@ -156,14 +162,17 @@ function Metric({ icon: Icon, label, value, color }: { icon: typeof Activity; la
 
 function TrafficChart({ samples }: { samples: OverviewSample[] }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const clipID = `overview-chart-clip-${useId().replace(/:/g, "")}`
   const width = 960
   const height = 260
   const inset = { top: 16, right: 18, bottom: 34, left: 64 }
   const plotWidth = width - inset.left - inset.right
   const plotHeight = height - inset.top - inset.bottom
+  const transition = useChartTransition(samples, plotWidth / Math.max(1, samples.length - 1))
+  const renderedSamples = transition?.samples ?? samples
   const maximum = Math.max(1, ...samples.flatMap((sample) => [sample.upload_bytes_per_second, sample.download_bytes_per_second]))
-  const upload = chartPath(samples, "upload_bytes_per_second", maximum, width, height, inset)
-  const download = chartPath(samples, "download_bytes_per_second", maximum, width, height, inset)
+  const upload = chartPath(renderedSamples, "upload_bytes_per_second", maximum, width, height, inset, samples.length)
+  const download = chartPath(renderedSamples, "download_bytes_per_second", maximum, width, height, inset, samples.length)
   const hovered = hoveredIndex == null ? undefined : samples[hoveredIndex]
   const hoveredX = hoveredIndex == null ? 0 : chartX(hoveredIndex, samples.length, plotWidth, inset.left)
   const tooltipLeft = Math.min(88, Math.max(12, (hoveredX / width) * 100))
@@ -171,6 +180,7 @@ function TrafficChart({ samples }: { samples: OverviewSample[] }) {
   return <div className="mt-3 px-2 sm:px-4">
     <div className="relative h-64 w-full overflow-hidden">
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="size-full" role="img" aria-label="上传和下载速率滑动窗口图表">
+        <defs><clipPath id={clipID}><rect x={inset.left} y={inset.top} width={plotWidth} height={plotHeight} /></clipPath></defs>
         {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
           const y = inset.top + plotHeight * (1 - ratio)
           return <g key={ratio}><line x1={inset.left} x2={width - inset.right} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" vectorEffect="non-scaling-stroke" /><text x={inset.left - 8} y={y + 4} textAnchor="end" fill="var(--muted-foreground)" fontSize="11">{formatChartRate(maximum * ratio)}</text></g>
@@ -178,8 +188,11 @@ function TrafficChart({ samples }: { samples: OverviewSample[] }) {
         <line x1={inset.left} x2={width - inset.right} y1={height - inset.bottom} y2={height - inset.bottom} stroke="var(--border)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
         <text x="10" y={inset.top + 4} fill="var(--muted-foreground)" fontSize="11">传输量</text>
         <text x={width - inset.right} y={height - 5} textAnchor="end" fill="var(--muted-foreground)" fontSize="11">时间</text>
-        <path key={`download-${samples.at(-1)?.timestamp ?? "empty"}`} d={download} fill="none" stroke="var(--info)" strokeWidth="2" pathLength="1" className="chart-line" vectorEffect="non-scaling-stroke" />
-        <path key={`upload-${samples.at(-1)?.timestamp ?? "empty"}`} d={upload} fill="none" stroke="var(--success)" strokeWidth="2" pathLength="1" className="chart-line" vectorEffect="non-scaling-stroke" />
+        <g key={transition?.key ?? "static"} clipPath={`url(#${clipID})`}>
+          <path d={download} fill="none" stroke="var(--info)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+          <path d={upload} fill="none" stroke="var(--success)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+          {transition && <animateTransform attributeName="transform" type="translate" from="0 0" to={`${-transition.step} 0`} dur="700ms" calcMode="spline" keySplines="0.22 1 0.36 1" fill="freeze" />}
+        </g>
         {xIndexes.map((index) => <text key={index} x={chartX(index, samples.length, plotWidth, inset.left)} y={height - 10} textAnchor={index === 0 ? "start" : index === samples.length - 1 ? "end" : "middle"} fill="var(--muted-foreground)" fontSize="11">{samples[index] ? formatTimestamp(samples[index].timestamp) : "-"}</text>)}
         {hovered && <g pointerEvents="none"><line x1={hoveredX} x2={hoveredX} y1={inset.top} y2={height - inset.bottom} stroke="var(--foreground)" strokeOpacity=".35" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" /><circle cx={hoveredX} cy={chartY(hovered.download_bytes_per_second, maximum, height, inset)} r="4" fill="var(--info)" /><circle cx={hoveredX} cy={chartY(hovered.upload_bytes_per_second, maximum, height, inset)} r="4" fill="var(--success)" /></g>}
         {samples.map((sample, index) => <rect key={sample.timestamp} x={chartX(index, samples.length, plotWidth, inset.left) - Math.max(8, plotWidth / Math.max(1, samples.length - 1) / 2)} y={inset.top} width={Math.max(16, plotWidth / Math.max(1, samples.length - 1))} height={plotHeight} fill="transparent" tabIndex={0} role="button" aria-label={`${formatTimestamp(sample.timestamp)} 下载 ${formatRate(sample.download_bytes_per_second)}，上传 ${formatRate(sample.upload_bytes_per_second)}`} onMouseEnter={() => setHoveredIndex(index)} onFocus={() => setHoveredIndex(index)} onMouseLeave={() => setHoveredIndex(null)} onBlur={() => setHoveredIndex(null)} />)}
@@ -208,22 +221,25 @@ function RouteMetric({ label, value, helper }: { label: string; value: string; h
 }
 
 function MiniTrafficChart({ samples, resourceID }: { samples: OverviewSample[]; resourceID: string }) {
+  const clipID = `mini-chart-clip-${useId().replace(/:/g, "")}`
   const width = 320
   const height = 56
   const inset = 4
+  const transition = useChartTransition(samples, (width - inset * 2) / Math.max(1, samples.length - 1))
+  const renderedSamples = transition?.samples ?? samples
   const maximum = Math.max(1, ...samples.map((sample) => {
     const resource = resourceSample(sample, resourceID)
     return Math.max(resource?.upload_bytes_per_second ?? 0, resource?.download_bytes_per_second ?? 0)
   }))
-  const download = resourcePath(samples, resourceID, "download_bytes_per_second", maximum, width, height, inset)
-  const upload = resourcePath(samples, resourceID, "upload_bytes_per_second", maximum, width, height, inset)
-  return <div className="mt-3 border-t pt-2"><div className="flex items-center justify-between text-[10px] text-muted-foreground"><span>入口实时趋势</span><span>峰值 {formatRate(maximum)}</span></div><div className="mt-1 h-12">{samples.length === 0 ? <div className="flex h-full items-center text-[10px] text-muted-foreground">等待采样</div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="size-full" role="img" aria-label="入口实时流量趋势"><path key={`mini-download-${samples.at(-1)?.timestamp ?? "empty"}`} d={download} fill="none" stroke="var(--info)" strokeWidth="2" pathLength="1" className="chart-line" vectorEffect="non-scaling-stroke" /><path key={`mini-upload-${samples.at(-1)?.timestamp ?? "empty"}`} d={upload} fill="none" stroke="var(--success)" strokeWidth="2" pathLength="1" className="chart-line" vectorEffect="non-scaling-stroke" /></svg>}</div></div>
+  const download = resourcePath(renderedSamples, resourceID, "download_bytes_per_second", maximum, width, height, inset, samples.length)
+  const upload = resourcePath(renderedSamples, resourceID, "upload_bytes_per_second", maximum, width, height, inset, samples.length)
+  return <div className="mt-3 border-t pt-2"><div className="flex items-center justify-between text-[10px] text-muted-foreground"><span>入口实时趋势</span><span>峰值 {formatRate(maximum)}</span></div><div className="mt-1 h-12">{samples.length === 0 ? <div className="flex h-full items-center text-[10px] text-muted-foreground">等待采样</div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="size-full" role="img" aria-label="入口实时流量趋势"><defs><clipPath id={clipID}><rect x={inset} y={inset} width={width - inset * 2} height={height - inset * 2} /></clipPath></defs><g key={transition?.key ?? "static"} clipPath={`url(#${clipID})`}><path d={download} fill="none" stroke="var(--info)" strokeWidth="2" vectorEffect="non-scaling-stroke" /><path d={upload} fill="none" stroke="var(--success)" strokeWidth="2" vectorEffect="non-scaling-stroke" />{transition && <animateTransform attributeName="transform" type="translate" from="0 0" to={`${-transition.step} 0`} dur="700ms" calcMode="spline" keySplines="0.22 1 0.36 1" fill="freeze" />}</g></svg>}</div></div>
 }
 
-function chartPath(samples: OverviewSample[], key: "upload_bytes_per_second" | "download_bytes_per_second", maximum: number, width: number, height: number, inset: { top: number; right: number; bottom: number; left: number }): string {
+function chartPath(samples: OverviewSample[], key: "upload_bytes_per_second" | "download_bytes_per_second", maximum: number, width: number, height: number, inset: { top: number; right: number; bottom: number; left: number }, coordinateCount = samples.length): string {
   if (samples.length === 0) return ""
   return samples.map((sample, index) => {
-    const x = chartX(index, samples.length, width - inset.left - inset.right, inset.left)
+    const x = chartX(index, coordinateCount, width - inset.left - inset.right, inset.left)
     const y = chartY(sample[key], maximum, height, inset)
     return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`
   }).join(" ")
@@ -241,15 +257,55 @@ function resourceSample(sample: OverviewSample | undefined, resourceID: string) 
   return sample?.resources?.find((resource) => resource.resource_type === "listener" && resource.resource_id === resourceID)
 }
 
-function resourcePath(samples: OverviewSample[], resourceID: string, key: "upload_bytes_per_second" | "download_bytes_per_second", maximum: number, width: number, height: number, inset: number): string {
+function resourcePath(samples: OverviewSample[], resourceID: string, key: "upload_bytes_per_second" | "download_bytes_per_second", maximum: number, width: number, height: number, inset: number, coordinateCount = samples.length): string {
   if (samples.length === 0) return ""
-  const span = Math.max(1, samples.length - 1)
+  const span = Math.max(1, coordinateCount - 1)
   return samples.map((sample, index) => {
     const resource = resourceSample(sample, resourceID)
     const x = inset + (index / span) * (width - inset * 2)
     const y = height - inset - ((resource?.[key] ?? 0) / maximum) * (height - inset * 2)
     return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`
   }).join(" ")
+}
+
+function useChartTransition(samples: OverviewSample[], step: number): ChartTransition | null {
+  const previousSamples = useRef<OverviewSample[] | undefined>(undefined)
+  const [transition, setTransition] = useState<ChartTransition | null>(null)
+  const reducedMotion = usePrefersReducedMotion()
+
+  useLayoutEffect(() => {
+    const previous = previousSamples.current
+    previousSamples.current = samples
+    const latest = samples.at(-1)
+    if (!previous || !latest || !canSlideChart(previous, samples) || step <= 0) {
+      setTransition(null)
+      return
+    }
+    setTransition({ key: latest.timestamp, samples: [...previous, latest], step })
+  }, [samples, step])
+
+  if (reducedMotion || transition?.key !== samples.at(-1)?.timestamp) return null
+  return transition
+}
+
+function canSlideChart(previous: OverviewSample[], current: OverviewSample[]): boolean {
+  if (previous.length < 2 || current.length !== previous.length) return false
+  if (current.at(-1)?.timestamp === previous.at(-1)?.timestamp) return false
+  return current.slice(0, -1).every((sample, index) => sample.timestamp === previous[index + 1]?.timestamp)
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false)
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)")
+    const update = () => setReduced(media.matches)
+    update()
+    media.addEventListener("change", update)
+    return () => media.removeEventListener("change", update)
+  }, [])
+
+  return reduced
 }
 
 function indexSummaries(items: TrafficSummary[]): Map<string, TrafficSummary> {

@@ -165,6 +165,10 @@ http://127.0.0.1:<49152-65535 之间的随机端口>
 `--listen 127.0.0.1:<port>` 和 `--frontend-port <port>`。按 `Ctrl+C` 后，
 `run.sh` 会终止本次启动的后端、Mihomo、包管理器和 Vite 进程组并释放端口。
 
+本地运行会在 `.tmp/run/` 保留本次启动的日志：`run.log` 记录启动、就绪、子进程退出和整体退出状态；
+`logs/backend.log` 收集 Go 控制面输出；`logs/frontend.log` 收集 Vite 和前端开发进程输出。生产 systemd
+部署仍通过 journald 收集结构化日志，控制面会记录启动、正常退出、异常退出、已知后台任务 panic 及其堆栈。
+
 ### 住宅代理（动态住宅 IP）
 
 侧栏「住宅代理」页管理动态住宅 IP 渠道，整体模型是：
@@ -197,17 +201,28 @@ Proxy Group。实际数据面链路为：
 - **渠道**：一个渠道 = 一个客户端入口（Listener）和客户端会话命名空间。渠道创建时
   不预取住宅 IP；透传渠道直接把流量转发给供应商网关，由供应商自行轮换。客户端入口的本机绑定地址
   通常是 `127.0.0.1`，必须另外配置真实可达的公网端点；管理页不会把本机地址复制给远程客户端。
-- **客户端**：连接渠道入口（`http(s)/socks5://[账号:密码@]主机:端口`）即可使用；
+- **客户端**：HTTP/SOCKS/Mixed 渠道连接入口（`http(s)/socks5://[账号:密码@]主机:端口`）即可使用；
   sticky 渠道支持一个 token、一个端口承载多个显式 `session_id`。客户端通过会话 API
   获取独立代理账号，此时才实时分配住宅 IP；完成高成本阶段后可按会话切到 `DIRECT`。
   需要跨国家轮换的客户端应在每个业务 flow 开始时选择一个国家并提交
   `{"country_code":"XX"}`，在该 flow 内固定 session 和国家；国家池的随机选择属于客户端，
   服务端只负责校验、回显并拒绝同一 session 的国家冲突。
 
-住宅渠道是 Mihomo 的 HTTP / SOCKS5 / Mixed 原生入口，不提供 Clash、v2rayN 或 sing-box 导入语义。
-Cloudflare / 雷池当前的 HX Edge Relay 只支持固定 WebSocket 路由，不能承载住宅 HTTP CONNECT 或 SOCKS5；
-如需经过反向代理，必须使用实际支持相应字节流的 VPS 四层转发或 HTTP/SOCKS5 反向代理，并把该地址填入
-渠道的公网端点。未配置公网端点时只能在服务器本机使用，页面不会复制 `127.0.0.1`。
+住宅渠道默认是 Mihomo 的 HTTP / SOCKS5 / Mixed 原生入口；需要走
+`Cloudflare -> 雷池 -> HX-ProxyGroup` 时，可把入口协议选择为 VLESS、VMess 或 Trojan over WebSocket。
+此时实际链路为：
+
+```text
+客户端 -> Cloudflare -> 雷池 -> HX Edge Relay -> Mihomo WS Listener
+       -> 动态住宅节点 -(dialer-proxy)-> 上游海外 Proxy Group -> 住宅网关 -> 目标站点
+```
+
+Edge Relay 只转发固定 `/__hx-proxy__/` WebSocket 连接，协议认证、住宅节点选择和业务流量仍由
+Mihomo 负责。VLESS/VMess 入口需要 UUID；sticky 渠道的会话 API 会为每个会话生成合法 UUID，
+`proxy_username` 继续作为 Mihomo `IN-USER` 路由标识。HTTP CONNECT、SOCKS5 和 Mixed 仍不能
+经过 Cloudflare 橙云或仅支持 WebSocket 的 Edge Relay；这些入口必须使用可转发原生字节流的
+VPS 四层代理或 HTTP/SOCKS5 反向代理。未配置公网端点时只能在服务器本机使用，页面不会复制
+`127.0.0.1`。
 
 定制会话 API、并发容量、切流语义和安全边界见
 [住宅代理客户端会话 API](docs/RESIDENTIAL_SESSION_API.md)。

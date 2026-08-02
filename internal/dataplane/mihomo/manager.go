@@ -341,9 +341,9 @@ func (m *Manager) validateLocked(ctx context.Context, path string) error {
 		"-f", path,
 	)
 	command.Env = m.commandEnvironment()
-	_, err := command.CombinedOutput()
+	output, err := command.CombinedOutput()
 	if err != nil {
-		m.logger.Error("Mihomo configuration validation failed", "error", err)
+		m.logger.Error("Mihomo configuration validation failed", "error", err, "output_bytes", len(output))
 		return fmt.Errorf("mihomo config validation failed: %w", err)
 	}
 	return nil
@@ -365,6 +365,7 @@ func (m *Manager) startLocked(configPath string) error {
 		_ = logFile.Close()
 		return fmt.Errorf("start mihomo: %w", err)
 	}
+	m.logger.Info("Mihomo process started", "pid", command.Process.Pid, "config", configPath)
 	item := &process{command: command, done: make(chan error, 1)}
 	m.process = item
 	go func() {
@@ -419,10 +420,13 @@ func (m *Manager) stopLocked(ctx context.Context) error {
 		return nil
 	}
 	item := m.process
-	_ = item.command.Process.Signal(syscall.SIGTERM)
+	if err := item.command.Process.Signal(syscall.SIGTERM); err != nil {
+		m.logger.Warn("Mihomo graceful stop signal failed", "pid", item.command.Process.Pid, "error", err)
+	}
 	select {
 	case <-item.done:
 	case <-ctx.Done():
+		m.logger.Warn("Mihomo stop timed out; sending SIGKILL", "pid", item.command.Process.Pid, "reason", "context")
 		_ = item.command.Process.Kill()
 		<-item.done
 		m.process = nil
@@ -430,6 +434,7 @@ func (m *Manager) stopLocked(ctx context.Context) error {
 		m.status.PID = 0
 		return ctx.Err()
 	case <-time.After(5 * time.Second):
+		m.logger.Warn("Mihomo stop timed out; sending SIGKILL", "pid", item.command.Process.Pid, "reason", "deadline")
 		_ = item.command.Process.Kill()
 		<-item.done
 	}
@@ -537,8 +542,14 @@ func endpointKey(bindAddress string, port int) string {
 
 func (m *Manager) refreshProcessLocked() {
 	if m.externalProcess {
+		wasRunning := m.status.Running
 		m.status.Running = m.externalSocketReadyLocked()
 		m.status.PID = 0
+		if wasRunning && !m.status.Running {
+			m.logger.Error("external Mihomo process became unavailable")
+		} else if !wasRunning && m.status.Running {
+			m.logger.Info("external Mihomo process became available")
+		}
 		if m.status.Running && m.status.State == "failed" {
 			m.status.State = "running"
 		}
@@ -549,14 +560,17 @@ func (m *Manager) refreshProcessLocked() {
 	}
 	select {
 	case err := <-m.process.done:
+		item := m.process
 		m.process = nil
 		m.status.Running = false
 		m.status.PID = 0
 		m.status.State = "failed"
 		if err != nil {
 			m.status.LastError = "mihomo exited: " + err.Error()
+			m.logger.Error("Mihomo process exited unexpectedly", "pid", item.command.Process.Pid, "error", err)
 		} else {
 			m.status.LastError = "mihomo exited"
+			m.logger.Warn("Mihomo process exited unexpectedly", "pid", item.command.Process.Pid)
 		}
 	default:
 	}

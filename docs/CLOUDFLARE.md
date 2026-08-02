@@ -98,15 +98,26 @@ location ^~ /__hx-proxy__/ {
 
 ### 住宅渠道的边界
 
-住宅渠道的 `HTTP`、`SOCKS5` 和 `Mixed` 是 Mihomo 的原生代理入口，不是 Clash 配置、VLESS/VMess/Trojan
-节点，也不是 WebSocket 协议。当前 Edge Relay 只接受固定路径下已经升级的 WebSocket，因此不能把住宅入口
-伪装成 `/__hx-proxy__/` WebSocket，也不能把 Cloudflare 橙云或仅支持 WebSocket 的雷池上游当作 HTTP CONNECT
-或 SOCKS5 的转发器。
+住宅渠道的 `HTTP`、`SOCKS5` 和 `Mixed` 仍是 Mihomo 的原生代理入口，不是 Clash 配置，也不是
+WebSocket 协议。Cloudflare 橙云或仅支持 WebSocket 的雷池不能把它们变成 HTTP CONNECT/SOCKS5
+字节流；这些入口必须使用直连、VPS 四层转发或真正的 HTTP/SOCKS5 反向代理。
 
-住宅渠道必须在「住宅代理」页配置实际可达的公网端点：直接暴露已认证的 VPS 端口，或使用能够转发对应
-HTTP/SOCKS5 字节流的四层代理。页面只复制 `http(s)://` 和 `socks5://` 地址，不提供 Clash、v2rayN、
-sing-box 导入链接；没有公网端点时不会复制 `127.0.0.1` 等本机监听地址。`/rot/` 轮换 API 也必须由同一
-个实际可达的 HTTP 反向代理路径转发，不能复用仅 WebSocket 的 Edge Relay。
+住宅渠道现在也可以在「住宅代理」页选择 `VLESS WS`、`VMess WS` 或 `Trojan WS`。这类入口由
+Mihomo 原生提供，允许复用本页的 Edge Relay：
+
+```text
+客户端 -> Cloudflare -> 雷池 -> 127.0.0.1:19090
+       -> HX Edge Relay -> 127.0.0.1:<住宅 WS Listener>
+       -> 动态住宅节点 -(dialer-proxy)-> 上游 Proxy Group -> 住宅网关
+```
+
+WS 入口必须绑定环回、配置 TLS 公网域名、保留规范化后的 `/__hx-proxy__/...` 路径，并使用
+VLESS/VMess UUID 或 Trojan 密码。sticky 渠道通过 `/rot/<token>/sessions/<id>` 获取会话凭据；
+VLESS/VMess 会话密码是合法 UUID，`proxy_username` 只用于控制面编译 `IN-USER` 路由，不拼入
+VLESS URI。`/rot/` 仍是普通 HTTP API 路径，必须由 HTTP 反向代理单独转发，不能让 Edge Relay 处理。
+
+住宅 HTTP/SOCKS/Mixed 页面只复制原生代理地址；WS 入口显示 `ws(s)://host/path` 端点，客户端
+协议参数和凭据应按 Mihomo/v2rayN/sing-box 的 WS 配置填写。没有公网端点时不会复制 `127.0.0.1`。
 
 ### Clash Verge 导入诊断
 

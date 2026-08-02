@@ -69,6 +69,34 @@ func TestCompileListenerAddsResidentialClientCredentials(t *testing.T) {
 	}
 }
 
+func TestCompileListenerMapsResidentialVlessCredentialsToUUID(t *testing.T) {
+	t.Parallel()
+	compiler := &Compiler{cipher: benchmarkCipher{}}
+	config, err := compiler.compileListener(store.ListenerRecord{
+		ID: "listener-vless", Name: "residential-ws", Kind: "vless",
+		BindAddress: "127.0.0.1", Port: 18089, AuthMode: "none",
+		TransportJSON: `{"type":"ws","ws_path":"/__hx-proxy__/residential"}`,
+	}, "residential-group", []store.ResidentialClientRouteRecord{{
+		ResidentialClientSessionRecord: store.ResidentialClientSessionRecord{
+			ChannelID: "channel-1", SessionID: "window-01",
+			AuthUsername: "hx-session-one", AuthPasswordEncrypted: []byte("550e8400-e29b-41d4-a716-446655440000"),
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, ok := config["users"].([]map[string]any)
+	if !ok || len(users) != 1 {
+		t.Fatalf("listener users = %#v", config["users"])
+	}
+	if users[0]["username"] != "hx-session-one" || users[0]["uuid"] != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("listener VLESS user = %#v", users[0])
+	}
+	if _, exists := users[0]["password"]; exists {
+		t.Fatalf("VLESS user unexpectedly uses password field: %#v", users[0])
+	}
+}
+
 func TestCompileListenerWithoutClientRoutesKeepsForcedProxy(t *testing.T) {
 	t.Parallel()
 	compiler := &Compiler{cipher: benchmarkCipher{}}

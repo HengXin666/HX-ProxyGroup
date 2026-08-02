@@ -477,10 +477,13 @@ func (c *Compiler) compileListener(
 		if route.AuthUsername == "" || len(password) == 0 {
 			return nil, fmt.Errorf("listener %q has incomplete residential client authentication", record.Name)
 		}
-		users = append(users, map[string]any{
-			"username": route.AuthUsername,
-			"password": string(password),
-		})
+		user := map[string]any{"username": route.AuthUsername}
+		if record.Kind == "vless" || record.Kind == "vmess" {
+			user["uuid"] = string(password)
+		} else {
+			user["password"] = string(password)
+		}
+		users = append(users, user)
 		seenUsers[route.AuthUsername] = struct{}{}
 	}
 	config["users"] = users

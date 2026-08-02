@@ -586,6 +586,8 @@ export interface ResidentialChannelEndpoint {
   bind_address: string
   port: number
   auth_enabled: boolean
+  transport: ListenerTransport
+  share_path?: string
 }
 
 export interface ResidentialChannel {
@@ -638,6 +640,7 @@ export interface CreateResidentialChannelRequest {
     bind_address: string
     port: number
     auth?: { username: string; password: string }
+    transport?: ListenerTransport
   }
   public_endpoint?: ListenerPublicEndpoint
   enabled?: boolean

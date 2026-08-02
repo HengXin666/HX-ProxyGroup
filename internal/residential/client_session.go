@@ -2,6 +2,7 @@ package residential
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -114,7 +115,7 @@ func (s *Service) EnsureClientSessionByTokenWithOptions(
 	if activeSessions >= providerRecord.PoolSize {
 		return ClientSession{}, fmt.Errorf("%w: provider concurrent session limit reached", ErrConflict)
 	}
-	password, err := newToken()
+	password, err := s.newClientSessionPassword(ctx, record.ListenerID)
 	if err != nil {
 		return ClientSession{}, err
 	}
@@ -158,6 +159,25 @@ func (s *Service) EnsureClientSessionByTokenWithOptions(
 	}
 	view.ProxyPassword = password
 	return view, nil
+}
+
+func (s *Service) newClientSessionPassword(ctx context.Context, listenerID string) (string, error) {
+	record, err := s.repository.GetListener(ctx, listenerID)
+	if err != nil {
+		return "", mapStoreError(err)
+	}
+	if record.Kind != "vless" && record.Kind != "vmess" {
+		return newToken()
+	}
+
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate residential WebSocket UUID: %w", err)
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(value[:])
+	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:], nil
 }
 
 func (s *Service) GetClientSessionByToken(

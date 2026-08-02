@@ -62,10 +62,12 @@ type Channel struct {
 }
 
 type ChannelEndpoint struct {
-	Kind        string `json:"kind"`
-	BindAddress string `json:"bind_address"`
-	Port        int    `json:"port"`
-	AuthEnabled bool   `json:"auth_enabled"`
+	Kind        string             `json:"kind"`
+	BindAddress string             `json:"bind_address"`
+	Port        int                `json:"port"`
+	AuthEnabled bool               `json:"auth_enabled"`
+	Transport   listener.Transport `json:"transport"`
+	SharePath   string             `json:"share_path,omitempty"`
 }
 
 type CreateChannelRequest struct {
@@ -82,10 +84,11 @@ type CreateChannelRequest struct {
 }
 
 type ChannelListenerRequest struct {
-	Kind        string         `json:"kind"`
-	BindAddress string         `json:"bind_address"`
-	Port        int            `json:"port"`
-	Auth        *listener.Auth `json:"auth,omitempty"`
+	Kind        string             `json:"kind"`
+	BindAddress string             `json:"bind_address"`
+	Port        int                `json:"port"`
+	Auth        *listener.Auth     `json:"auth,omitempty"`
+	Transport   listener.Transport `json:"transport,omitempty"`
 }
 
 type UpdateChannelRequest struct {
@@ -230,6 +233,7 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		Port:           request.Listener.Port,
 		ProxyGroupID:   group.ID,
 		Auth:           request.Listener.Auth,
+		Transport:      request.Listener.Transport,
 		PublicEndpoint: request.PublicEndpoint,
 		Enabled:        &enabled,
 	})
@@ -429,11 +433,19 @@ func (s *Service) channelFromRecord(
 	}
 	listenerRecord, err := s.repository.GetListener(ctx, record.ListenerID)
 	if err == nil {
+		var transport listener.Transport
+		if err := json.Unmarshal([]byte(listenerRecord.TransportJSON), &transport); err != nil {
+			return Channel{}, fmt.Errorf("decode residential listener transport: %w", err)
+		}
 		channel.Endpoint = ChannelEndpoint{
 			Kind:        listenerRecord.Kind,
 			BindAddress: listenerRecord.BindAddress,
 			Port:        listenerRecord.Port,
 			AuthEnabled: listenerRecord.AuthMode != "none" && len(listenerRecord.AuthConfigEncrypted) > 0,
+			Transport:   transport,
+		}
+		if listenerRecord.ShareToken != "" {
+			channel.Endpoint.SharePath = "/sub/" + listenerRecord.ShareToken
 		}
 		if err := json.Unmarshal([]byte(listenerRecord.PublicEndpointJSON), &channel.PublicEndpoint); err != nil {
 			return Channel{}, fmt.Errorf("decode residential public endpoint: %w", err)

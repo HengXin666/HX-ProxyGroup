@@ -22,17 +22,38 @@ BACKEND_PID=""
 BACKEND_PROCESS_GROUP=""
 FRONTEND_PID=""
 FRONTEND_PROCESS_GROUP=""
+BACKEND_EXIT_STATUS=""
+FRONTEND_EXIT_STATUS=""
+RUN_LOG="${RUN_DIR}/run.log"
+BACKEND_LOG="${RUN_DIR}/logs/backend.log"
+FRONTEND_LOG="${RUN_DIR}/logs/frontend.log"
+
+append_run_log() {
+    local line="$1"
+    [[ -d "${RUN_DIR}" ]] || return 0
+    printf '%s\n' "${line}" >>"${RUN_LOG}" 2>/dev/null || true
+}
+
+timestamp() {
+    date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
 
 log() {
-    printf '[hx-proxygroup] %s\n' "$*"
+    local line="[$(timestamp)] [hx-proxygroup] $*"
+    printf '%s\n' "${line}"
+    append_run_log "${line}"
 }
 
 warn() {
-    printf '[hx-proxygroup] warning: %s\n' "$*" >&2
+    local line="[$(timestamp)] [hx-proxygroup] warning: $*"
+    printf '%s\n' "${line}" >&2
+    append_run_log "${line}"
 }
 
 fail() {
-    printf '[hx-proxygroup] error: %s\n' "$*" >&2
+    local line="[$(timestamp)] [hx-proxygroup] error: $*"
+    printf '%s\n' "${line}" >&2
+    append_run_log "${line}"
     exit 1
 }
 
@@ -212,6 +233,7 @@ parse_arguments() {
 prepare_local_directories() {
     mkdir -p \
         "${RUN_DIR}/bin" \
+        "${RUN_DIR}/logs" \
         "${DATA_DIR}/artifacts" \
         "${DATA_DIR}/runtime" \
         "${DATA_DIR}/snapshots" \
@@ -220,12 +242,15 @@ prepare_local_directories() {
     chmod 0700 \
         "${RUN_DIR}" \
         "${RUN_DIR}/bin" \
+        "${RUN_DIR}/logs" \
         "${DATA_DIR}" \
         "${DATA_DIR}/artifacts" \
         "${DATA_DIR}/runtime" \
         "${DATA_DIR}/snapshots" \
         "${DATA_DIR}/state" \
         "${DATA_DIR}/tmp"
+    touch "${RUN_LOG}" "${BACKEND_LOG}" "${FRONTEND_LOG}"
+    chmod 0600 "${RUN_LOG}" "${BACKEND_LOG}" "${FRONTEND_LOG}"
 
     local config_path="${RUN_DIR}/config.yaml"
     if [[ ! -e "${config_path}" ]]; then
@@ -253,13 +278,14 @@ build_or_copy_backend() {
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o "${BACKEND_BINARY}" \
             ./cmd/hx-proxygroupd
-    )
+    ) 2>&1 | tee -a "${RUN_LOG}"
     chmod 0755 "${BACKEND_BINARY}"
 }
 
 start_backend() {
     local binary="$1"
     log "starting backend at http://${LISTEN_ADDRESS}"
+    log "backend log: ${BACKEND_LOG}"
     setsid "${binary}" \
         --listen "${LISTEN_ADDRESS}" \
         --data-dir "${DATA_DIR}" \
@@ -268,9 +294,10 @@ start_backend() {
         --master-key "${DATA_DIR}/master.key" \
         --runtime-config "${DATA_DIR}/runtime/active.yaml" \
         --snapshots "${DATA_DIR}/snapshots" \
-        --mihomo "${MIHOMO_BINARY}" &
+        --mihomo "${MIHOMO_BINARY}" >>"${BACKEND_LOG}" 2>&1 &
     BACKEND_PID="$!"
     BACKEND_PROCESS_GROUP="${BACKEND_PID}"
+    chmod 0600 "${BACKEND_LOG}"
 }
 
 wait_for_backend() {
@@ -285,8 +312,12 @@ wait_for_backend() {
 
     for ((attempt = 1; attempt <= 30; attempt++)); do
         if ! kill -0 "${BACKEND_PID}" 2>/dev/null; then
-            wait "${BACKEND_PID}" || true
-            fail "backend exited before becoming ready"
+            set +e
+            wait "${BACKEND_PID}"
+            local backend_status="$?"
+            set -e
+            record_child_exit backend "${BACKEND_PID}" "${backend_status}"
+            fail "backend exited before becoming ready; see ${BACKEND_LOG}"
         fi
         if curl --fail --silent --show-error --max-time 1 "${health_url}" >/dev/null 2>&1; then
             sleep 0.1
@@ -298,7 +329,7 @@ wait_for_backend() {
         fi
         sleep 1
     done
-    fail "backend did not become ready at ${health_url}"
+    fail "backend did not become ready at ${health_url}; see ${BACKEND_LOG}"
 }
 
 detect_frontend_package_manager() {
@@ -318,19 +349,19 @@ install_frontend_dependencies() {
     log "installing frontend dependencies with ${package_manager}"
     case "${package_manager}" in
         pnpm)
-            (cd "${FRONTEND_DIR}" && pnpm install --frozen-lockfile)
+            (cd "${FRONTEND_DIR}" && pnpm install --frozen-lockfile) 2>&1 | tee -a "${RUN_LOG}"
             ;;
         yarn)
-            (cd "${FRONTEND_DIR}" && yarn install --frozen-lockfile)
+            (cd "${FRONTEND_DIR}" && yarn install --frozen-lockfile) 2>&1 | tee -a "${RUN_LOG}"
             ;;
         bun)
-            (cd "${FRONTEND_DIR}" && bun install --frozen-lockfile)
+            (cd "${FRONTEND_DIR}" && bun install --frozen-lockfile) 2>&1 | tee -a "${RUN_LOG}"
             ;;
         npm)
             if [[ -f "${FRONTEND_DIR}/package-lock.json" ]]; then
-                (cd "${FRONTEND_DIR}" && npm ci)
+                (cd "${FRONTEND_DIR}" && npm ci) 2>&1 | tee -a "${RUN_LOG}"
             else
-                (cd "${FRONTEND_DIR}" && npm install)
+                (cd "${FRONTEND_DIR}" && npm install) 2>&1 | tee -a "${RUN_LOG}"
             fi
             ;;
         *)
@@ -388,6 +419,7 @@ start_frontend_if_available() {
 
     local api_base="http://${LISTEN_ADDRESS}"
     log "starting frontend at http://${FRONTEND_HOST}:${FRONTEND_PORT}"
+    log "frontend log: ${FRONTEND_LOG}"
     (
         cd "${FRONTEND_DIR}"
         export VITE_BACKEND_TARGET="${api_base}"
@@ -396,9 +428,10 @@ start_frontend_if_available() {
             --port "${FRONTEND_PORT}" \
             --strictPort \
             --clearScreen false
-    ) &
+    ) >>"${FRONTEND_LOG}" 2>&1 &
     FRONTEND_PID="$!"
     FRONTEND_PROCESS_GROUP="${FRONTEND_PID}"
+    chmod 0600 "${FRONTEND_LOG}"
 }
 
 process_group_exists() {
@@ -412,6 +445,20 @@ signal_process_group() {
     if process_group_exists "${process_group}"; then
         kill "-${signal}" -- "-${process_group}" 2>/dev/null || true
     fi
+}
+
+record_child_exit() {
+    local name="$1"
+    local pid="$2"
+    local status="$3"
+    local log_path="${BACKEND_LOG}"
+    if [[ "${name}" == "frontend" ]]; then
+        FRONTEND_EXIT_STATUS="${status}"
+        log_path="${FRONTEND_LOG}"
+    else
+        BACKEND_EXIT_STATUS="${status}"
+    fi
+    log "${name} process exited (pid=${pid}, status=${status}); log=${log_path}"
 }
 
 wait_for_process_group() {
@@ -437,26 +484,54 @@ cleanup() {
     local status="$?"
     trap - EXIT INT TERM HUP
 
+    log "local run stopping (status=${status})"
+
     signal_process_group TERM "${FRONTEND_PROCESS_GROUP}"
     signal_process_group TERM "${BACKEND_PROCESS_GROUP}"
     wait_for_process_group frontend "${FRONTEND_PROCESS_GROUP}"
     wait_for_process_group backend "${BACKEND_PROCESS_GROUP}"
 
-    [[ -z "${FRONTEND_PID}" ]] || wait "${FRONTEND_PID}" 2>/dev/null || true
-    [[ -z "${BACKEND_PID}" ]] || wait "${BACKEND_PID}" 2>/dev/null || true
+    if [[ -n "${FRONTEND_PID}" && -z "${FRONTEND_EXIT_STATUS}" ]]; then
+        set +e
+        wait "${FRONTEND_PID}" 2>/dev/null
+        local frontend_status="$?"
+        set -e
+        record_child_exit frontend "${FRONTEND_PID}" "${frontend_status}"
+    fi
+    if [[ -n "${BACKEND_PID}" && -z "${BACKEND_EXIT_STATUS}" ]]; then
+        set +e
+        wait "${BACKEND_PID}" 2>/dev/null
+        local backend_status="$?"
+        set -e
+        record_child_exit backend "${BACKEND_PID}" "${backend_status}"
+    fi
+    log "local run exited (status=${status})"
     exit "${status}"
 }
 
 wait_for_children() {
     local status=0
+    local exited_pid=""
     set +e
     if [[ -n "${FRONTEND_PID}" ]]; then
-        wait -n "${BACKEND_PID}" "${FRONTEND_PID}"
+        if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then
+            wait -n -p exited_pid "${BACKEND_PID}" "${FRONTEND_PID}"
+        else
+            wait -n "${BACKEND_PID}" "${FRONTEND_PID}"
+        fi
         status="$?"
+        if [[ "${exited_pid}" == "${BACKEND_PID}" ]]; then
+            record_child_exit backend "${BACKEND_PID}" "${status}"
+        elif [[ "${exited_pid}" == "${FRONTEND_PID}" ]]; then
+            record_child_exit frontend "${FRONTEND_PID}" "${status}"
+        else
+            log "a child process exited (status=${status}); process identity unavailable on this Bash version"
+        fi
         warn "backend or frontend exited; stopping the remaining process"
     else
         wait "${BACKEND_PID}"
         status="$?"
+        record_child_exit backend "${BACKEND_PID}" "${status}"
     fi
     set -e
     return "${status}"
@@ -473,12 +548,15 @@ main() {
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
 
+    log "local run starting (pid=$$, version=${VERSION})"
+
     ensure_backend_address_available
     start_backend "${BACKEND_BINARY}"
     wait_for_backend
     start_frontend_if_available
 
     log "local data: ${DATA_DIR}"
+    log "run log: ${RUN_LOG}"
     if [[ -n "${FRONTEND_PID}" ]]; then
         log "backend and frontend are running; press Ctrl+C to stop both"
     else

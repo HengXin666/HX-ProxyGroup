@@ -286,6 +286,74 @@ func TestResidentialChannelPersistsPublicEndpointAndRejectsLoopback(t *testing.T
 	}
 }
 
+func TestResidentialChannelSupportsCloudflareWebSocketEntry(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t)
+	provider := harness.createProvider(t)
+	ctx := context.Background()
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "residential-cloudflare-ws", ProviderID: provider.ID, Mode: ModePassthrough,
+		Listener: ChannelListenerRequest{
+			Kind: "vless", BindAddress: "127.0.0.1", Port: 29307,
+			Auth: &listener.Auth{
+				Username: "residential-entry",
+				Password: "550e8400-e29b-41d4-a716-446655440000",
+			},
+			Transport: listener.Transport{Type: "ws", WSPath: "/residential"},
+		},
+		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.Endpoint.Kind != "vless" || channel.Endpoint.Transport.WSPath != listener.WebSocketPathPrefix+"residential" {
+		t.Fatalf("channel endpoint = %+v", channel.Endpoint)
+	}
+	if channel.Endpoint.SharePath == "" {
+		t.Fatal("WebSocket residential channel did not expose its subscription path")
+	}
+	listenerRecord, err := harness.store.GetListener(ctx, channel.ListenerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listenerRecord.Kind != "vless" || !strings.Contains(listenerRecord.TransportJSON, listener.WebSocketPathPrefix+"residential") {
+		t.Fatalf("stored listener = %+v", listenerRecord)
+	}
+}
+
+func TestResidentialWebSocketSessionGetsUUIDCredential(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t)
+	provider := harness.createProvider(t)
+	ctx := context.Background()
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "residential-vless-session", ProviderID: provider.ID, Mode: ModeSticky,
+		Listener: ChannelListenerRequest{
+			Kind: "vless", BindAddress: "127.0.0.1", Port: 29308,
+			Auth: &listener.Auth{
+				Username: "residential-entry",
+				Password: "550e8400-e29b-41d4-a716-446655440000",
+			},
+			Transport: listener.Transport{Type: "ws", WSPath: "/residential-session"},
+		},
+		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := harness.store.GetResidentialChannel(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := harness.service.EnsureClientSessionByToken(ctx, record.RotateToken, "window-vless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(session.ProxyPassword) != 36 || session.ProxyPassword[8] != '-' || session.ProxyPassword[13] != '-' || session.ProxyPassword[18] != '-' || session.ProxyPassword[23] != '-' {
+		t.Fatalf("session credential = %q, want UUID", session.ProxyPassword)
+	}
+}
+
 func TestClientSessionRejectsConflictingCountryPin(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t)

@@ -99,6 +99,7 @@ type ChannelForm = {
   region: string
   randomRegions: string
   listenerKind: string
+  wsPath: string
   bindAddress: string
   port: string
   authUsername: string
@@ -117,6 +118,7 @@ const emptyChannelForm: ChannelForm = {
   region: "",
   randomRegions: "",
   listenerKind: "mixed",
+  wsPath: "/residential",
   bindAddress: "127.0.0.1",
   port: "18088",
   authUsername: "",
@@ -273,6 +275,15 @@ export function ResidentialPage({
                                 <button type="button" title={`复制 ${address.split(":")[0]} 代理地址`} onClick={() => void copyText(address, "代理地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
                               </div>
                             ))}
+                            {isResidentialWebSocketKind(channel.endpoint.kind) && channel.mode === "passthrough" && channel.endpoint.share_path && (
+                              <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                                <code className="max-w-[240px] truncate rounded bg-muted px-1.5 py-0.5" title="WebSocket 客户端订阅">{publicPath(channel, channel.endpoint.share_path)}</code>
+                                <button type="button" title="复制 WebSocket 客户端订阅" onClick={() => void copyText(publicPath(channel, channel.endpoint.share_path!), "WebSocket 订阅地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
+                              </div>
+                            )}
+                            {isResidentialWebSocketKind(channel.endpoint.kind) && channel.mode === "sticky" && (
+                              <span className="text-[11px] text-muted-foreground">粘滞 WS 凭据由 /rot 会话 API 按需签发</span>
+                            )}
                             {!hasPublicEndpoint(channel) && <span className="text-[11px] text-warning">未配置公网端点，禁止复制本机地址</span>}
                           </div>
                           {channel.rotate_path && (
@@ -892,6 +903,9 @@ function ChannelDialog({
           kind: form.listenerKind,
           bind_address: form.bindAddress.trim(),
           port: Number(form.port),
+          transport: isResidentialWebSocketKind(form.listenerKind)
+            ? { type: "ws", ws_path: form.wsPath.trim() }
+            : undefined,
         },
         public_endpoint: form.publicHost.trim()
           ? { host: form.publicHost.trim(), port: Number(form.publicPort) || Number(form.port), tls: form.publicTLS }
@@ -969,15 +983,31 @@ function ChannelDialog({
             )}
             <label className="grid gap-1 text-xs">
               入口协议
-              <Select value={form.listenerKind} onValueChange={(value) => update("listenerKind", value)}>
+              <Select value={form.listenerKind} onValueChange={(value) => {
+                setForm((current) => ({
+                  ...current,
+                  listenerKind: value,
+                  publicTLS: isResidentialWebSocketKind(value) ? true : current.publicTLS,
+                  publicPort: isResidentialWebSocketKind(value) && current.publicPort === current.port ? "443" : current.publicPort,
+                }))
+              }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="mixed">mixed（HTTP + SOCKS5）</SelectItem>
                   <SelectItem value="http">HTTP</SelectItem>
                   <SelectItem value="socks">SOCKS5</SelectItem>
+                  <SelectItem value="vless">VLESS over WebSocket</SelectItem>
+                  <SelectItem value="vmess">VMess over WebSocket</SelectItem>
+                  <SelectItem value="trojan">Trojan over WebSocket</SelectItem>
                 </SelectContent>
               </Select>
             </label>
+            {isResidentialWebSocketKind(form.listenerKind) && (
+              <label className="grid gap-1 text-xs">
+                WebSocket 路径
+                <Input value={form.wsPath} onChange={(event) => update("wsPath", event.target.value)} placeholder="/residential" required />
+              </label>
+            )}
             <label className="grid gap-1 text-xs">
               监听地址
               <Input value={form.bindAddress} onChange={(event) => update("bindAddress", event.target.value)} placeholder="127.0.0.1" />
@@ -997,17 +1027,19 @@ function ChannelDialog({
             </label>
             <label className="flex items-center gap-2 self-end rounded-md border px-3 py-2 text-xs">
               <Checkbox checked={form.publicTLS} onCheckedChange={(value) => update("publicTLS", value === true)} />
-              公网 HTTP 端点使用 TLS
+              {isResidentialWebSocketKind(form.listenerKind) ? "公网 HTTPS / WebSocket 使用 TLS" : "公网 HTTP 端点使用 TLS"}
             </label>
             <div className="sm:col-span-2 rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning">
-              住宅渠道是 HTTP / SOCKS5 / Mixed 代理，不是 Clash 订阅或 VLESS/VMess/Trojan WS。Cloudflare 橙云与仅支持 WebSocket 的 Edge Relay 不能承载 HTTP CONNECT 或 SOCKS5；公网端点必须指向实际能转发该协议的 VPS / 四层代理 / 受支持反向代理。
+              {isResidentialWebSocketKind(form.listenerKind)
+                ? "WebSocket 入口可走 Cloudflare -> 雷池 -> HX Edge Relay；公网端点必须填写雷池域名，路径会自动纳入 /__hx-proxy__/ 命名空间。VLESS/VMess 的入口密码必须是 UUID。"
+                : "住宅 HTTP / SOCKS5 / Mixed 仍不能经过 Cloudflare 橙云或仅支持 WebSocket 的 Edge Relay；公网端点必须指向可转发原生字节流的 VPS 四层代理或 HTTP/SOCKS5 反向代理。"}
             </div>
             <label className="grid gap-1 text-xs">
-              入口账号（可选）
+              入口账号{isResidentialWebSocketKind(form.listenerKind) ? "（必填）" : "（可选）"}
               <Input value={form.authUsername} onChange={(event) => update("authUsername", event.target.value)} autoComplete="off" />
             </label>
             <label className="grid gap-1 text-xs">
-              入口密码（可选）
+              入口密码{isResidentialWebSocketKind(form.listenerKind) ? "（必填）" : "（可选）"}
               <Input value={form.authPassword} onChange={(event) => update("authPassword", event.target.value)} type="password" autoComplete="new-password" />
             </label>
           </div>
@@ -1041,10 +1073,18 @@ function proxyAddresses(channel: ResidentialChannel): string[] {
   if (!hasPublicEndpoint(channel)) return []
   const endpoint = channel.public_endpoint
   const hostPort = publicHostPort(channel)
+  if (isResidentialWebSocketKind(channel.endpoint.kind)) {
+    const path = channel.endpoint.transport?.ws_path ?? ""
+    return [`${endpoint.tls ? "wss" : "ws"}://${hostPort}${path}`]
+  }
   const httpScheme = endpoint.tls ? "https" : "http"
   if (channel.endpoint.kind === "http") return [`${httpScheme}://${hostPort}`]
   if (channel.endpoint.kind === "socks") return [`socks5://${hostPort}`]
   return [`${httpScheme}://${hostPort}`, `socks5://${hostPort}`]
+}
+
+function isResidentialWebSocketKind(kind: string): boolean {
+  return kind === "vless" || kind === "vmess" || kind === "trojan"
 }
 
 function publicPath(channel: ResidentialChannel, path: string): string {
@@ -1116,7 +1156,9 @@ function ChannelEndpointDialog({
               公网 HTTP 端点使用 TLS
             </label>
             <div className="rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning sm:col-span-2">
-              仅填写已配置反向代理或四层转发的地址。住宅 Mixed 的两种复制地址分别是 HTTP 和 SOCKS5，不能导入为 Clash / v2rayN 节点。
+              {isResidentialWebSocketKind(channel.endpoint.kind)
+                ? "仅填写 Cloudflare / 雷池实际使用的域名；WebSocket 路径必须保留，客户端凭据仍由 Mihomo Listener 校验。"
+                : "仅填写已配置反向代理或四层转发的地址。住宅 Mixed 的两种复制地址分别是 HTTP 和 SOCKS5，不能导入为 Clash / v2rayN 节点。"}
             </div>
           </div>
           <DialogFooter>

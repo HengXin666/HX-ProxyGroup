@@ -71,7 +71,7 @@ PUT /rot/<token>/sessions/<session_id>
 }
 ```
 
-客户端将响应中的账号和密码写入原 Listener URL：
+对于 HTTP/SOCKS/Mixed Listener，客户端将响应中的账号和密码写入原 Listener URL：
 
 ```text
 http://<proxy_username>:<proxy_password>@proxy-host:18088
@@ -80,6 +80,21 @@ http://<proxy_username>:<proxy_password>@proxy-host:18088
 首次调用时才向供应商获取或生成住宅节点。同一个未过期的 `token + session_id` 重复调用
 是幂等的，并返回原代理账号。密码在数据库中使用 AEAD 加密，管理 API、普通日志和状态
 接口均不回显。
+
+如果渠道入口是 VLESS/VMess/Trojan over WebSocket：
+
+- `proxy_password` 是 VLESS/VMess 的 UUID，或 Trojan 的密码。
+- `proxy_username` 不放进 VLESS/VMess URI，它只作为 Mihomo `IN-USER` 的会话路由标识。
+- 客户端仍使用渠道的公网域名、TLS 和 `/__hx-proxy__/...` WebSocket Path；Cloudflare/雷池
+  必须保留原始 Host、Upgrade 和完整 Path。
+- VLESS 示例形态为：
+
+```text
+vless://<proxy_password>@proxy.example.com:443?encryption=none&security=tls&type=ws&host=proxy.example.com&path=/__hx-proxy__/residential#residential
+```
+
+VMess/Trojan 按客户端对应的 WS 配置填写同一个 UUID/密码、域名和路径。示例中的凭据和域名
+均为占位值，不要把真实 token 或 UUID 写入日志或工单。
 
 `country_code`会在 session 创建时固定并在响应中回显。之后同一个 session 如果请求不同国家，
 服务端返回 422；不带国家的旧客户端仍可使用兼容路径。固定渠道国家与请求国家冲突时同样拒绝。

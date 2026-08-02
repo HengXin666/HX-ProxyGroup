@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -46,41 +47,59 @@ var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger.Info("process starting", "component", "hx-proxygroupd", "version", version, "pid", os.Getpid())
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logger.Error("process panicked", "component", "hx-proxygroupd", "panic_type", fmt.Sprintf("%T", recovered), "stack", string(debug.Stack()))
+			os.Exit(2)
+		}
+	}()
 	if len(os.Args) > 1 && os.Args[1] == "--terminal-helper" {
+		logger.Info("terminal helper starting", "pid", os.Getpid())
 		if err := runTerminalHelper(logger, os.Args[2:]); err != nil {
-			logger.Error("terminal helper stopped", "error", err)
+			logger.Error("terminal helper exited with error", "error", err)
 			os.Exit(1)
 		}
+		logger.Info("terminal helper exited", "status", "ok")
 		return
 	}
 	if err := run(logger); err != nil {
-		logger.Error("service stopped", "error", err)
+		logger.Error("process exited with error", "component", "hx-proxygroupd", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("process exited", "component", "hx-proxygroupd", "status", "ok")
 }
 
 func run(logger *slog.Logger) error {
 	cfg := config.Default()
-	flag.StringVar(&cfg.ListenAddress, "listen", cfg.ListenAddress, "HTTP management API listen address")
-	flag.StringVar(&cfg.DataDirectory, "data-dir", cfg.DataDirectory, "persistent data directory")
-	flag.StringVar(&cfg.ApplicationConfig, "config", cfg.ApplicationConfig, "application configuration path")
-	flag.StringVar(&cfg.DatabasePath, "database", cfg.DatabasePath, "SQLite database path")
-	flag.StringVar(&cfg.MasterKeyPath, "master-key", cfg.MasterKeyPath, "master key path for encrypted secrets")
-	flag.StringVar(&cfg.RuntimeConfigPath, "runtime-config", cfg.RuntimeConfigPath, "active Mihomo configuration path")
-	flag.StringVar(&cfg.SnapshotsPath, "snapshots", cfg.SnapshotsPath, "subscription snapshot directory")
-	flag.StringVar(&cfg.WebRoot, "web-root", cfg.WebRoot, "production web asset directory")
-	flag.StringVar(&cfg.MihomoBinary, "mihomo", cfg.MihomoBinary, "Mihomo executable path or command name")
-	flag.BoolVar(&cfg.MihomoExternal, "mihomo-external", cfg.MihomoExternal, "coordinate a systemd-managed Mihomo process")
-	flag.StringVar(&cfg.MihomoEgressInterface, "mihomo-egress-interface", cfg.MihomoEgressInterface, "Mihomo outbound interface: auto, off, or an interface name")
-	flag.IntVar(&cfg.MihomoMaxProcs, "mihomo-max-procs", cfg.MihomoMaxProcs, "maximum CPU threads available to Mihomo")
-	flag.Int64Var(&cfg.MihomoLogMaxBytes, "mihomo-log-max-bytes", cfg.MihomoLogMaxBytes, "maximum bytes in each Mihomo log file")
-	flag.IntVar(&cfg.MihomoLogBackups, "mihomo-log-backups", cfg.MihomoLogBackups, "number of rotated Mihomo log files to keep")
-	flag.StringVar(&cfg.TerminalPrivilegedSocket, "terminal-socket", cfg.TerminalPrivilegedSocket, "local root PTY helper socket")
-	flag.Parse()
+	flags := flag.NewFlagSet("hx-proxygroupd", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	flags.StringVar(&cfg.ListenAddress, "listen", cfg.ListenAddress, "HTTP management API listen address")
+	flags.StringVar(&cfg.DataDirectory, "data-dir", cfg.DataDirectory, "persistent data directory")
+	flags.StringVar(&cfg.ApplicationConfig, "config", cfg.ApplicationConfig, "application configuration path")
+	flags.StringVar(&cfg.DatabasePath, "database", cfg.DatabasePath, "SQLite database path")
+	flags.StringVar(&cfg.MasterKeyPath, "master-key", cfg.MasterKeyPath, "master key path for encrypted secrets")
+	flags.StringVar(&cfg.RuntimeConfigPath, "runtime-config", cfg.RuntimeConfigPath, "active Mihomo configuration path")
+	flags.StringVar(&cfg.SnapshotsPath, "snapshots", cfg.SnapshotsPath, "subscription snapshot directory")
+	flags.StringVar(&cfg.WebRoot, "web-root", cfg.WebRoot, "production web asset directory")
+	flags.StringVar(&cfg.MihomoBinary, "mihomo", cfg.MihomoBinary, "Mihomo executable path or command name")
+	flags.BoolVar(&cfg.MihomoExternal, "mihomo-external", cfg.MihomoExternal, "coordinate a systemd-managed Mihomo process")
+	flags.StringVar(&cfg.MihomoEgressInterface, "mihomo-egress-interface", cfg.MihomoEgressInterface, "Mihomo outbound interface: auto, off, or an interface name")
+	flags.IntVar(&cfg.MihomoMaxProcs, "mihomo-max-procs", cfg.MihomoMaxProcs, "maximum CPU threads available to Mihomo")
+	flags.Int64Var(&cfg.MihomoLogMaxBytes, "mihomo-log-max-bytes", cfg.MihomoLogMaxBytes, "maximum bytes in each Mihomo log file")
+	flags.IntVar(&cfg.MihomoLogBackups, "mihomo-log-backups", cfg.MihomoLogBackups, "number of rotated Mihomo log files to keep")
+	flags.StringVar(&cfg.TerminalPrivilegedSocket, "terminal-socket", cfg.TerminalPrivilegedSocket, "local root PTY helper socket")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return fmt.Errorf("parse command line flags: %w", err)
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	logger.Info("configuration validated", "listen_address", cfg.ListenAddress, "data_directory", cfg.DataDirectory)
 	if err := cfg.EnsureDirectories(); err != nil {
 		return err
 	}
@@ -383,21 +402,31 @@ func run(logger *slog.Logger) error {
 
 	const backgroundTasks = 5
 	backgroundErrors := make(chan error, backgroundTasks)
-	go func() {
-		backgroundErrors <- subscriptionScheduler.Run(ctx)
-	}()
-	go func() {
-		backgroundErrors <- nodeScheduler.Run(ctx)
-	}()
-	go func() {
-		backgroundErrors <- residentialScheduler.Run(ctx)
-	}()
-	go func() {
-		backgroundErrors <- alertScheduler.Run(ctx)
-	}()
-	go func() {
-		backgroundErrors <- trafficService.Run(ctx)
-	}()
+	runBackground := func(name string, task func(context.Context) error) {
+		go func() {
+			var taskErr error
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						taskErr = fmt.Errorf("background task %s panicked", name)
+						logger.Error("background task panicked", "task", name, "panic_type", fmt.Sprintf("%T", recovered), "stack", string(debug.Stack()))
+					}
+				}()
+				taskErr = task(ctx)
+			}()
+			if taskErr != nil {
+				logger.Error("background task exited", "task", name, "error", taskErr)
+			} else {
+				logger.Info("background task exited", "task", name, "status", "ok")
+			}
+			backgroundErrors <- taskErr
+		}()
+	}
+	runBackground("subscription_scheduler", subscriptionScheduler.Run)
+	runBackground("node_scheduler", nodeScheduler.Run)
+	runBackground("residential_scheduler", residentialScheduler.Run)
+	runBackground("alert_scheduler", alertScheduler.Run)
+	runBackground("traffic_service", trafficService.Run)
 	drainBackground := func(alreadyRead int) error {
 		var joined error
 		for index := alreadyRead; index < backgroundTasks; index++ {
@@ -419,13 +448,24 @@ func run(logger *slog.Logger) error {
 	select {
 	case serverErr := <-serverErrors:
 		stop()
+		if serverErr != nil {
+			logger.Error("management API exited unexpectedly", "error", serverErr)
+		} else {
+			logger.Info("management API exited", "status", "ok")
+		}
 		return errors.Join(serverErr, drainBackground(0))
 	case firstBackgroundErr := <-backgroundErrors:
+		if firstBackgroundErr != nil {
+			logger.Error("background task requested process shutdown", "error", firstBackgroundErr)
+		} else {
+			logger.Warn("background task exited; shutting down")
+		}
 		stop()
 		shutdownErr := shutdownHTTP()
 		serverErr := <-serverErrors
 		return errors.Join(firstBackgroundErr, drainBackground(1), shutdownErr, serverErr)
 	case <-ctx.Done():
+		logger.Info("shutdown requested")
 		shutdownErr := shutdownHTTP()
 		serverErr := <-serverErrors
 		return errors.Join(shutdownErr, serverErr, drainBackground(0))

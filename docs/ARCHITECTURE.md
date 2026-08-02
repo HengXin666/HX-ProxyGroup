@@ -559,6 +559,10 @@ Client
 `/__hx-proxy__/` 前缀，`/sub/` 只用于订阅下载，不是代理数据路径。Edge Relay 的目标地址只
 能是控制面已知的环回 Listener，不能由请求 URL 或查询参数指定。
 
+住宅渠道的 VLESS/VMess/Trojan WS Listener 复用同一条 Edge Relay 路径；其默认代理组成员是
+动态住宅节点，住宅节点通过 `dialer-proxy` 选择供应商配置的上游 Proxy Group。住宅 HTTP、
+SOCKS5 和 Mixed Listener 不经过该七层 Relay，仍需要原生端口或四层字节流转发。
+
 ### 13.3 原生 TCP / UDP
 
 普通 Cloudflare CDN 代理只适合 HTTP、WebSocket 和 gRPC 类传输。原生 TCP、SOCKS5、Hysteria2、TUIC 等需要：

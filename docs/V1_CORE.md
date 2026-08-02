@@ -239,6 +239,7 @@ v1 将用户提出的会话需求映射为可组合策略：
 - [x] 数据库拒绝重复端点，Mihomo 校验与启动就绪检查处理系统端口占用。
 - [x] 端口变更经过候选配置校验、受控重启和失败回滚。
 - [x] Listener 通过 Mihomo `proxy` 字段直接绑定代理组；普通入口流量无需经过 Go 控制面，Cloudflare / 雷池 WebSocket 入口可选经过固定路径 Edge Relay。
+- [x] 住宅渠道支持 VLESS / VMess / Trojan over WebSocket 入口；住宅节点继续由 Mihomo `dialer-proxy` 串到上游 Proxy Group，HTTP/SOCKS/Mixed 仍要求四层或原生字节流转发。
 - [x] 支持为 Listener 配置用户名和密码。
 - [x] API 不回显凭据，后端以 AEAD 密文保存并仅在配置编译时解密。
 - [ ] 支持连接数、空闲超时、最大并发和速率限制。

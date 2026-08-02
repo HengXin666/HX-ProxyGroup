@@ -249,6 +249,26 @@ func TestRunScriptStartsAndStopsBackend(t *testing.T) {
 		response.Body.Close()
 		t.Fatal("backend still accepts requests after run.sh stopped")
 	}
+	runLog, err := os.ReadFile(filepath.Join(".tmp", "run", "run.log"))
+	if err != nil {
+		t.Fatalf("read local run log: %v", err)
+	}
+	if !strings.Contains(string(runLog), "local run stopping") || !strings.Contains(string(runLog), "local run exited") {
+		t.Fatalf("local run log does not contain lifecycle events:\n%s", runLog)
+	}
+	for _, path := range []string{
+		filepath.Join(".tmp", "run", "run.log"),
+		filepath.Join(".tmp", "run", "logs", "backend.log"),
+		filepath.Join(".tmp", "run", "logs", "frontend.log"),
+	} {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat local log %q: %v", path, statErr)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("local log %q mode = %o, want 600", path, info.Mode().Perm())
+		}
+	}
 }
 
 func TestRunScriptRejectsOccupiedBackendAddressBeforeBuild(t *testing.T) {

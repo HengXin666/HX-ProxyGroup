@@ -463,6 +463,7 @@ export type ResidentialProtocol = "http" | "https" | "socks5"
 export type ResidentialRotationMode = "session-template" | "per-request" | "api-list"
 export type ResidentialChannelMode = "passthrough" | "sticky"
 export type ResidentialSessionExpiryPolicy = "expire" | "rotate"
+export type ResidentialRegionMode = "fixed" | "application-random"
 
 export interface ResidentialPreset {
   vendor: string
@@ -484,6 +485,7 @@ export interface ResidentialPresetCatalog {
   placeholders: string[]
   protocols: ResidentialProtocol[]
   rotation_modes: ResidentialRotationMode[]
+  region_modes: ResidentialRegionMode[]
   exit_ip_default: string
 }
 
@@ -503,6 +505,8 @@ export interface ResidentialProvider {
   max_concurrent_sessions: number
   session_expiry_policy: ResidentialSessionExpiryPolicy
   default_region?: string
+  default_region_mode: ResidentialRegionMode
+  default_random_regions?: string[]
   credentials_configured: boolean
   gateway_username?: string
   supports_sticky: boolean
@@ -533,6 +537,8 @@ export interface CreateResidentialProviderRequest {
   max_concurrent_sessions?: number
   session_expiry_policy?: ResidentialSessionExpiryPolicy
   default_region?: string
+  default_region_mode?: ResidentialRegionMode
+  default_random_regions?: string[]
   enabled?: boolean
 }
 
@@ -553,6 +559,8 @@ export interface UpdateResidentialProviderRequest {
   max_concurrent_sessions?: number
   session_expiry_policy?: ResidentialSessionExpiryPolicy
   default_region?: string
+  default_region_mode?: ResidentialRegionMode
+  default_random_regions?: string[]
   enabled: boolean
 }
 
@@ -580,6 +588,8 @@ export interface ResidentialChannel {
   proxy_group_id: string
   listener_id: string
   region?: string
+  region_mode: ResidentialRegionMode
+  random_regions?: string[]
   endpoint: ResidentialChannelEndpoint
   active_session_count: number
   pool_size?: number
@@ -611,6 +621,8 @@ export interface CreateResidentialChannelRequest {
   provider_id: string
   mode: ResidentialChannelMode
   region?: string
+  region_mode?: ResidentialRegionMode
+  random_regions?: string[]
   listener: {
     kind: string
     bind_address: string
@@ -624,6 +636,8 @@ export interface UpdateResidentialChannelRequest {
   version: number
   name: string
   region?: string
+  region_mode?: ResidentialRegionMode
+  random_regions?: string[]
   enabled: boolean
 }
 

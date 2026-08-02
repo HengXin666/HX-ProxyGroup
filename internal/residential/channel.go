@@ -24,14 +24,16 @@ const (
 
 // Channel is the administrator-facing view of one residential entry point.
 type Channel struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	ProviderID   string `json:"provider_id"`
-	ProviderName string `json:"provider_name,omitempty"`
-	Mode         string `json:"mode"`
-	ProxyGroupID string `json:"proxy_group_id"`
-	ListenerID   string `json:"listener_id"`
-	Region       string `json:"region,omitempty"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	ProviderID    string     `json:"provider_id"`
+	ProviderName  string     `json:"provider_name,omitempty"`
+	Mode          string     `json:"mode"`
+	ProxyGroupID  string     `json:"proxy_group_id"`
+	ListenerID    string     `json:"listener_id"`
+	Region        string     `json:"region,omitempty"`
+	RegionMode    RegionMode `json:"region_mode"`
+	RandomRegions []string   `json:"random_regions,omitempty"`
 	// Endpoint describes where consumers connect.
 	Endpoint ChannelEndpoint `json:"endpoint"`
 	// ActiveSessionCount is the number of IPs currently allocated because a
@@ -65,13 +67,15 @@ type ChannelEndpoint struct {
 }
 
 type CreateChannelRequest struct {
-	Name       string                 `json:"name"`
-	ProviderID string                 `json:"provider_id"`
-	Mode       string                 `json:"mode"`
-	Region     string                 `json:"region,omitempty"`
-	PoolSize   int                    `json:"pool_size,omitempty"` // ignored for sticky channels
-	Listener   ChannelListenerRequest `json:"listener"`
-	Enabled    *bool                  `json:"enabled,omitempty"`
+	Name          string                 `json:"name"`
+	ProviderID    string                 `json:"provider_id"`
+	Mode          string                 `json:"mode"`
+	Region        string                 `json:"region,omitempty"`
+	RegionMode    RegionMode             `json:"region_mode,omitempty"`
+	RandomRegions []string               `json:"random_regions,omitempty"`
+	PoolSize      int                    `json:"pool_size,omitempty"` // ignored for sticky channels
+	Listener      ChannelListenerRequest `json:"listener"`
+	Enabled       *bool                  `json:"enabled,omitempty"`
 }
 
 type ChannelListenerRequest struct {
@@ -82,10 +86,12 @@ type ChannelListenerRequest struct {
 }
 
 type UpdateChannelRequest struct {
-	Version int    `json:"version"`
-	Name    string `json:"name"`
-	Region  string `json:"region,omitempty"`
-	Enabled bool   `json:"enabled"`
+	Version       int        `json:"version"`
+	Name          string     `json:"name"`
+	Region        string     `json:"region,omitempty"`
+	RegionMode    RegionMode `json:"region_mode,omitempty"`
+	RandomRegions []string   `json:"random_regions,omitempty"`
+	Enabled       bool       `json:"enabled"`
 }
 
 func (s *Service) ListChannels(ctx context.Context) ([]Channel, error) {
@@ -156,13 +162,16 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 			ModePassthrough,
 		)
 	}
-	region := strings.TrimSpace(request.Region)
-	if region == "" {
-		region = provider.DefaultRegion
-	}
-	if err := validateRegion(region); err != nil {
+	regionSelection, err := channelRegionSelection(
+		request.RegionMode,
+		request.Region,
+		request.RandomRegions,
+		provider,
+	)
+	if err != nil {
 		return Channel{}, err
 	}
+	region := regionSelection.Region
 	enabled := request.Enabled == nil || *request.Enabled
 
 	channelID, err := newID("residential-channel")
@@ -182,7 +191,7 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 			return Channel{}, err
 		}
 		now := s.now().UTC()
-		nodeIDs, err = s.materializePool(ctx, channelID, name, provider, credentials, region, 1)
+		nodeIDs, err = s.materializePool(ctx, channelID, name, provider, credentials, regionSelection, 1)
 		if err != nil {
 			return Channel{}, err
 		}
@@ -234,6 +243,8 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		ProxyGroupID:  group.ID,
 		ListenerID:    createdListener.ID,
 		Region:        region,
+		RegionMode:    string(regionSelection.Mode),
+		RandomRegions: marshalRegionList(regionSelection.RandomRegions),
 		RotateToken:   rotateToken,
 		PoolCreatedAt: poolCreatedAt,
 		Enabled:       enabled,
@@ -262,12 +273,29 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	if len(name) < 1 || len(name) > 128 {
 		return Channel{}, fmt.Errorf("%w: name must contain 1 to 128 characters", ErrInvalid)
 	}
-	region := strings.TrimSpace(request.Region)
-	if err := validateRegion(region); err != nil {
+	regionMode := request.RegionMode
+	region := request.Region
+	randomRegions := request.RandomRegions
+	// Older clients do not send the region policy fields. Preserve a channel's
+	// existing application-random policy during an unrelated edit; a new client
+	// can explicitly select fixed mode to clear it.
+	if strings.TrimSpace(string(regionMode)) == "" && strings.TrimSpace(region) == "" && len(randomRegions) == 0 {
+		regionMode = RegionMode(existing.RegionMode)
+		region = existing.Region
+		randomRegions = parseRegionList(existing.RandomRegions)
+	}
+	regionSelection, err := normalizeRegionSelection(
+		string(regionMode),
+		region,
+		randomRegions,
+	)
+	if err != nil {
 		return Channel{}, err
 	}
 	existing.Name = name
-	existing.Region = region
+	existing.Region = regionSelection.Region
+	existing.RegionMode = string(regionSelection.Mode)
+	existing.RandomRegions = marshalRegionList(regionSelection.RandomRegions)
 	existing.Enabled = request.Enabled
 	existing.UpdatedAt = s.now().UTC()
 	updated, err := s.repository.UpdateResidentialChannel(ctx, existing, request.Version)
@@ -350,6 +378,8 @@ func (s *Service) channelFromRecord(
 		ProxyGroupID:            record.ProxyGroupID,
 		ListenerID:              record.ListenerID,
 		Region:                  record.Region,
+		RegionMode:              normalizedChannelRegionMode(record.RegionMode),
+		RandomRegions:           parseRegionList(record.RandomRegions),
 		ActiveSessionCount:      activeSessionCount,
 		PoolSize:                len(pool),
 		ActiveSessionIndex:      record.ActiveSessionIndex,
@@ -380,6 +410,21 @@ func (s *Service) channelFromRecord(
 		return Channel{}, err
 	}
 	return channel, nil
+}
+
+func channelRegionSelection(mode RegionMode, region string, randomRegions []string, provider Provider) (RegionSelection, error) {
+	if strings.TrimSpace(string(mode)) == "" && strings.TrimSpace(region) == "" && len(randomRegions) == 0 {
+		selection := providerRegionSelection(provider)
+		return normalizeRegionSelection(string(selection.Mode), selection.Region, selection.RandomRegions)
+	}
+	return normalizeRegionSelection(string(mode), region, randomRegions)
+}
+
+func normalizedChannelRegionMode(mode string) RegionMode {
+	if mode == "" {
+		return RegionModeFixed
+	}
+	return RegionMode(mode)
 }
 
 func channelGroupName(channelName string) string {

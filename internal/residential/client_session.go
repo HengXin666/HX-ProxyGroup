@@ -25,6 +25,7 @@ type ClientSession struct {
 	SessionID     string     `json:"session_id"`
 	ProxyUsername string     `json:"proxy_username"`
 	ProxyPassword string     `json:"proxy_password,omitempty"`
+	CountryCode   string     `json:"country_code,omitempty"`
 	RouteMode     string     `json:"route_mode"`
 	SessionIndex  int        `json:"session_index"`
 	PoolSize      int        `json:"pool_size,omitempty"` // pre-v19 response compatibility
@@ -34,9 +35,23 @@ type ClientSession struct {
 	LastRotatedAt *time.Time `json:"last_rotated_at,omitempty"`
 }
 
+// ClientSessionOptions are accepted only when a new logical session is
+// created. A sticky session keeps the resolved country for its full lifetime.
+type ClientSessionOptions struct {
+	CountryCode string `json:"country_code,omitempty"`
+}
+
 func (s *Service) EnsureClientSessionByToken(
 	ctx context.Context,
 	token, sessionID string,
+) (ClientSession, error) {
+	return s.EnsureClientSessionByTokenWithOptions(ctx, token, sessionID, ClientSessionOptions{})
+}
+
+func (s *Service) EnsureClientSessionByTokenWithOptions(
+	ctx context.Context,
+	token, sessionID string,
+	options ClientSessionOptions,
 ) (ClientSession, error) {
 	s.clientSessionMutex.Lock()
 	defer s.clientSessionMutex.Unlock()
@@ -44,8 +59,19 @@ func (s *Service) EnsureClientSessionByToken(
 	if err != nil {
 		return ClientSession{}, err
 	}
+	countryCode, err := clientSessionCountry(record, options.CountryCode)
+	if err != nil {
+		return ClientSession{}, err
+	}
 	existing, err := s.repository.GetResidentialClientSession(ctx, record.ID, sessionID)
 	if err == nil {
+		if existing.CountryCode != "" && countryCode != "" &&
+			!strings.EqualFold(existing.CountryCode, countryCode) {
+			return ClientSession{}, fmt.Errorf(
+				"%w: session country_code is already pinned to %s",
+				ErrInvalid, existing.CountryCode,
+			)
+		}
 		if sessionAllocationExpired(existing, s.now()) {
 			providerRecord, providerErr := s.repository.GetResidentialProvider(ctx, record.ProviderID)
 			if providerErr != nil {
@@ -56,6 +82,9 @@ func (s *Service) EnsureClientSessionByToken(
 					return ClientSession{}, err
 				}
 				return ClientSession{}, ErrSessionExpired
+			}
+			if existing.CountryCode == "" {
+				existing.CountryCode = countryCode
 			}
 			updated, replaceErr := s.replaceClientSessionAllocation(ctx, record, providerRecord, existing, true)
 			if replaceErr != nil {
@@ -95,7 +124,7 @@ func (s *Service) EnsureClientSessionByToken(
 		return ClientSession{}, fmt.Errorf("encrypt residential client password: %w", err)
 	}
 	now := s.now().UTC()
-	fingerprint, expiresAt, err := s.allocateClientSessionNode(ctx, record, providerRecord, sessionID, now)
+	fingerprint, expiresAt, err := s.allocateClientSessionNode(ctx, record, providerRecord, sessionID, now, countryCode)
 	if err != nil {
 		return ClientSession{}, err
 	}
@@ -109,6 +138,7 @@ func (s *Service) EnsureClientSessionByToken(
 		RouteMode:             ClientRouteResidential,
 		AllocatedAt:           &now,
 		ExpiresAt:             expiresAt,
+		CountryCode:           countryCode,
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	})
@@ -329,7 +359,8 @@ func (s *Service) clientSessionView(
 ) (ClientSession, error) {
 	view := ClientSession{
 		SessionID: record.SessionID, ProxyUsername: record.AuthUsername,
-		RouteMode: record.RouteMode, SessionIndex: record.SessionIndex,
+		CountryCode: record.CountryCode,
+		RouteMode:   record.RouteMode, SessionIndex: record.SessionIndex,
 		RotateCount: record.RotateCount, LastRotatedAt: record.LastRotatedAt,
 		AllocatedAt: record.AllocatedAt, ExpiresAt: record.ExpiresAt,
 	}
@@ -344,6 +375,38 @@ func (s *Service) clientSessionView(
 		view.ProxyPassword = string(plaintext)
 	}
 	return view, nil
+}
+
+func clientSessionCountry(channel store.ResidentialChannelRecord, requested string) (string, error) {
+	requested = strings.TrimSpace(requested)
+	if err := validateRegion(requested); err != nil {
+		return "", err
+	}
+	configured := ""
+	if channel.RegionMode == string(RegionModeFixed) {
+		configured = strings.TrimSpace(channel.Region)
+	}
+	if requested != "" && configured != "" && !strings.EqualFold(requested, configured) {
+		return "", fmt.Errorf(
+			"%w: country_code %q conflicts with channel country %q",
+			ErrInvalid, requested, configured,
+		)
+	}
+	if requested != "" {
+		return requested, nil
+	}
+	return configured, nil
+}
+
+func clientSessionRegionSelection(channel store.ResidentialChannelRecord, countryCode string) (RegionSelection, error) {
+	if strings.TrimSpace(countryCode) != "" {
+		return normalizeRegionSelection(string(RegionModeFixed), countryCode, nil)
+	}
+	return normalizeRegionSelection(
+		channel.RegionMode,
+		channel.Region,
+		parseRegionList(channel.RandomRegions),
+	)
 }
 
 func (s *Service) commitClientSessionRoute(

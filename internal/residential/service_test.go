@@ -255,6 +255,49 @@ func TestClientSessionsShareOneChannelButKeepIndependentRoutes(t *testing.T) {
 	}
 }
 
+func TestClientSessionRejectsConflictingCountryPin(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t)
+	ctx := context.Background()
+	provider, err := harness.service.CreateProvider(ctx, CreateProviderRequest{
+		Name: "country-pinned", Vendor: "custom", Protocol: "http",
+		GatewayHost: "gateway.example.com", GatewayPort: 8000,
+		Credentials:      &Credentials{Username: "acct", Password: "secret"},
+		UsernameTemplate: "{user}-region-{region}-session-{session}",
+		RotationMode:     RotationSessionTemplate, PoolSize: 4,
+		DefaultRegionMode:    RegionModeApplicationRandom,
+		DefaultRandomRegions: []string{"US", "JP"},
+	})
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "country-pinned-channel", ProviderID: provider.ID, Mode: ModeSticky,
+		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29305},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel() error = %v", err)
+	}
+	record, err := harness.store.GetResidentialChannel(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := harness.service.EnsureClientSessionByTokenWithOptions(
+		ctx, record.RotateToken, "window-country", ClientSessionOptions{CountryCode: "US"},
+	)
+	if err != nil {
+		t.Fatalf("first country session = %v", err)
+	}
+	if first.CountryCode != "US" {
+		t.Fatalf("first country = %q, want US", first.CountryCode)
+	}
+	if _, err := harness.service.EnsureClientSessionByTokenWithOptions(
+		ctx, record.RotateToken, "window-country", ClientSessionOptions{CountryCode: "JP"},
+	); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("conflicting country error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestClientSessionApplyFailureRollsBackCreation(t *testing.T) {
 	t.Parallel()
 	router := &recordingSessionRouter{failApply: errors.New("apply failed")}

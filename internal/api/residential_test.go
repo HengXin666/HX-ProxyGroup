@@ -37,6 +37,21 @@ type stubResidentialService struct {
 	clientSessionCalls [][3]string
 }
 
+type countryAwareStubResidentialService struct {
+	*stubResidentialService
+	requestedCountry string
+}
+
+func (s *countryAwareStubResidentialService) EnsureClientSessionByTokenWithOptions(
+	_ context.Context,
+	token, sessionID string,
+	options residential.ClientSessionOptions,
+) (residential.ClientSession, error) {
+	s.requestedCountry = options.CountryCode
+	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"ensure-options", token, sessionID})
+	return s.clientSession, s.clientSessionErr
+}
+
 func (s *stubResidentialService) ListProviders(context.Context) ([]residential.Provider, error) {
 	return s.providers, nil
 }
@@ -149,7 +164,7 @@ func (s *stubResidentialService) DeleteClientSessionByToken(_ context.Context, t
 	return s.clientSessionErr
 }
 
-func newResidentialTestServer(t *testing.T, service *stubResidentialService) *httptest.Server {
+func newResidentialTestServer(t *testing.T, service ResidentialService) *httptest.Server {
 	t.Helper()
 	server, err := NewServer(
 		&stubBundleService{},
@@ -426,6 +441,44 @@ func TestPublicResidentialClientSessionLifecycleRoutesByTokenAndSessionID(t *tes
 	}
 }
 
+func TestPublicResidentialClientSessionAcceptsCountryCodeAndEchoesIt(t *testing.T) {
+	service := &countryAwareStubResidentialService{
+		stubResidentialService: &stubResidentialService{
+			clientSession: residential.ClientSession{
+				SessionID: "window-country", ProxyUsername: "hx-session-user",
+				ProxyPassword: "one-time-secret", CountryCode: "US",
+				RouteMode: residential.ClientRouteResidential,
+			},
+		},
+	}
+	testServer := newResidentialTestServer(t, service)
+	request, err := http.NewRequest(
+		http.MethodPut,
+		testServer.URL+"/rot/shared-token/sessions/window-country",
+		strings.NewReader(`{"country_code":"US"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("country session status = %d, body = %s", response.StatusCode, body)
+	}
+	var payload residential.ClientSession
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if service.requestedCountry != "US" || payload.CountryCode != "US" {
+		t.Fatalf("country request/response = %q / %q", service.requestedCountry, payload.CountryCode)
+	}
+}
+
 func TestPublicResidentialClientSessionHidesInvalidTokenAndSession(t *testing.T) {
 	service := &stubResidentialService{clientSessionErr: residential.ErrNotFound}
 	testServer := newResidentialTestServer(t, service)
@@ -503,11 +556,12 @@ func TestResidentialPresetsExposeVerificationState(t *testing.T) {
 		} `json:"items"`
 		Placeholders []string `json:"placeholders"`
 		Protocols    []string `json:"protocols"`
+		RegionModes  []string `json:"region_modes"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode presets: %v", err)
 	}
-	if len(payload.Items) == 0 || len(payload.Placeholders) == 0 || len(payload.Protocols) == 0 {
+	if len(payload.Items) == 0 || len(payload.Placeholders) == 0 || len(payload.Protocols) == 0 || len(payload.RegionModes) == 0 {
 		t.Fatalf("preset catalog is incomplete: %+v", payload)
 	}
 	found := false

@@ -52,7 +52,15 @@ func (s *Service) TestProvider(ctx context.Context, providerID, echoURL string) 
 	if err != nil {
 		return TestResult{}, err
 	}
-	sessions, err := s.providerSessions(ctx, provider, credentials, provider.DefaultRegion, 1)
+	regionSelection, err := normalizeRegionSelection(
+		string(provider.DefaultRegionMode),
+		provider.DefaultRegion,
+		provider.DefaultRandomRegions,
+	)
+	if err != nil {
+		return TestResult{Success: false, Error: err.Error()}, nil
+	}
+	sessions, err := s.providerSessions(ctx, provider, credentials, regionSelection, 1)
 	if err != nil {
 		return TestResult{Success: false, Error: err.Error()}, nil
 	}

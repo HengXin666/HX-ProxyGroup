@@ -14,13 +14,17 @@ func sessionAllocationExpired(record store.ResidentialClientSessionRecord, now t
 		!now.UTC().Before(record.ExpiresAt.UTC())
 }
 
-func (s *Service) allocateClientSessionNode(ctx context.Context, channel store.ResidentialChannelRecord, providerRecord store.ResidentialProviderRecord, logicalSessionID string, allocatedAt time.Time) (string, *time.Time, error) {
+func (s *Service) allocateClientSessionNode(ctx context.Context, channel store.ResidentialChannelRecord, providerRecord store.ResidentialProviderRecord, logicalSessionID string, allocatedAt time.Time, countryCode string) (string, *time.Time, error) {
 	provider := s.providerFromRecord(providerRecord)
 	credentials, err := s.providerCredentials(providerRecord)
 	if err != nil {
 		return "", nil, err
 	}
-	sessions, err := s.providerSessions(ctx, provider, credentials, channel.Region, 1)
+	regionSelection, err := clientSessionRegionSelection(channel, countryCode)
+	if err != nil {
+		return "", nil, err
+	}
+	sessions, err := s.providerSessions(ctx, provider, credentials, regionSelection, 1)
 	if err != nil {
 		return "", nil, fmt.Errorf("allocate residential IP: %w", err)
 	}
@@ -98,7 +102,7 @@ func (s *Service) republishClientSessionGroup(ctx context.Context, channel store
 
 func (s *Service) replaceClientSessionAllocation(ctx context.Context, channel store.ResidentialChannelRecord, provider store.ResidentialProviderRecord, previous store.ResidentialClientSessionRecord, rotated bool) (store.ResidentialClientSessionRecord, error) {
 	now := s.now().UTC()
-	fingerprint, expiresAt, err := s.allocateClientSessionNode(ctx, channel, provider, previous.SessionID, now)
+	fingerprint, expiresAt, err := s.allocateClientSessionNode(ctx, channel, provider, previous.SessionID, now, previous.CountryCode)
 	if err != nil {
 		return store.ResidentialClientSessionRecord{}, err
 	}

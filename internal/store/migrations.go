@@ -511,6 +511,30 @@ CREATE INDEX residential_client_sessions_expiry
     WHERE route_mode = 'residential' AND expires_at <> '';
 `,
 	},
+	{
+		version: 20,
+		name:    "residential_region_selection",
+		sql: `
+ALTER TABLE residential_providers
+    ADD COLUMN default_region_mode TEXT NOT NULL DEFAULT 'fixed'
+    CHECK (default_region_mode IN ('fixed', 'application-random'));
+ALTER TABLE residential_providers
+    ADD COLUMN default_random_regions TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE residential_channels
+    ADD COLUMN region_mode TEXT NOT NULL DEFAULT 'fixed'
+    CHECK (region_mode IN ('fixed', 'application-random'));
+ALTER TABLE residential_channels
+    ADD COLUMN random_regions TEXT NOT NULL DEFAULT '[]';
+		`,
+	},
+	{
+		version: 21,
+		name:    "residential_client_country_pin",
+		sql: `
+ALTER TABLE residential_client_sessions
+    ADD COLUMN country_code TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -37,18 +37,20 @@ type Provider struct {
 	// APIURL is the vendor extraction endpoint for api-list rotation. It is
 	// write-only at the HTTP API boundary because BestProxy extraction URLs may
 	// contain an app_key. The service still uses it internally.
-	APIURL                string `json:"-"`
-	APIURLConfigured      bool   `json:"api_url_configured"`
-	APIProxyURL           string `json:"-"`
-	APIProxyConfigured    bool   `json:"api_proxy_configured"`
-	UsernameTemplate      string `json:"username_template"`
-	RotationMode          string `json:"rotation_mode"`
-	SessionTTLSeconds     int    `json:"session_ttl_seconds"`
-	MaxConcurrentSessions int    `json:"max_concurrent_sessions"`
-	SessionExpiryPolicy   string `json:"session_expiry_policy"`
-	PoolSize              int    `json:"-"` // source compatibility for internal callers
-	DefaultRegion         string `json:"default_region,omitempty"`
-	CredentialsConfigured bool   `json:"credentials_configured"`
+	APIURL                string     `json:"-"`
+	APIURLConfigured      bool       `json:"api_url_configured"`
+	APIProxyURL           string     `json:"-"`
+	APIProxyConfigured    bool       `json:"api_proxy_configured"`
+	UsernameTemplate      string     `json:"username_template"`
+	RotationMode          string     `json:"rotation_mode"`
+	SessionTTLSeconds     int        `json:"session_ttl_seconds"`
+	MaxConcurrentSessions int        `json:"max_concurrent_sessions"`
+	SessionExpiryPolicy   string     `json:"session_expiry_policy"`
+	PoolSize              int        `json:"-"` // source compatibility for internal callers
+	DefaultRegion         string     `json:"default_region,omitempty"`
+	DefaultRegionMode     RegionMode `json:"default_region_mode"`
+	DefaultRandomRegions  []string   `json:"default_random_regions,omitempty"`
+	CredentialsConfigured bool       `json:"credentials_configured"`
 	// GatewayUsername is the account login without any session parameters. It
 	// is shown so an operator can confirm which account is in use; the password
 	// is never returned.
@@ -77,6 +79,8 @@ type CreateProviderRequest struct {
 	PoolSize              int          `json:"pool_size,omitempty"` // pre-v19 compatibility
 	SessionExpiryPolicy   string       `json:"session_expiry_policy,omitempty"`
 	DefaultRegion         string       `json:"default_region,omitempty"`
+	DefaultRegionMode     RegionMode   `json:"default_region_mode,omitempty"`
+	DefaultRandomRegions  []string     `json:"default_random_regions,omitempty"`
 	Enabled               *bool        `json:"enabled,omitempty"`
 }
 
@@ -98,6 +102,8 @@ type UpdateProviderRequest struct {
 	PoolSize              int          `json:"pool_size,omitempty"` // pre-v19 compatibility
 	SessionExpiryPolicy   string       `json:"session_expiry_policy,omitempty"`
 	DefaultRegion         string       `json:"default_region,omitempty"`
+	DefaultRegionMode     RegionMode   `json:"default_region_mode,omitempty"`
+	DefaultRandomRegions  []string     `json:"default_random_regions,omitempty"`
 	Enabled               bool         `json:"enabled"`
 }
 
@@ -143,6 +149,8 @@ func (s *Service) CreateProvider(ctx context.Context, request CreateProviderRequ
 		PoolSize:              request.PoolSize,
 		SessionExpiryPolicy:   request.SessionExpiryPolicy,
 		DefaultRegion:         request.DefaultRegion,
+		DefaultRegionMode:     request.DefaultRegionMode,
+		DefaultRandomRegions:  request.DefaultRandomRegions,
 		Enabled:               request.Enabled == nil || *request.Enabled,
 	}, nil)
 	if err != nil {
@@ -167,6 +175,8 @@ func (s *Service) CreateProvider(ctx context.Context, request CreateProviderRequ
 		PoolSize:             normalized.MaxConcurrentSessions,
 		SessionExpiryPolicy:  normalized.SessionExpiryPolicy,
 		DefaultRegion:        normalized.DefaultRegion,
+		DefaultRegionMode:    string(normalized.DefaultRegionMode),
+		DefaultRandomRegions: marshalRegionList(normalized.DefaultRandomRegions),
 		Enabled:              normalized.Enabled,
 		Version:              1,
 		CreatedAt:            now,
@@ -203,6 +213,8 @@ func (s *Service) UpdateProvider(ctx context.Context, id string, request UpdateP
 		PoolSize:              request.PoolSize,
 		SessionExpiryPolicy:   request.SessionExpiryPolicy,
 		DefaultRegion:         request.DefaultRegion,
+		DefaultRegionMode:     request.DefaultRegionMode,
+		DefaultRandomRegions:  request.DefaultRandomRegions,
 		Enabled:               request.Enabled,
 		ExistingAPIURL:        existing.APIURL,
 	}, existing.CredentialsEncrypted)
@@ -228,6 +240,8 @@ func (s *Service) UpdateProvider(ctx context.Context, id string, request UpdateP
 	existing.PoolSize = normalized.MaxConcurrentSessions
 	existing.SessionExpiryPolicy = normalized.SessionExpiryPolicy
 	existing.DefaultRegion = normalized.DefaultRegion
+	existing.DefaultRegionMode = string(normalized.DefaultRegionMode)
+	existing.DefaultRandomRegions = marshalRegionList(normalized.DefaultRandomRegions)
 	existing.Enabled = normalized.Enabled
 	existing.UpdatedAt = s.now().UTC()
 	updated, err := s.repository.UpdateResidentialProvider(ctx, existing, request.Version)
@@ -267,6 +281,8 @@ type providerInput struct {
 	PoolSize              int
 	SessionExpiryPolicy   string
 	DefaultRegion         string
+	DefaultRegionMode     RegionMode
+	DefaultRandomRegions  []string
 	Enabled               bool
 	ExistingAPIURL        string
 }
@@ -285,6 +301,8 @@ type normalizedProvider struct {
 	MaxConcurrentSessions int
 	SessionExpiryPolicy   string
 	DefaultRegion         string
+	DefaultRegionMode     RegionMode
+	DefaultRandomRegions  []string
 	Enabled               bool
 }
 
@@ -445,11 +463,17 @@ func (s *Service) normalizeProvider(
 	if expiryPolicy != "expire" && expiryPolicy != "rotate" {
 		return normalizedProvider{}, fmt.Errorf("%w: session_expiry_policy must be expire or rotate", ErrInvalid)
 	}
-	region := strings.TrimSpace(input.DefaultRegion)
-	if err := validateRegion(region); err != nil {
+	regionSelection, err := normalizeRegionSelection(
+		string(input.DefaultRegionMode),
+		input.DefaultRegion,
+		input.DefaultRandomRegions,
+	)
+	if err != nil {
 		return normalizedProvider{}, err
 	}
-	if vendor == "bestproxy" && strings.Contains(template, "{region}") && region == "" {
+	region := regionSelection.Region
+	if vendor == "bestproxy" && strings.Contains(template, "{region}") &&
+		region == "" && regionSelection.Mode != RegionModeApplicationRandom {
 		return normalizedProvider{}, fmt.Errorf("%w: BestProxy providers using {region} require a default_region", ErrInvalid)
 	}
 
@@ -467,11 +491,15 @@ func (s *Service) normalizeProvider(
 		}
 		// Reject credentials that cannot survive the username framing before
 		// they are encrypted, so the failure surfaces at save time.
+		validationRegion := region
+		if regionSelection.Mode == RegionModeApplicationRandom {
+			validationRegion = regionSelection.RandomRegions[0]
+		}
 		if _, err := Render(template, Variables{
 			User:    username,
 			Session: "0123456789abcdef",
-			Region:  region,
-			Country: region,
+			Region:  validationRegion,
+			Country: validationRegion,
 			TTL:     "600",
 		}); err != nil {
 			return normalizedProvider{}, fmt.Errorf("%w: %v", ErrInvalid, err)
@@ -507,6 +535,8 @@ func (s *Service) normalizeProvider(
 		MaxConcurrentSessions: maxSessions,
 		SessionExpiryPolicy:   expiryPolicy,
 		DefaultRegion:         region,
+		DefaultRegionMode:     regionSelection.Mode,
+		DefaultRandomRegions:  append([]string(nil), regionSelection.RandomRegions...),
 		Enabled:               input.Enabled,
 	}, nil
 }
@@ -604,25 +634,12 @@ func validateGatewayHost(host string) error {
 	return nil
 }
 
-func validateRegion(region string) error {
-	if region == "" {
-		return nil
-	}
-	if len(region) > 64 {
-		return fmt.Errorf("%w: region must contain at most 64 characters", ErrInvalid)
-	}
-	for _, character := range region {
-		if (character < 'a' || character > 'z') &&
-			(character < 'A' || character > 'Z') &&
-			(character < '0' || character > '9') && character != '-' && character != '_' {
-			return fmt.Errorf("%w: region may only contain letters, digits, '-' and '_'", ErrInvalid)
-		}
-	}
-	return nil
-}
-
 func (s *Service) providerFromRecord(record store.ResidentialProviderRecord) Provider {
 	secrets, secretsErr := s.openProviderSecrets(record.ID, record.CredentialsEncrypted)
+	defaultRegionMode := RegionMode(record.DefaultRegionMode)
+	if defaultRegionMode == "" {
+		defaultRegionMode = RegionModeFixed
+	}
 	apiURL := secrets.APIURL
 	if apiURL == "" {
 		// Read v14 records created before API URLs were moved into the encrypted
@@ -648,6 +665,8 @@ func (s *Service) providerFromRecord(record store.ResidentialProviderRecord) Pro
 		PoolSize:              record.PoolSize,
 		SessionExpiryPolicy:   record.SessionExpiryPolicy,
 		DefaultRegion:         record.DefaultRegion,
+		DefaultRegionMode:     defaultRegionMode,
+		DefaultRandomRegions:  parseRegionList(record.DefaultRandomRegions),
 		CredentialsConfigured: record.RotationMode != RotationAPIList && secretsErr == nil &&
 			secrets.Username != "" && secrets.Password != "",
 		SupportsSticky: (record.RotationMode == RotationSessionTemplate && TemplateUsesSession(record.UsernameTemplate)) || record.RotationMode == RotationAPIList,
@@ -668,6 +687,28 @@ type providerSecrets struct {
 	Password    string `json:"password,omitempty"`
 	APIURL      string `json:"api_url,omitempty"`
 	APIProxyURL string `json:"api_proxy_url,omitempty"`
+}
+
+func marshalRegionList(regions []string) string {
+	if len(regions) == 0 {
+		return "[]"
+	}
+	encoded, err := json.Marshal(regions)
+	if err != nil {
+		return "[]"
+	}
+	return string(encoded)
+}
+
+func parseRegionList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var regions []string
+	if err := json.Unmarshal([]byte(raw), &regions); err != nil {
+		return nil
+	}
+	return regions
 }
 
 func (s *Service) openProviderSecrets(id string, encrypted []byte) (providerSecrets, error) {

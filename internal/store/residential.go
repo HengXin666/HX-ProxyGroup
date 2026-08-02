@@ -30,10 +30,19 @@ type ResidentialProviderRecord struct {
 	PoolSize             int
 	SessionExpiryPolicy  string
 	DefaultRegion        string
+	DefaultRegionMode    string
+	DefaultRandomRegions string
 	Enabled              bool
 	Version              int
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+func residentialDefaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func (s *Store) CreateResidentialProvider(
@@ -47,9 +56,9 @@ func (s *Store) CreateResidentialProvider(
 INSERT INTO residential_providers(
     id, name, vendor, protocol, gateway_host, gateway_port,
     api_url, upstream_proxy_group_id, credentials_encrypted, username_template, rotation_mode,
-    session_ttl_seconds, pool_size, session_expiry_policy, default_region, enabled, version,
+    session_ttl_seconds, pool_size, session_expiry_policy, default_region, default_region_mode, default_random_regions, enabled, version,
     created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -66,6 +75,8 @@ INSERT INTO residential_providers(
 		record.PoolSize,
 		record.SessionExpiryPolicy,
 		record.DefaultRegion,
+		residentialDefaultString(record.DefaultRegionMode, "fixed"),
+		residentialDefaultString(record.DefaultRandomRegions, "[]"),
 		boolToInteger(record.Enabled),
 		record.Version,
 		record.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -124,7 +135,7 @@ UPDATE residential_providers
 SET
     name = ?, vendor = ?, protocol = ?, gateway_host = ?, gateway_port = ?,
     api_url = ?, upstream_proxy_group_id = NULLIF(?, ''), credentials_encrypted = ?, username_template = ?, rotation_mode = ?,
-    session_ttl_seconds = ?, pool_size = ?, session_expiry_policy = ?, default_region = ?, enabled = ?,
+    session_ttl_seconds = ?, pool_size = ?, session_expiry_policy = ?, default_region = ?, default_region_mode = ?, default_random_regions = ?, enabled = ?,
     version = version + 1, updated_at = ?
 WHERE id = ? AND version = ?
 `,
@@ -142,6 +153,8 @@ WHERE id = ? AND version = ?
 		record.PoolSize,
 		record.SessionExpiryPolicy,
 		record.DefaultRegion,
+		residentialDefaultString(record.DefaultRegionMode, "fixed"),
+		residentialDefaultString(record.DefaultRandomRegions, "[]"),
 		boolToInteger(record.Enabled),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		record.ID,
@@ -196,7 +209,7 @@ const residentialProviderSelect = `
 SELECT
     id, name, vendor, protocol, gateway_host, gateway_port,
     api_url, COALESCE(upstream_proxy_group_id, ''), credentials_encrypted, username_template, rotation_mode,
-    session_ttl_seconds, pool_size, session_expiry_policy, default_region, enabled, version,
+    session_ttl_seconds, pool_size, session_expiry_policy, default_region, default_region_mode, default_random_regions, enabled, version,
     created_at, updated_at
 FROM residential_providers`
 
@@ -221,6 +234,8 @@ func scanResidentialProvider(source scanner) (ResidentialProviderRecord, error) 
 		&record.PoolSize,
 		&record.SessionExpiryPolicy,
 		&record.DefaultRegion,
+		&record.DefaultRegionMode,
+		&record.DefaultRandomRegions,
 		&enabled,
 		&record.Version,
 		&createdAt,

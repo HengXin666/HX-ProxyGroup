@@ -23,6 +23,7 @@ type ResidentialClientSessionRecord struct {
 	LastRotatedAt         *time.Time
 	AllocatedAt           *time.Time
 	ExpiresAt             *time.Time
+	CountryCode           string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -42,16 +43,16 @@ func (s *Store) CreateResidentialClientSession(
 ) (ResidentialClientSessionRecord, error) {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO residential_client_sessions(
-    channel_id, session_id, auth_username, auth_password_encrypted,
-    session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-    allocated_at, expires_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		channel_id, session_id, auth_username, auth_password_encrypted,
+		session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
+		allocated_at, expires_at, created_at, updated_at, country_code
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, record.ChannelID, record.SessionID, record.AuthUsername, record.AuthPasswordEncrypted,
 		record.SessionIndex, record.NodeFingerprint, record.RouteMode, record.RotateCount,
 		nullableTimeString(record.LastRotatedAt),
 		nullableTimeString(record.AllocatedAt), nullableTimeString(record.ExpiresAt),
 		record.CreatedAt.UTC().Format(time.RFC3339Nano),
-		record.UpdatedAt.UTC().Format(time.RFC3339Nano))
+		record.UpdatedAt.UTC().Format(time.RFC3339Nano), record.CountryCode)
 	if err != nil {
 		if isUniqueConstraint(err) {
 			return ResidentialClientSessionRecord{}, ErrConflict
@@ -66,9 +67,9 @@ func (s *Store) GetResidentialClientSession(
 	channelID, sessionID string,
 ) (ResidentialClientSessionRecord, error) {
 	record, err := scanResidentialClientSession(s.db.QueryRowContext(ctx, `
-SELECT channel_id, session_id, auth_username, auth_password_encrypted,
-       session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-       allocated_at, expires_at, created_at, updated_at
+	SELECT channel_id, session_id, auth_username, auth_password_encrypted,
+	       session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
+	       allocated_at, expires_at, created_at, updated_at, country_code
 FROM residential_client_sessions
 WHERE channel_id = ? AND session_id = ?
 `, channelID, sessionID))
@@ -86,9 +87,9 @@ func (s *Store) ListResidentialClientSessions(
 	channelID string,
 ) ([]ResidentialClientSessionRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT channel_id, session_id, auth_username, auth_password_encrypted,
-       session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-       allocated_at, expires_at, created_at, updated_at
+	SELECT channel_id, session_id, auth_username, auth_password_encrypted,
+	       session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
+	       allocated_at, expires_at, created_at, updated_at, country_code
 FROM residential_client_sessions
 WHERE channel_id = ?
 ORDER BY created_at ASC, session_id ASC
@@ -123,7 +124,7 @@ WITH pooled AS (
 )
 SELECT cs.channel_id, cs.session_id, cs.auth_username, cs.auth_password_encrypted,
        cs.session_index, cs.node_fingerprint, cs.route_mode, cs.rotate_count, cs.last_rotated_at,
-       cs.allocated_at, cs.expires_at, cs.created_at, cs.updated_at, c.listener_id,
+	       cs.allocated_at, cs.expires_at, cs.created_at, cs.updated_at, cs.country_code, c.listener_id,
        COALESCE(NULLIF(cs.node_fingerprint, ''), p.fingerprint, ''),
        COALESCE(upstream.name, ''), c.enabled
 FROM residential_client_sessions cs
@@ -148,7 +149,7 @@ ORDER BY cs.channel_id ASC, cs.session_id ASC
 			&record.ChannelID, &record.SessionID, &record.AuthUsername,
 			&record.AuthPasswordEncrypted, &record.SessionIndex, &record.NodeFingerprint, &record.RouteMode,
 			&record.RotateCount, &lastRotatedAt, &allocatedAt, &expiresAt,
-			&createdAt, &updatedAt, &record.ListenerID, &record.NodeFingerprint,
+			&createdAt, &updatedAt, &record.CountryCode, &record.ListenerID, &record.NodeFingerprint,
 			&record.UpstreamGroup, &enabled,
 		); err != nil {
 			return nil, fmt.Errorf("scan residential client route: %w", err)
@@ -302,6 +303,7 @@ func scanResidentialClientSession(scanner residentialClientSessionScanner) (Resi
 		&record.ChannelID, &record.SessionID, &record.AuthUsername,
 		&record.AuthPasswordEncrypted, &record.SessionIndex, &record.NodeFingerprint, &record.RouteMode,
 		&record.RotateCount, &lastRotatedAt, &allocatedAt, &expiresAt, &createdAt, &updatedAt,
+		&record.CountryCode,
 	); err != nil {
 		return ResidentialClientSessionRecord{}, err
 	}

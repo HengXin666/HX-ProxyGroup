@@ -221,19 +221,29 @@ func (s *Service) providerSessions(
 	ctx context.Context,
 	provider Provider,
 	credentials Credentials,
-	region string,
+	regionSelection RegionSelection,
 	size int,
 ) ([]Session, error) {
+	region, err := chooseRegion(regionSelection)
+	if err != nil {
+		return nil, err
+	}
 	if provider.RotationMode == RotationAPIList {
 		if strings.TrimSpace(provider.APIURL) == "" {
 			return nil, fmt.Errorf("%w: api-list provider has no api_url", ErrInvalid)
 		}
+		apiURL := provider.APIURL
+		if region != "" && (regionSelection.Mode == RegionModeApplicationRandom || apiURLHasRegionParameter(apiURL)) {
+			apiURL, err = apiURLWithRegion(apiURL, region)
+			if err != nil {
+				return nil, fmt.Errorf("apply residential region to api_url: %w", err)
+			}
+		}
 		var nodes []FetchedNode
-		var err error
 		if s.fetchNodesWithProxy != nil {
-			nodes, err = s.fetchNodesWithProxy(ctx, provider.APIURL, provider.APIProxyURL)
+			nodes, err = s.fetchNodesWithProxy(ctx, apiURL, provider.APIProxyURL)
 		} else {
-			nodes, err = s.fetchNodes(ctx, provider.APIURL)
+			nodes, err = s.fetchNodes(ctx, apiURL)
 		}
 		if err != nil {
 			return nil, err
@@ -253,10 +263,15 @@ func (s *Service) materializePool(
 	channelName string,
 	provider Provider,
 	credentials Credentials,
-	region string,
+	regionSelection RegionSelection,
 	size int,
 ) ([]string, error) {
-	sessions, err := s.providerSessions(ctx, provider, credentials, region, size)
+	region, err := chooseRegion(regionSelection)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	resolvedRegion := RegionSelection{Mode: RegionModeFixed, Region: region}
+	sessions, err := s.providerSessions(ctx, provider, credentials, resolvedRegion, size)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -348,7 +363,11 @@ func (s *Service) RefreshChannelPool(ctx context.Context, channelID string) erro
 		size = 1
 	}
 	poolCreatedAt := s.now().UTC()
-	nodeIDs, err := s.materializePool(ctx, record.ID, record.Name, provider, credentials, record.Region, size)
+	regionSelection, err := normalizeRegionSelection(record.RegionMode, record.Region, parseRegionList(record.RandomRegions))
+	if err != nil {
+		return err
+	}
+	nodeIDs, err := s.materializePool(ctx, record.ID, record.Name, provider, credentials, regionSelection, size)
 	if err != nil {
 		return err
 	}

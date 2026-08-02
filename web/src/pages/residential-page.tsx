@@ -38,6 +38,7 @@ import type {
   ResidentialPreset,
   ResidentialProvider,
   ResidentialProtocol,
+  ResidentialRegionMode,
   ResidentialRotationMode,
   ResidentialSessionExpiryPolicy,
   ResidentialTestResult,
@@ -62,6 +63,8 @@ type ProviderForm = {
   maxSessions: string
   expiryPolicy: ResidentialSessionExpiryPolicy
   defaultRegion: string
+  defaultRegionMode: ResidentialRegionMode
+  defaultRandomRegions: string
   enabled: boolean
 }
 
@@ -82,6 +85,8 @@ const emptyProviderForm: ProviderForm = {
   maxSessions: "64",
   expiryPolicy: "rotate",
   defaultRegion: "",
+  defaultRegionMode: "fixed",
+  defaultRandomRegions: "",
   enabled: true,
 }
 
@@ -89,7 +94,9 @@ type ChannelForm = {
   name: string
   providerID: string
   mode: ResidentialChannelMode
+  regionMode: ResidentialRegionMode
   region: string
+  randomRegions: string
   listenerKind: string
   bindAddress: string
   port: string
@@ -102,7 +109,9 @@ const emptyChannelForm: ChannelForm = {
   name: "",
   providerID: "",
   mode: "sticky",
+  regionMode: "fixed",
   region: "",
+  randomRegions: "",
   listenerKind: "mixed",
   bindAddress: "127.0.0.1",
   port: "18088",
@@ -216,6 +225,7 @@ export function ResidentialPage({
                       <th className="px-3 py-2 font-medium">名称</th>
                       <th className="px-3 py-2 font-medium">供应商</th>
                       <th className="px-3 py-2 font-medium">模式</th>
+                      <th className="px-3 py-2 font-medium">地区</th>
                       <th className="px-3 py-2 font-medium">客户端入口</th>
                       <th className="px-3 py-2 font-medium">会话</th>
                       <th className="px-3 py-2 font-medium">出口 IP</th>
@@ -228,6 +238,13 @@ export function ResidentialPage({
                         <td className="px-3 py-2 font-medium">{channel.name}</td>
                         <td className="px-3 py-2 text-muted-foreground">{channel.provider_name ?? channel.provider_id}</td>
                         <td className="px-3 py-2"><Badge variant={channel.mode === "sticky" ? "default" : "outline"}>{channel.mode === "sticky" ? "粘滞" : "透传"}</Badge></td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {regionModeLabel(channel.region_mode)}
+                          {channel.region_mode === "fixed" && channel.region ? ` · ${channel.region}` : ""}
+                          {channel.region_mode === "application-random" && channel.random_regions?.length
+                            ? ` · ${channel.random_regions.join(",")}`
+                            : ""}
+                        </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1.5">
                             <code className="rounded bg-muted px-1.5 py-0.5">
@@ -297,6 +314,7 @@ export function ResidentialPage({
                       <th className="px-3 py-2 font-medium">厂商</th>
                       <th className="px-3 py-2 font-medium">协议</th>
                       <th className="px-3 py-2 font-medium">轮换模式</th>
+                      <th className="px-3 py-2 font-medium">默认地区</th>
                       <th className="px-3 py-2 font-medium">网关 / API</th>
                       <th className="px-3 py-2 font-medium">上游组</th>
                       <th className="px-3 py-2 font-medium">会话策略</th>
@@ -310,6 +328,13 @@ export function ResidentialPage({
                         <td className="px-3 py-2 text-muted-foreground">{provider.vendor}</td>
                         <td className="px-3 py-2"><code className="rounded bg-muted px-1.5 py-0.5">{provider.protocol}</code></td>
                         <td className="px-3 py-2">{rotationModeLabel(provider.rotation_mode)}</td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {regionModeLabel(provider.default_region_mode)}
+                          {provider.default_region_mode === "fixed" && provider.default_region ? ` · ${provider.default_region}` : ""}
+                          {provider.default_region_mode === "application-random" && provider.default_random_regions?.length
+                            ? ` · ${provider.default_random_regions.join(",")}`
+                            : ""}
+                        </td>
                         <td className="px-3 py-2">
                           {provider.rotation_mode === "api-list" ? (
                             <div className="space-y-1">
@@ -442,6 +467,14 @@ function rotationModeLabel(mode: string) {
   }
 }
 
+function parseRegionList(value: string): string[] {
+  return Array.from(new Set(value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean)))
+}
+
+function regionModeLabel(mode: ResidentialRegionMode) {
+  return mode === "application-random" ? "应用层随机地区" : "固定地区"
+}
+
 async function testProvider(
   id: string,
   setResult: (value: ResidentialTestResult) => void,
@@ -490,6 +523,8 @@ function ProviderDialog({
           maxSessions: String(initial.max_concurrent_sessions),
           expiryPolicy: initial.session_expiry_policy,
           defaultRegion: initial.default_region ?? "",
+          defaultRegionMode: initial.default_region_mode ?? "fixed",
+          defaultRandomRegions: (initial.default_random_regions ?? []).join(", "),
           enabled: initial.enabled,
         }
       : emptyProviderForm,
@@ -527,6 +562,8 @@ function ProviderDialog({
       maxSessions: "64",
       expiryPolicy: "rotate",
       defaultRegion: preset.vendor === "bestproxy" ? "US" : "",
+      defaultRegionMode: "fixed",
+      defaultRandomRegions: "",
     })
   }
 
@@ -552,7 +589,11 @@ function ProviderDialog({
         session_ttl_seconds: Number(form.sessionTTL),
         max_concurrent_sessions: Number(form.maxSessions),
         session_expiry_policy: form.expiryPolicy,
-        default_region: form.defaultRegion.trim() || undefined,
+        default_region: form.defaultRegionMode === "fixed" ? form.defaultRegion.trim() || undefined : undefined,
+        default_region_mode: form.defaultRegionMode,
+        default_random_regions: form.defaultRegionMode === "application-random"
+          ? parseRegionList(form.defaultRandomRegions)
+          : undefined,
         enabled: form.enabled,
       }
       const credentials = form.username && form.password ? { username: form.username, password: form.password } : undefined
@@ -716,9 +757,29 @@ function ProviderDialog({
               </Select>
             </label>
             <label className="grid gap-1 text-xs">
-              默认地区 / area
-              <Input value={form.defaultRegion} onChange={(event) => update("defaultRegion", event.target.value)} placeholder="如 US（原样保留大小写）" />
+              默认地区策略
+              <Select value={form.defaultRegionMode} onValueChange={(value) => update("defaultRegionMode", value as ResidentialRegionMode)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fixed">固定地区</SelectItem>
+                  <SelectItem value="application-random">应用层随机地区</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
+            {form.defaultRegionMode === "fixed" ? (
+              <label className="grid gap-1 text-xs">
+                默认地区 / area
+                <Input value={form.defaultRegion} onChange={(event) => update("defaultRegion", event.target.value)} placeholder="如 US（留空使用提取链接）" />
+              </label>
+            ) : (
+              <label className="grid gap-1 text-xs">
+                随机候选地区
+                <Input value={form.defaultRandomRegions} onChange={(event) => update("defaultRandomRegions", event.target.value)} placeholder="如 US, JP, GB" />
+              </label>
+            )}
+            <span className="text-[11px] text-muted-foreground sm:col-span-2">
+              应用层随机会在每次获取住宅 IP 前使用密码学安全随机数从候选地区中选择，并覆盖提取链接中的 cc/country/region 参数。
+            </span>
           </div>
 
           <DialogFooter>
@@ -747,7 +808,9 @@ function ChannelDialog({
     return {
       ...emptyChannelForm,
       providerID: provider?.id ?? "",
+      regionMode: provider?.default_region_mode ?? "fixed",
       region: provider?.default_region ?? "",
+      randomRegions: (provider?.default_random_regions ?? []).join(", "),
     }
   })
   const [saving, setSaving] = useState(false)
@@ -761,7 +824,9 @@ function ChannelDialog({
     setForm((current) => ({
       ...current,
       providerID,
-      region: current.region || provider?.default_region || "",
+      regionMode: provider?.default_region_mode ?? "fixed",
+      region: provider?.default_region ?? "",
+      randomRegions: (provider?.default_random_regions ?? []).join(", "),
     }))
   }
 
@@ -777,7 +842,9 @@ function ChannelDialog({
         name: form.name.trim(),
         provider_id: form.providerID,
         mode: form.mode,
-        region: form.region.trim() || undefined,
+        region_mode: form.regionMode,
+        region: form.regionMode === "fixed" ? form.region.trim() || undefined : undefined,
+        random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
         listener: {
           kind: form.listenerKind,
           bind_address: form.bindAddress.trim(),
@@ -834,9 +901,26 @@ function ChannelDialog({
               </Select>
             </label>
             <label className="grid gap-1 text-xs">
-              地区
-              <Input value={form.region} onChange={(event) => update("region", event.target.value)} placeholder="如 US" />
+              地区策略
+              <Select value={form.regionMode} onValueChange={(value) => update("regionMode", value as ResidentialRegionMode)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fixed">固定地区</SelectItem>
+                  <SelectItem value="application-random">应用层随机地区</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
+            {form.regionMode === "fixed" ? (
+              <label className="grid gap-1 text-xs">
+                地区 / area
+                <Input value={form.region} onChange={(event) => update("region", event.target.value)} placeholder="如 US（留空使用供应商默认）" />
+              </label>
+            ) : (
+              <label className="grid gap-1 text-xs">
+                随机候选地区
+                <Input value={form.randomRegions} onChange={(event) => update("randomRegions", event.target.value)} placeholder="如 US, JP, GB" />
+              </label>
+            )}
             <label className="grid gap-1 text-xs">
               入口协议
               <Select value={form.listenerKind} onValueChange={(value) => update("listenerKind", value)}>

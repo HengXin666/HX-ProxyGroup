@@ -19,6 +19,8 @@ type ResidentialChannelRecord struct {
 	ProxyGroupID       string
 	ListenerID         string
 	Region             string
+	RegionMode         string
+	RandomRegions      string
 	ActiveSessionIndex int
 	RotateToken        string
 	RotateCount        int
@@ -37,10 +39,10 @@ func (s *Store) CreateResidentialChannel(
 ) (ResidentialChannelRecord, error) {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO residential_channels(
-    id, name, provider_id, mode, proxy_group_id, listener_id, region,
+    id, name, provider_id, mode, proxy_group_id, listener_id, region, region_mode, random_regions,
     active_session_index, rotate_token, rotate_count, last_rotated_at,
     last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -49,6 +51,8 @@ INSERT INTO residential_channels(
 		record.ProxyGroupID,
 		record.ListenerID,
 		record.Region,
+		residentialDefaultString(record.RegionMode, "fixed"),
+		residentialDefaultString(record.RandomRegions, "[]"),
 		record.ActiveSessionIndex,
 		record.RotateToken,
 		record.RotateCount,
@@ -157,7 +161,7 @@ func (s *Store) UpdateResidentialChannel(
 UPDATE residential_channels
 SET
     name = ?, provider_id = ?, mode = ?, proxy_group_id = ?, listener_id = ?,
-    region = ?, enabled = ?, version = version + 1, updated_at = ?
+    region = ?, region_mode = ?, random_regions = ?, enabled = ?, version = version + 1, updated_at = ?
 WHERE id = ? AND version = ?
 `,
 		record.Name,
@@ -166,6 +170,8 @@ WHERE id = ? AND version = ?
 		record.ProxyGroupID,
 		record.ListenerID,
 		record.Region,
+		residentialDefaultString(record.RegionMode, "fixed"),
+		residentialDefaultString(record.RandomRegions, "[]"),
 		boolToInteger(record.Enabled),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		record.ID,
@@ -282,7 +288,7 @@ func (s *Store) DeleteResidentialChannel(ctx context.Context, id string, expecte
 
 const residentialChannelSelect = `
 SELECT
-    id, name, provider_id, mode, proxy_group_id, listener_id, region,
+    id, name, provider_id, mode, proxy_group_id, listener_id, region, region_mode, random_regions,
     active_session_index, rotate_token, rotate_count, last_rotated_at,
     last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
 FROM residential_channels`
@@ -302,6 +308,8 @@ func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 		&record.ProxyGroupID,
 		&record.ListenerID,
 		&record.Region,
+		&record.RegionMode,
+		&record.RandomRegions,
 		&record.ActiveSessionIndex,
 		&record.RotateToken,
 		&record.RotateCount,

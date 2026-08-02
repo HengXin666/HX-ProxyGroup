@@ -19,6 +19,50 @@ const (
 	apiFetchMaxBytes = 512 << 10
 )
 
+// apiURLWithRegion applies the control-plane-selected region to the common
+// country/region query parameter used by extraction APIs. BestProxy uses cc;
+// other vendors can keep an existing country, country_code, region, or area
+// parameter and receive the same behavior without another provider-specific
+// parser.
+func apiURLWithRegion(raw, region string) (string, error) {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return raw, nil
+	}
+	if err := validateRegion(region); err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: api_url must be an https URL", ErrInvalid)
+	}
+	query := parsed.Query()
+	parameter := "cc"
+	for _, candidate := range []string{"cc", "country", "country_code", "region", "area"} {
+		if _, exists := query[candidate]; exists {
+			parameter = candidate
+			break
+		}
+	}
+	query.Set(parameter, region)
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
+func apiURLHasRegionParameter(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	query := parsed.Query()
+	for _, candidate := range []string{"cc", "country", "country_code", "region", "area"} {
+		if _, exists := query[candidate]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 // FetchedNode is one proxy endpoint returned by an api-list extraction API.
 type FetchedNode struct {
 	Server   string

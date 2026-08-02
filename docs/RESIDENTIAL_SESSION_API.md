@@ -49,6 +49,12 @@ token 才是会话 API 的访问凭证。
 PUT /rot/<token>/sessions/<session_id>
 ```
 
+可选请求体用于固定国家：
+
+```json
+{"country_code":"US"}
+```
+
 响应：
 
 ```json
@@ -56,6 +62,7 @@ PUT /rot/<token>/sessions/<session_id>
   "session_id": "window-01",
   "proxy_username": "hx-session-0123456789abcdef01234567",
   "proxy_password": "generated-secret",
+  "country_code": "US",
   "route_mode": "residential",
   "session_index": -1,
   "allocated_at": "2026-08-01T08:00:00Z",
@@ -73,6 +80,15 @@ http://<proxy_username>:<proxy_password>@proxy-host:18088
 首次调用时才向供应商获取或生成住宅节点。同一个未过期的 `token + session_id` 重复调用
 是幂等的，并返回原代理账号。密码在数据库中使用 AEAD 加密，管理 API、普通日志和状态
 接口均不回显。
+
+`country_code`会在 session 创建时固定并在响应中回显。之后同一个 session 如果请求不同国家，
+服务端返回 422；不带国家的旧客户端仍可使用兼容路径。固定渠道国家与请求国家冲突时同样拒绝。
+
+需要跨国家轮换的客户端应在自己的 flow 开始前从国家池选择一个国家，并在整个 flow 内复用
+同一个 `session_id`；下一个 flow 才重新选择国家并创建新 session。一次 session 请求只接受一个
+`country_code`，服务端不会替客户端在多个国家之间随机切换。渠道若配置了固定国家，只能承接
+匹配该国家的请求；需要覆盖多个国家时，应使用供应商/渠道的 `application-random` 候选地区策略，
+或为每个国家配置独立渠道并由客户端按国家筛选。
 
 到期后再次调用时，`rotate` 策略保留代理账号并换一个 IP；`expire` 策略删除会话并返回
 `410 session_expired`，客户端可再次调用相同 URL 建立一个新会话和新认证。
@@ -126,13 +142,12 @@ DELETE /rot/<token>/sessions/<session_id>
 
 ```text
 1. 生成 session_id
-2. PUT .../sessions/<id>
+2. PUT .../sessions/<id>，按需提交 `{"country_code":"US"}`
 3. 使用返回的代理账号启动浏览器
-4. 完成需要住宅 IP 的注册步骤
-5. POST .../sessions/<id>/route {"route_mode":"upstream"}
-6. 保持原页面，继续 OAuth 或其他低成本流量
-7. 关闭浏览器
-8. DELETE .../sessions/<id>
+4. 完成需要住宅 IP 的注册、密保和 OAuth 步骤
+5. 保持`residential`路由，继续需要同一住宅身份的流量
+6. 关闭浏览器
+7. DELETE .../sessions/<id>
 ```
 
 ## 旧接口

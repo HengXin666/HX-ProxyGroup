@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -21,6 +23,7 @@ func (s *Server) handleResidentialPresets(writer http.ResponseWriter, request *h
 		"placeholders":    residential.SupportedPlaceholders(),
 		"protocols":       residential.SupportedProtocols(),
 		"rotation_modes":  residential.SupportedRotationModes(),
+		"region_modes":    residential.SupportedRegionModes(),
 		"exit_ip_default": residential.DefaultExitIPEndpoint,
 	})
 }
@@ -337,7 +340,14 @@ func (s *Server) handleResidentialClientSessionPublic(
 	if action == "" {
 		switch request.Method {
 		case http.MethodPut:
-			session, err := s.residential.EnsureClientSessionByToken(request.Context(), token, sessionID)
+			var options residential.ClientSessionOptions
+			if decodeErr := decodeJSONBody(writer, request, &options); decodeErr != nil {
+				s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+				return
+			}
+			session, err := s.ensureResidentialClientSession(
+				request.Context(), token, sessionID, options,
+			)
 			if err != nil {
 				s.handleResidentialClientSessionError(writer, request, err)
 				return
@@ -392,6 +402,29 @@ func (s *Server) handleResidentialClientSessionPublic(
 		return
 	}
 	writeJSON(writer, http.StatusOK, session)
+}
+
+type residentialClientSessionOptionsService interface {
+	EnsureClientSessionByTokenWithOptions(
+		context.Context,
+		string,
+		string,
+		residential.ClientSessionOptions,
+	) (residential.ClientSession, error)
+}
+
+func (s *Server) ensureResidentialClientSession(
+	ctx context.Context,
+	token, sessionID string,
+	options residential.ClientSessionOptions,
+) (residential.ClientSession, error) {
+	if options.CountryCode != "" {
+		if service, ok := s.residential.(residentialClientSessionOptionsService); ok {
+			return service.EnsureClientSessionByTokenWithOptions(ctx, token, sessionID, options)
+		}
+		return residential.ClientSession{}, fmt.Errorf("country_code session options are unsupported")
+	}
+	return s.residential.EnsureClientSessionByToken(ctx, token, sessionID)
 }
 
 // Session endpoints use ErrNotFound for opaque token/channel lookup failures.

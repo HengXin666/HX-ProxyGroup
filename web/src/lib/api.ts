@@ -565,11 +565,13 @@ export const api = {
     return request(`/api/v1/traffic?${query.toString()}`)
   },
 
-  async trafficSummaries(resourceType: TrafficResourceType): Promise<TrafficSummaryList> {
+  async trafficSummaries(resourceType: TrafficResourceType, from?: Date, to?: Date): Promise<TrafficSummaryList> {
     const items: TrafficSummaryList["items"] = []
     const pageSize = 200
     for (let offset = 0; offset < 1000; offset += pageSize) {
       const query = new URLSearchParams({ resource_type: resourceType, limit: String(pageSize), offset: String(offset) })
+      if (from) query.set("from", from.toISOString())
+      if (to) query.set("to", to.toISOString())
       const page = await request<TrafficSummaryList>(`/api/v1/traffic?${query.toString()}`)
       items.push(...page.items)
       if (page.items.length < pageSize) break

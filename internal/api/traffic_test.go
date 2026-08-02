@@ -16,9 +16,10 @@ import (
 )
 
 type fakeTrafficService struct {
-	series   metrics.Series
-	items    []metrics.Summary
-	queryErr error
+	series     metrics.Series
+	items      []metrics.Summary
+	rangeItems []metrics.Summary
+	queryErr   error
 }
 
 func (service *fakeTrafficService) Summary(_ context.Context, resourceType, resourceID string) (metrics.Summary, error) {
@@ -27,6 +28,10 @@ func (service *fakeTrafficService) Summary(_ context.Context, resourceType, reso
 
 func (service *fakeTrafficService) ListSummaries(context.Context, string, int, int) ([]metrics.Summary, error) {
 	return service.items, nil
+}
+
+func (service *fakeTrafficService) ListSummariesBetween(context.Context, string, time.Time, time.Time, int, int) ([]metrics.Summary, error) {
+	return service.rangeItems, nil
 }
 
 func (service *fakeTrafficService) Query(context.Context, string, string, time.Time, time.Time, int) (metrics.Series, error) {
@@ -86,5 +91,26 @@ func TestTrafficAPIRejectsInvalidAndOversizedQueries(t *testing.T) {
 		if response.Code != http.StatusUnprocessableEntity {
 			t.Errorf("%s status = %d, body = %s", target, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestTrafficAPIListsSummariesForTimeRange(t *testing.T) {
+	traffic := &fakeTrafficService{rangeItems: []metrics.Summary{{ResourceType: "listener", ResourceID: "listener-1", DownloadBytes: 99}}}
+	server, err := NewServer(&stubBundleService{}, slog.New(slog.NewTextHandler(io.Discard, nil)), WithTraffic(traffic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/traffic?resource_type=listener&from=2026-07-27T00:00:00Z&to=2026-07-28T00:00:00Z", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"download_bytes":99`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/traffic?resource_type=listener&from=2026-07-27T00:00:00Z", nil)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("incomplete range status = %d, body = %s", response.Code, response.Body.String())
 	}
 }

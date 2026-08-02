@@ -48,16 +48,21 @@
 
 ## 4. 实时总览
 
-总览页组合 Listener、Proxy Group 和规则集 API，展示当前入口到代理组、策略和有效规则集的关系。`GET /api/v1/overview/stream` 提供只读 SSE：
+总览页组合 Listener、Proxy Group、规则集和流量汇总 API，展示当前入口到代理组、策略、有效规则集以及入口累计/今日流量的关系。`GET /api/v1/overview/stream` 提供只读 SSE：
 
 ```text
+event: history
+data: [{"timestamp":"...","upload_bytes_per_second":0,"download_bytes_per_second":0,"active_connections":0,"running":true,"resources":[]}]
+
 event: sample
-data: {"timestamp":"...","upload_bytes_per_second":0,"download_bytes_per_second":0,"active_connections":0,"running":true}
+data: {"timestamp":"...","upload_bytes_per_second":0,"download_bytes_per_second":0,"active_connections":0,"running":true,"resources":[]}
 ```
 
-每个已认证的总览请求每秒读取一次 Mihomo Unix Controller 的 `/connections`。API 对相邻活动连接累计字节做非负差分；计数器重置不会产生负速率。没有流量时仍发送零值样本。请求断开后 ticker 随请求上下文停止，没有按节点或代理组创建永久 goroutine。
+流量采集器由控制面后台任务常驻运行，与浏览器是否打开总览无关：每秒读取一次 Mihomo Unix Controller 的 `/connections`，在内存中计算非负字节差分，并通过有界历史缓冲和实时订阅提供给 SSE。计数器重置不会产生负速率；没有流量时仍发送零值样本，并保留当前活动入口的零速率资源指标。请求断开后订阅被取消，没有按节点或代理组创建永久 goroutine。`history` 事件用于页面首次连接时补齐最近采样，之后只发送 `sample`。
 
 前端最多保留 120 个样本，可切换 30、60、120 秒滑动窗口。该实时曲线用于操作观察，不替代 SQLite 中的长期计费或审计统计；连接在两个采样点之间建立并结束时，尾部字节可能无法出现在实时曲线中。
+
+图表显示上传/下载的传输量刻度、时间刻度和悬浮采样指示。路由拓扑中的每个入口同时显示当前速率、活动连接、历史累计流量、今日流量以及最近 120 秒的入口趋势图。今日统计按浏览器所在本地时区的当天起点请求，数据库仍以 UTC 时间保存。
 
 界面验证截图：
 

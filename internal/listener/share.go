@@ -45,8 +45,8 @@ func newShareToken() (string, error) {
 
 // ExportByShareToken renders the subscription body for the enabled listener
 // owning the token. requestHost is the host (optionally host:port) the client
-// used to reach the control plane; it substitutes loopback/unspecified bind
-// addresses so the generated URIs stay importable from other machines.
+// used to reach the control plane. An explicit public endpoint takes priority
+// over the request host when the data-plane listener is bound to loopback.
 func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost string) (ShareExport, error) {
 	token = strings.TrimSpace(token)
 	if len(token) < 16 || len(token) > 64 {
@@ -84,9 +84,18 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 	}
 	host := exportHost(record.BindAddress, requestHost)
 	port := record.Port
+	if endpoint.Host != "" {
+		host = endpoint.Host
+		if endpoint.Port > 0 {
+			port = endpoint.Port
+		}
+	}
 	if isAdvancedKind(record.Kind) {
 		host = endpoint.Host
 		port = endpoint.Port
+	}
+	if port < 1 || port > 65535 {
+		return ShareExport{}, fmt.Errorf("%w: listener export port must be between 1 and 65535", ErrInvalid)
 	}
 	uris := shareURIs(record.Kind, record.Name, host, port, auth, transport, endpoint)
 	return ShareExport{
@@ -168,13 +177,21 @@ func shareURIs(kind, name, host string, port int, auth *Auth, transport Transpor
 	var schemes []string
 	switch kind {
 	case "http":
-		schemes = []string{"http"}
+		if endpoint.TLS {
+			schemes = []string{"https"}
+		} else {
+			schemes = []string{"http"}
+		}
 	case "socks":
 		schemes = []string{"socks5"}
 	case "vless", "trojan":
 		schemes = []string{kind}
 	default: // mixed exposes both entry protocols on one port
-		schemes = []string{"http", "socks5"}
+		httpScheme := "http"
+		if endpoint.TLS {
+			httpScheme = "https"
+		}
+		schemes = []string{httpScheme, "socks5"}
 	}
 	uris := make([]string, 0, len(schemes))
 	for _, scheme := range schemes {
@@ -206,12 +223,18 @@ func (export ShareExport) clashProxy() map[string]any {
 	proxy := map[string]any{"name": export.Name, "type": export.Kind, "server": export.Host, "port": export.Port}
 	switch export.Kind {
 	case "http", "socks":
+		if export.Kind == "http" && export.Endpoint.TLS {
+			proxy["tls"] = true
+		}
 		if export.Kind == "socks" {
 			proxy["type"] = "socks5"
 		}
 		addUserPassword(proxy, export.Auth)
 	case "mixed":
 		proxy["type"] = "http"
+		if export.Endpoint.TLS {
+			proxy["tls"] = true
+		}
 		addUserPassword(proxy, export.Auth)
 	case "vless", "vmess", "trojan":
 		proxy["tls"] = true

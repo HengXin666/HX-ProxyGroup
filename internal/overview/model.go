@@ -13,12 +13,21 @@ type Snapshot struct {
 }
 
 type Sample struct {
-	Timestamp           time.Time `json:"timestamp"`
-	UploadBytesPerSec   int64     `json:"upload_bytes_per_second"`
-	DownloadBytesPerSec int64     `json:"download_bytes_per_second"`
-	ActiveConnections   int       `json:"active_connections"`
-	Running             bool      `json:"running"`
-	ErrorCode           string    `json:"error_code,omitempty"`
+	Timestamp           time.Time        `json:"timestamp"`
+	UploadBytesPerSec   int64            `json:"upload_bytes_per_second"`
+	DownloadBytesPerSec int64            `json:"download_bytes_per_second"`
+	ActiveConnections   int              `json:"active_connections"`
+	Running             bool             `json:"running"`
+	Resources           []ResourceSample `json:"resources,omitempty"`
+	ErrorCode           string           `json:"error_code,omitempty"`
+}
+
+type ResourceSample struct {
+	ResourceType        string `json:"resource_type"`
+	ResourceID          string `json:"resource_id"`
+	UploadBytesPerSec   int64  `json:"upload_bytes_per_second"`
+	DownloadBytesPerSec int64  `json:"download_bytes_per_second"`
+	ActiveConnections   int64  `json:"active_connections"`
 }
 
 func Rate(previous, current Snapshot, elapsed time.Duration) (upload, download int64) {

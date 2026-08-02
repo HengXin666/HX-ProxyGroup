@@ -2,6 +2,7 @@ package residential
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -35,7 +36,8 @@ type Channel struct {
 	RegionMode    RegionMode `json:"region_mode"`
 	RandomRegions []string   `json:"random_regions,omitempty"`
 	// Endpoint describes where consumers connect.
-	Endpoint ChannelEndpoint `json:"endpoint"`
+	Endpoint       ChannelEndpoint         `json:"endpoint"`
+	PublicEndpoint listener.PublicEndpoint `json:"public_endpoint"`
 	// ActiveSessionCount is the number of IPs currently allocated because a
 	// client session requested one. Channels do not have a prebuilt IP pool.
 	ActiveSessionCount int        `json:"active_session_count"`
@@ -67,15 +69,16 @@ type ChannelEndpoint struct {
 }
 
 type CreateChannelRequest struct {
-	Name          string                 `json:"name"`
-	ProviderID    string                 `json:"provider_id"`
-	Mode          string                 `json:"mode"`
-	Region        string                 `json:"region,omitempty"`
-	RegionMode    RegionMode             `json:"region_mode,omitempty"`
-	RandomRegions []string               `json:"random_regions,omitempty"`
-	PoolSize      int                    `json:"pool_size,omitempty"` // ignored for sticky channels
-	Listener      ChannelListenerRequest `json:"listener"`
-	Enabled       *bool                  `json:"enabled,omitempty"`
+	Name           string                  `json:"name"`
+	ProviderID     string                  `json:"provider_id"`
+	Mode           string                  `json:"mode"`
+	Region         string                  `json:"region,omitempty"`
+	RegionMode     RegionMode              `json:"region_mode,omitempty"`
+	RandomRegions  []string                `json:"random_regions,omitempty"`
+	PoolSize       int                     `json:"pool_size,omitempty"` // ignored for sticky channels
+	Listener       ChannelListenerRequest  `json:"listener"`
+	PublicEndpoint listener.PublicEndpoint `json:"public_endpoint,omitempty"`
+	Enabled        *bool                   `json:"enabled,omitempty"`
 }
 
 type ChannelListenerRequest struct {
@@ -86,12 +89,13 @@ type ChannelListenerRequest struct {
 }
 
 type UpdateChannelRequest struct {
-	Version       int        `json:"version"`
-	Name          string     `json:"name"`
-	Region        string     `json:"region,omitempty"`
-	RegionMode    RegionMode `json:"region_mode,omitempty"`
-	RandomRegions []string   `json:"random_regions,omitempty"`
-	Enabled       bool       `json:"enabled"`
+	Version        int                      `json:"version"`
+	Name           string                   `json:"name"`
+	Region         string                   `json:"region,omitempty"`
+	RegionMode     RegionMode               `json:"region_mode,omitempty"`
+	RandomRegions  []string                 `json:"random_regions,omitempty"`
+	PublicEndpoint *listener.PublicEndpoint `json:"public_endpoint,omitempty"`
+	Enabled        bool                     `json:"enabled"`
 }
 
 func (s *Service) ListChannels(ctx context.Context) ([]Channel, error) {
@@ -220,13 +224,14 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 	}
 
 	createdListener, err := s.listeners.Create(ctx, listener.CreateRequest{
-		Name:         channelListenerName(name),
-		Kind:         request.Listener.Kind,
-		BindAddress:  request.Listener.BindAddress,
-		Port:         request.Listener.Port,
-		ProxyGroupID: group.ID,
-		Auth:         request.Listener.Auth,
-		Enabled:      &enabled,
+		Name:           channelListenerName(name),
+		Kind:           request.Listener.Kind,
+		BindAddress:    request.Listener.BindAddress,
+		Port:           request.Listener.Port,
+		ProxyGroupID:   group.ID,
+		Auth:           request.Listener.Auth,
+		PublicEndpoint: request.PublicEndpoint,
+		Enabled:        &enabled,
 	})
 	if err != nil {
 		_ = s.groups.Delete(ctx, group.ID, group.Version)
@@ -298,9 +303,33 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	existing.RandomRegions = marshalRegionList(regionSelection.RandomRegions)
 	existing.Enabled = request.Enabled
 	existing.UpdatedAt = s.now().UTC()
+	var currentListener listener.Listener
+	if request.PublicEndpoint != nil {
+		currentListener, err = s.listeners.Get(ctx, existing.ListenerID)
+		if err != nil {
+			return Channel{}, err
+		}
+		if err := listener.ValidatePublicEndpoint(*request.PublicEndpoint, currentListener.Port); err != nil {
+			return Channel{}, err
+		}
+	}
 	updated, err := s.repository.UpdateResidentialChannel(ctx, existing, request.Version)
 	if err != nil {
 		return Channel{}, mapStoreError(err)
+	}
+	if request.PublicEndpoint != nil {
+		if _, err := s.listeners.Update(ctx, currentListener.ID, listener.UpdateRequest{
+			Version:        currentListener.Version,
+			Name:           currentListener.Name,
+			Kind:           currentListener.Kind,
+			BindAddress:    currentListener.BindAddress,
+			Port:           currentListener.Port,
+			ProxyGroupID:   currentListener.ProxyGroupID,
+			PublicEndpoint: *request.PublicEndpoint,
+			Enabled:        currentListener.Enabled,
+		}); err != nil {
+			return Channel{}, fmt.Errorf("update residential public endpoint: %w", err)
+		}
 	}
 	// Existing client allocations retain their current vendor session. The new
 	// region is used only by subsequent allocation or rotation requests.
@@ -405,6 +434,9 @@ func (s *Service) channelFromRecord(
 			BindAddress: listenerRecord.BindAddress,
 			Port:        listenerRecord.Port,
 			AuthEnabled: listenerRecord.AuthMode != "none" && len(listenerRecord.AuthConfigEncrypted) > 0,
+		}
+		if err := json.Unmarshal([]byte(listenerRecord.PublicEndpointJSON), &channel.PublicEndpoint); err != nil {
+			return Channel{}, fmt.Errorf("decode residential public endpoint: %w", err)
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return Channel{}, err

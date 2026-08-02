@@ -32,6 +32,46 @@ type RuntimeSnapshot struct {
 	Connections []Connection
 }
 
+const MaxLiveSamples = 120
+
+type LiveResource struct {
+	ResourceType        string
+	ResourceID          string
+	UploadBytesPerSec   int64
+	DownloadBytesPerSec int64
+	ActiveConnections   int64
+}
+
+type LiveSample struct {
+	Timestamp           time.Time
+	UploadBytesPerSec   int64
+	DownloadBytesPerSec int64
+	ActiveConnections   int64
+	Resources           []LiveResource
+}
+
+type LiveSnapshot struct {
+	Latest  LiveSample
+	History []LiveSample
+}
+
+type LiveSubscription struct {
+	C     <-chan LiveSample
+	close func()
+	once  sync.Once
+}
+
+func (subscription *LiveSubscription) Close() {
+	if subscription == nil {
+		return
+	}
+	subscription.once.Do(func() {
+		if subscription.close != nil {
+			subscription.close()
+		}
+	})
+}
+
 type Source interface {
 	TrafficSnapshot(context.Context) (RuntimeSnapshot, error)
 }
@@ -40,6 +80,7 @@ type Repository interface {
 	WriteTraffic(context.Context, []store.TrafficWrite, time.Time) error
 	GetTrafficTotal(context.Context, string, string) (store.TrafficTotalRecord, error)
 	ListTrafficTotals(context.Context, string, int, int) ([]store.TrafficTotalRecord, error)
+	ListTrafficSummaries(context.Context, string, time.Time, time.Time, int, int) ([]store.TrafficTotalRecord, error)
 	ListTrafficBuckets(context.Context, string, string, time.Time, time.Time, time.Duration, int) ([]store.TrafficBucketRecord, error)
 	CompactTraffic(context.Context, time.Time) error
 }
@@ -68,11 +109,14 @@ type Service struct {
 	config     Config
 	now        func() time.Time
 
-	mu         sync.Mutex
-	observed   map[string]observedConnection
-	pending    map[Resource]counters
-	active     map[Resource]int64
-	lastActive map[Resource]int64
+	mu              sync.Mutex
+	observed        map[string]observedConnection
+	pending         map[Resource]counters
+	active          map[Resource]int64
+	lastActive      map[Resource]int64
+	lastCollectedAt time.Time
+	liveHistory     []LiveSample
+	subscribers     map[chan LiveSample]struct{}
 }
 
 func NewService(repository Repository, source Source, logger *slog.Logger, config Config) (*Service, error) {
@@ -95,16 +139,54 @@ func NewService(repository Repository, source Source, logger *slog.Logger, confi
 		config.CompactInterval = time.Hour
 	}
 	return &Service{
-		repository: repository,
-		source:     source,
-		logger:     logger,
-		config:     config,
-		now:        time.Now,
-		observed:   make(map[string]observedConnection),
-		pending:    make(map[Resource]counters),
-		active:     make(map[Resource]int64),
-		lastActive: make(map[Resource]int64),
+		repository:  repository,
+		source:      source,
+		logger:      logger,
+		config:      config,
+		now:         time.Now,
+		observed:    make(map[string]observedConnection),
+		pending:     make(map[Resource]counters),
+		active:      make(map[Resource]int64),
+		lastActive:  make(map[Resource]int64),
+		subscribers: make(map[chan LiveSample]struct{}),
 	}, nil
+}
+
+func (s *Service) LiveSnapshot() LiveSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	history := make([]LiveSample, len(s.liveHistory))
+	for index, sample := range s.liveHistory {
+		history[index] = cloneLiveSample(sample)
+	}
+	var latest LiveSample
+	if len(history) > 0 {
+		latest = cloneLiveSample(history[len(history)-1])
+	}
+	return LiveSnapshot{Latest: latest, History: history}
+}
+
+func (s *Service) SubscribeLive() *LiveSubscription {
+	updates := make(chan LiveSample, 8)
+	s.mu.Lock()
+	s.subscribers[updates] = struct{}{}
+	s.mu.Unlock()
+	return &LiveSubscription{
+		C: updates,
+		close: func() {
+			s.mu.Lock()
+			if _, exists := s.subscribers[updates]; exists {
+				delete(s.subscribers, updates)
+				close(updates)
+			}
+			s.mu.Unlock()
+		},
+	}
+}
+
+func cloneLiveSample(sample LiveSample) LiveSample {
+	sample.Resources = append([]LiveResource(nil), sample.Resources...)
+	return sample
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -151,18 +233,24 @@ func (s *Service) Collect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	nextObserved := make(map[string]observedConnection, len(snapshot.Connections))
 	active := make(map[Resource]int64)
+	deltas := make(map[Resource]counters)
+	var totalUpload, totalDownload, activeConnections int64
 	for _, connection := range snapshot.Connections {
 		if connection.ID == "" || connection.Upload < 0 || connection.Download < 0 {
 			continue
 		}
+		activeConnections++
 		previous, existed := s.observed[connection.ID]
 		uploadDelta := nonnegativeDelta(connection.Upload, previous.upload)
 		downloadDelta := nonnegativeDelta(connection.Download, previous.download)
+		totalUpload += uploadDelta
+		totalDownload += downloadDelta
 		connectionDelta := int64(0)
 		if !existed {
 			connectionDelta = 1
@@ -181,13 +269,79 @@ func (s *Service) Collect(ctx context.Context) error {
 			value.download += downloadDelta
 			value.connections += connectionDelta
 			s.pending[resource] = value
+			delta := deltas[resource]
+			delta.upload += uploadDelta
+			delta.download += downloadDelta
+			deltas[resource] = delta
 			active[resource]++
 		}
 		nextObserved[connection.ID] = observedConnection{upload: connection.Upload, download: connection.Download}
 	}
 	s.observed = nextObserved
 	s.active = active
+	elapsed := s.config.PollInterval
+	if !s.lastCollectedAt.IsZero() && now.After(s.lastCollectedAt) {
+		elapsed = now.Sub(s.lastCollectedAt)
+	}
+	if elapsed <= 0 {
+		elapsed = time.Second
+	}
+	resourceSet := make(map[Resource]struct{}, len(deltas)+len(active))
+	for resource := range deltas {
+		resourceSet[resource] = struct{}{}
+	}
+	for resource := range active {
+		resourceSet[resource] = struct{}{}
+	}
+	resources := make([]LiveResource, 0, len(resourceSet))
+	for resource := range resourceSet {
+		delta := deltas[resource]
+		resources = append(resources, LiveResource{
+			ResourceType:        resource.Type,
+			ResourceID:          resource.ID,
+			UploadBytesPerSec:   bytesPerSecond(delta.upload, elapsed),
+			DownloadBytesPerSec: bytesPerSecond(delta.download, elapsed),
+			ActiveConnections:   active[resource],
+		})
+	}
+	sort.Slice(resources, func(left, right int) bool {
+		if resources[left].ResourceType == resources[right].ResourceType {
+			return resources[left].ResourceID < resources[right].ResourceID
+		}
+		return resources[left].ResourceType < resources[right].ResourceType
+	})
+	sample := LiveSample{
+		Timestamp:           now,
+		UploadBytesPerSec:   bytesPerSecond(totalUpload, elapsed),
+		DownloadBytesPerSec: bytesPerSecond(totalDownload, elapsed),
+		ActiveConnections:   activeConnections,
+		Resources:           resources,
+	}
+	s.lastCollectedAt = now
+	s.liveHistory = append(s.liveHistory, sample)
+	if len(s.liveHistory) > MaxLiveSamples {
+		s.liveHistory = append([]LiveSample(nil), s.liveHistory[len(s.liveHistory)-MaxLiveSamples:]...)
+	}
+	for updates := range s.subscribers {
+		value := cloneLiveSample(sample)
+		select {
+		case updates <- value:
+		default:
+			select {
+			case <-updates:
+			default:
+			}
+			updates <- value
+		}
+	}
 	return nil
+}
+
+func bytesPerSecond(bytes int64, elapsed time.Duration) int64 {
+	if bytes <= 0 || elapsed <= 0 {
+		return 0
+	}
+	return int64(float64(bytes) / elapsed.Seconds())
 }
 
 func (s *Service) Flush(ctx context.Context) error {
@@ -293,6 +447,24 @@ func (s *Service) Summary(ctx context.Context, resourceType, resourceID string) 
 
 func (s *Service) ListSummaries(ctx context.Context, resourceType string, limit, offset int) ([]Summary, error) {
 	records, err := s.repository.ListTrafficTotals(ctx, resourceType, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Summary, 0, len(records))
+	for _, record := range records {
+		items = append(items, summaryFromRecord(record))
+	}
+	return items, nil
+}
+
+func (s *Service) ListSummariesBetween(ctx context.Context, resourceType string, from, to time.Time, limit, offset int) ([]Summary, error) {
+	if !validResource(Resource{Type: resourceType, ID: "range"}) || from.IsZero() || to.IsZero() || !from.Before(to) || to.Sub(from) > MaxQueryRange {
+		return nil, fmt.Errorf("%w: invalid traffic summary range", ErrInvalidQuery)
+	}
+	if limit < 1 || limit > 200 || offset < 0 {
+		return nil, fmt.Errorf("%w: invalid traffic summary pagination", ErrInvalidQuery)
+	}
+	records, err := s.repository.ListTrafficSummaries(ctx, resourceType, from.UTC(), to.UTC(), limit, offset)
 	if err != nil {
 		return nil, err
 	}

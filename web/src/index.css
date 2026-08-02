@@ -155,8 +155,19 @@ body {
 .page-enter { animation: page-in 180ms ease-out both; }
 .toast-enter { animation: toast-in 180ms ease-out both; }
 
+@keyframes chart-draw {
+  from { stroke-dashoffset: 1; opacity: .35; }
+  to { stroke-dashoffset: 0; opacity: 1; }
+}
+
+.chart-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: chart-draw 620ms ease-out both;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .page-enter, .toast-enter { animation: none; }
+  .page-enter, .toast-enter, .chart-line { animation: none; stroke-dashoffset: 0; }
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
 

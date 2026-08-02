@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { strategyMeta } from "@/lib/proxy-groups"
-import type { DataPlaneStatus, ListenerKind, ListenerRecord, NodeRecord, ProxyGroup, ProxyGroupStrategy, RoutingAction, RoutingRulesConfig, RoutingRuleSet, Subscription } from "@/lib/types"
+import type { DataPlaneStatus, ListenerKind, ListenerRecord, NodeRecord, ProxyGroup, ProxyGroupStrategy, ResidentialChannel, RoutingAction, RoutingRulesConfig, RoutingRuleSet, Subscription } from "@/lib/types"
 import { cn, formatDate } from "@/lib/utils"
 
 interface RoutingPageProps {
@@ -38,6 +38,7 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
   const [groups, setGroups] = useState<ProxyGroup[]>([])
   const [listeners, setListeners] = useState<ListenerRecord[]>([])
+  const [residentialChannels, setResidentialChannels] = useState<ResidentialChannel[]>([])
   const [status, setStatus] = useState<DataPlaneStatus | null>(null)
   const [routingRules, setRoutingRules] = useState<RoutingRulesConfig>({ rule_sets: [] })
   const [loading, setLoading] = useState(true)
@@ -49,13 +50,14 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [nodeResult, subscriptionResult, groupResult, listenerResult, statusResult, ruleResult] = await Promise.all([
-        api.listNodes(), api.listSubscriptions(), api.listProxyGroups(), api.listListeners(), api.dataPlaneStatus(), api.routingRules(),
+      const [nodeResult, subscriptionResult, groupResult, listenerResult, statusResult, ruleResult, residentialResult] = await Promise.all([
+        api.listNodes(), api.listSubscriptions(), api.listProxyGroups(), api.listListeners(), api.dataPlaneStatus(), api.routingRules(), api.listResidentialChannels(),
       ])
       setNodes(nodeResult.items.filter((item) => !["disabled", "retired"].includes(item.lifecycle_state)))
       setSubscriptions(subscriptionResult.items.filter((item) => item.enabled))
       setGroups(groupResult.items)
       setListeners(listenerResult.items)
+      setResidentialChannels(residentialResult.items)
       setStatus(statusResult)
       setRoutingRules(ruleResult)
     } catch (error) {
@@ -112,7 +114,8 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
           <PanelHeader title="服务列表" description="入口与节点策略保持一一对应" count={listeners.length} />
           {listeners.length === 0 ? <EmptyState /> : <div className="min-h-0 flex-1 divide-y overflow-y-auto">{listeners.map((listener) => {
             const group = groups.find((item) => item.id === listener.proxy_group_id)
-            return <ServiceRow key={listener.id} listener={listener} group={group} groups={groups} routingRules={routingRules} nodes={resolveServiceNodes(group, nodes)} subscriptions={subscriptions} allNodes={nodes} expanded={expanded.has(listener.id)} editing={editing === listener.id} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(listener.id)) next.delete(listener.id); else next.add(listener.id); return next })} onEdit={() => { setExpanded((current) => new Set(current).add(listener.id)); setEditing(listener.id) }} onCloseEdit={() => setEditing(null)} onRoutingChanged={setRoutingRules} onChanged={async () => { setEditing(null); await load() }} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
+            const residential = residentialChannels.find((channel) => channel.listener_id === listener.id)
+            return <ServiceRow key={listener.id} listener={listener} group={group} groups={groups} routingRules={routingRules} nodes={resolveServiceNodes(group, nodes)} subscriptions={subscriptions} allNodes={nodes} residential={residential} expanded={expanded.has(listener.id)} editing={editing === listener.id} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(listener.id)) next.delete(listener.id); else next.add(listener.id); return next })} onEdit={() => { setExpanded((current) => new Set(current).add(listener.id)); setEditing(listener.id) }} onCloseEdit={() => setEditing(null)} onRoutingChanged={setRoutingRules} onChanged={async () => { setEditing(null); await load() }} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
           })}</div>}
         </section>
         <CreateProxyServiceForm nodes={nodes} subscriptions={subscriptions} onCreated={load} onNotice={onNotice} />
@@ -132,7 +135,20 @@ async function copyText(value: string): Promise<boolean> {
   }
 }
 
-function ServiceRow({ listener, group, groups, routingRules, nodes, subscriptions, allNodes, expanded, editing, onToggle, onEdit, onCloseEdit, onRoutingChanged, onChanged, onDelete, onNotice }: { listener: ListenerRecord; group?: ProxyGroup; groups: ProxyGroup[]; routingRules: RoutingRulesConfig; nodes: NodeRecord[]; subscriptions: Subscription[]; allNodes: NodeRecord[]; expanded: boolean; editing: boolean; onToggle: () => void; onEdit: () => void; onCloseEdit: () => void; onRoutingChanged: (config: RoutingRulesConfig) => void; onChanged: () => Promise<void>; onDelete: () => void; onNotice: RoutingPageProps["onNotice"] }) {
+function endpointAddress(listener: ListenerRecord, endpoint: ListenerRecord["public_endpoint"]): string {
+  const configuredHost = endpoint?.host?.trim()
+  const bindHost = listener.bind_address.trim()
+  const host = configuredHost || (isPublicBindAddress(bindHost) ? bindHost : "")
+  if (!host) return ""
+  const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
+  return `${formattedHost}:${endpoint?.port || listener.port}`
+}
+
+function isPublicBindAddress(value: string): boolean {
+  return value !== "127.0.0.1" && value !== "::1" && value !== "0.0.0.0" && value !== "::" && !value.startsWith("127.")
+}
+
+function ServiceRow({ listener, group, groups, routingRules, nodes, subscriptions, allNodes, residential, expanded, editing, onToggle, onEdit, onCloseEdit, onRoutingChanged, onChanged, onDelete, onNotice }: { listener: ListenerRecord; group?: ProxyGroup; groups: ProxyGroup[]; routingRules: RoutingRulesConfig; nodes: NodeRecord[]; subscriptions: Subscription[]; allNodes: NodeRecord[]; residential?: ResidentialChannel; expanded: boolean; editing: boolean; onToggle: () => void; onEdit: () => void; onCloseEdit: () => void; onRoutingChanged: (config: RoutingRulesConfig) => void; onChanged: () => Promise<void>; onDelete: () => void; onNotice: RoutingPageProps["onNotice"] }) {
   const [action, setAction] = useState("")
   const [detailTab, setDetailTab] = useState("members")
   const spec = group?.source_spec
@@ -144,12 +160,21 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
 
   async function copyShareLink(format: "v2rayn" | "clash" | "sing-box" | "uri", client: string) {
     if (!listener.share_path) return
+    if (!endpointAddress(listener, publicEndpoint)) {
+      onNotice("请先配置公网端点，不能复制指向 127.0.0.1 的订阅链接", "error")
+      return
+    }
     const ok = await copyText(api.listenerShareURL(listener.share_path, format))
     onNotice(ok ? `${client} 订阅链接已复制` : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
   async function copyEndpoint() {
-    const ok = await copyText(`${listener.bind_address}:${listener.port}`)
+    const address = endpointAddress(listener, publicEndpoint)
+    if (!address) {
+      onNotice("请先配置公网端点，不能复制 127.0.0.1 等本机监听地址", "error")
+      return
+    }
+    const ok = await copyText(address)
     onNotice(ok ? "入口地址已复制" : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
@@ -166,13 +191,14 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
 
   const memberCount = nodes.length + (group?.source_spec.include_direct ? 1 : 0)
   const healthyCount = nodes.filter((node) => node.lifecycle_state === "healthy").length + (group?.source_spec.include_direct ? 1 : 0)
+  const publicEndpoint = residential?.public_endpoint ?? listener.public_endpoint
   function runAction(value: string) {
     setAction(value)
     if (value === "address") void copyEndpoint()
     else if (value === "auth-uri") void copyConnectionURI()
     else if (value === "edit") { setDetailTab("edit"); onEdit() }
     else if (value === "delete") onDelete()
-    else { const [format = "clash", client = format] = value.split(":"); void copyShareLink(format as "v2rayn" | "clash" | "sing-box" | "uri", client) }
+    else if (!residential) { const [format = "clash", client = format] = value.split(":"); void copyShareLink(format as "v2rayn" | "clash" | "sing-box" | "uri", client) }
     window.setTimeout(() => setAction(""), 0)
   }
   return (
@@ -181,11 +207,11 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
       <div className="flex min-w-0 items-start gap-2.5">
         <Button variant="ghost" size="icon" className="size-7" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={expanded ? "收起节点" : "展开节点"}>{expanded ? <ChevronDown /> : <ChevronRight />}</Button>
         <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground"><Cable className="size-4" /></div>
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge><Badge variant={healthyCount === memberCount && memberCount > 0 ? "success" : "warning"}>{healthyCount}/{memberCount} 可用</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">{listener.bind_address}:{listener.port}</div></div>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge>{residential && <Badge variant="outline">住宅会话</Badge>}<Badge variant={healthyCount === memberCount && memberCount > 0 ? "success" : "warning"}>{healthyCount}/{memberCount} 可用</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">本机 {listener.bind_address}:{listener.port}{endpointAddress(listener, publicEndpoint) ? ` · 公网 ${endpointAddress(listener, publicEndpoint)}` : " · 未配置公网端点"}</div></div>
       </div>
       <div className="min-w-0"><div className="flex items-center gap-1.5 text-xs font-medium"><Network className="size-3.5" />{group ? strategyLabel(group.strategy) : "组已缺失"}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={sourceText}>{sourceText}</div></div>
       <div className="w-full lg:w-[200px]">
-        <Select value={action} onValueChange={runAction}><SelectTrigger onClick={(event) => event.stopPropagation()} className="h-8"><Link2 className="mr-1 size-3.5" /><SelectValue placeholder="服务操作" /></SelectTrigger><SelectContent><SelectItem value="edit">编辑服务</SelectItem>{listener.share_path && <><SelectItem value="clash:Clash / Mihomo">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="v2rayn:v2rayN / v2rayNG">复制 v2rayN / v2rayNG 订阅</SelectItem><SelectItem value="v2rayn:Shadowrocket">复制 Shadowrocket 订阅</SelectItem><SelectItem value="sing-box:sing-box / NekoBox">复制 sing-box / NekoBox 订阅</SelectItem><SelectItem value="auth-uri">复制认证连接 URI</SelectItem></>}<SelectItem value="address">复制入口地址</SelectItem><SelectItem value="delete" className="text-destructive">删除服务</SelectItem></SelectContent></Select>
+        <Select value={action} onValueChange={runAction}><SelectTrigger onClick={(event) => event.stopPropagation()} className="h-8"><Link2 className="mr-1 size-3.5" /><SelectValue placeholder="服务操作" /></SelectTrigger><SelectContent><SelectItem value="edit">编辑服务</SelectItem>{!residential && listener.share_path && <><SelectItem value="clash:Clash / Mihomo">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="v2rayn:v2rayN / v2rayNG">复制 v2rayN / v2rayNG 订阅</SelectItem><SelectItem value="v2rayn:Shadowrocket">复制 Shadowrocket 订阅</SelectItem><SelectItem value="sing-box:sing-box / NekoBox">复制 sing-box / NekoBox 订阅</SelectItem><SelectItem value="auth-uri">复制认证连接 URI</SelectItem></>}<SelectItem value="address">复制入口地址</SelectItem><SelectItem value="delete" className="text-destructive">删除服务</SelectItem></SelectContent></Select>
       </div>
     </div>
     {expanded && <div className="border-t bg-muted/70 px-3 py-3 sm:px-4">
@@ -277,6 +303,8 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [publicHost, setPublicHost] = useState("")
+  const [publicPort, setPublicPort] = useState("")
+  const [publicTLS, setPublicTLS] = useState(false)
   const [wsPath, setWSPath] = useState("/__hx-proxy__/hx-proxy")
   const [submitting, setSubmitting] = useState(false)
 
@@ -301,7 +329,7 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
           name: `${name.trim()} 入口`, kind, bind_address: bindAddress.trim(), port,
           auth: authEnabled ? { username: username.trim(), password } : undefined,
           transport: advanced ? { type: "ws", ws_path: wsPath.trim() } : undefined,
-          public_endpoint: advanced ? { host: publicHost.trim(), port: 443, tls: true } : undefined,
+          public_endpoint: publicHost.trim() ? { host: publicHost.trim(), port: advanced ? 443 : (Number(publicPort) || port), tls: advanced || publicTLS } : undefined,
         },
       })
       setName("")
@@ -340,7 +368,7 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
           <div className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Gauge className="size-4 text-info" />当前指标预计命中 {estimated} 个节点</div>
         </> : <Field label={`固定节点（已选 ${selectedNodes.length}）`}><CheckList items={nodes.map((item) => ({ id: item.id, label: `${item.display_name} · ${item.last_latency_ms == null ? "未测试" : `${item.last_latency_ms}ms`}` }))} selected={selectedNodes} onChange={setSelectedNodes} empty="暂无活动节点" /></Field>}
         <Field label="出站策略"><ChipSet values={strategies} current={strategy} onChange={setStrategy} /></Field>
-        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} required /></Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path（固定前缀 /__hx-proxy__/）"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/__hx-proxy__/hx-proxy" required /></Field></div>}{!advanced && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={authEnabled} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用用户名密码认证</label>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
+        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} required /></Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path（固定前缀 /__hx-proxy__/）"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/__hx-proxy__/hx-proxy" required /></Field></div>}{!advanced && <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="公网主机名 / IP（可选）"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="VPS 公网地址" /></Field><Field label="公网端口"><Input type="number" min={1} max={65535} value={publicPort} onChange={(event) => setPublicPort(event.target.value)} placeholder={String(port)} /></Field></div>}{!advanced && publicHost.trim() && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={publicTLS} onCheckedChange={(value) => setPublicTLS(value === true)} />公网 HTTP 端点使用 TLS</label>}{!advanced && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={authEnabled} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用用户名密码认证</label>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
         <Button type="submit" disabled={submitting || !name.trim() || !validSource || (authEnabled && (!username.trim() || !password)) || (advanced && (!publicHost.trim() || !wsPath.startsWith("/")))} className="w-full">{submitting ? <LoaderCircle className="animate-spin" /> : <Plus />}创建并启动</Button>
       </div>
     </form>

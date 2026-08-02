@@ -255,6 +255,37 @@ func TestClientSessionsShareOneChannelButKeepIndependentRoutes(t *testing.T) {
 	}
 }
 
+func TestResidentialChannelPersistsPublicEndpointAndRejectsLoopback(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t)
+	provider := harness.createProvider(t)
+	ctx := context.Background()
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "public-residential", ProviderID: provider.ID, Mode: ModeSticky,
+		Listener:       ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29306},
+		PublicEndpoint: listener.PublicEndpoint{Host: "residential.example.com", Port: 443, TLS: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.PublicEndpoint.Host != "residential.example.com" || channel.PublicEndpoint.Port != 443 || !channel.PublicEndpoint.TLS {
+		t.Fatalf("public endpoint = %+v", channel.PublicEndpoint)
+	}
+
+	updated, err := harness.service.UpdateChannel(ctx, channel.ID, UpdateChannelRequest{
+		Version:        channel.Version,
+		Name:           channel.Name,
+		PublicEndpoint: &listener.PublicEndpoint{Host: "127.0.0.1", Port: 443, TLS: true},
+		Enabled:        channel.Enabled,
+	})
+	if !errors.Is(err, listener.ErrInvalid) {
+		t.Fatalf("loopback endpoint update = %v, want listener.ErrInvalid", err)
+	}
+	if updated.ID != "" {
+		t.Fatalf("failed endpoint update returned channel: %+v", updated)
+	}
+}
+
 func TestClientSessionRejectsConflictingCountryPin(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t)

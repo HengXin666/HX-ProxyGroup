@@ -12,6 +12,7 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -102,6 +103,9 @@ type ChannelForm = {
   port: string
   authUsername: string
   authPassword: string
+  publicHost: string
+  publicPort: string
+  publicTLS: boolean
   enabled: boolean
 }
 
@@ -117,6 +121,9 @@ const emptyChannelForm: ChannelForm = {
   port: "18088",
   authUsername: "",
   authPassword: "",
+  publicHost: "",
+  publicPort: "18088",
+  publicTLS: false,
   enabled: true,
 }
 
@@ -132,6 +139,7 @@ export function ResidentialPage({
   const [loading, setLoading] = useState(true)
   const [providerDialogOpen, setProviderDialogOpen] = useState(false)
   const [channelDialogOpen, setChannelDialogOpen] = useState(false)
+  const [endpointChannel, setEndpointChannel] = useState<ResidentialChannel | null>(null)
   const [editingProvider, setEditingProvider] = useState<ResidentialProvider | null>(null)
   const [testResult, setTestResult] = useState<ResidentialTestResult | null>(null)
 
@@ -246,17 +254,31 @@ export function ResidentialPage({
                             : ""}
                         </td>
                         <td className="px-3 py-2">
-                          <div className="flex items-center gap-1.5">
-                            <code className="rounded bg-muted px-1.5 py-0.5">
-                              {channel.endpoint.kind}:{channel.endpoint.bind_address}:{channel.endpoint.port}
-                            </code>
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <code className="rounded bg-muted px-1.5 py-0.5">
+                                本机 {channel.endpoint.bind_address}:{channel.endpoint.port}
+                              </code>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <code className={cn("rounded px-1.5 py-0.5", hasPublicEndpoint(channel) ? "bg-success-muted" : "bg-warning-muted text-warning")}>
+                                {formatPublicEndpoint(channel)}
+                              </code>
+                              <button type="button" title="配置公网端点" onClick={() => setEndpointChannel(channel)} className="text-muted-foreground hover:text-foreground"><Pencil className="size-3" /></button>
+                            </div>
                             {channel.endpoint.auth_enabled && <KeyRound className="size-3 text-muted-foreground" aria-label="需要登录凭证" />}
-                            <button type="button" onClick={() => void copyText(`${channel.endpoint.kind === "socks" ? "socks5" : "http"}://${channel.endpoint.bind_address}:${channel.endpoint.port}`, "入口地址")} className="text-muted-foreground hover:text-foreground"><Copy className="size-3" /></button>
+                            {proxyAddresses(channel).map((address) => (
+                              <div key={address} className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                                <code className="max-w-[240px] truncate rounded bg-muted px-1.5 py-0.5" title={address}>{address}</code>
+                                <button type="button" title={`复制 ${address.split(":")[0]} 代理地址`} onClick={() => void copyText(address, "代理地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
+                              </div>
+                            ))}
+                            {!hasPublicEndpoint(channel) && <span className="text-[11px] text-warning">未配置公网端点，禁止复制本机地址</span>}
                           </div>
                           {channel.rotate_path && (
                             <div className="mt-0.5 flex items-center gap-1.5 text-muted-foreground">
                               <code className="rounded bg-muted px-1.5 py-0.5">/rot/{channel.rotate_path.split("/").filter(Boolean).pop()}</code>
-                              <button type="button" onClick={() => void copyText(new URL(channel.rotate_path!, window.location.origin).toString(), "轮换地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
+                              <button type="button" disabled={!hasPublicEndpoint(channel)} onClick={() => void copyText(publicPath(channel, channel.rotate_path!), "轮换地址")} className="hover:text-foreground disabled:opacity-40"><Copy className="size-3" /></button>
                             </div>
                           )}
                         </td>
@@ -266,6 +288,14 @@ export function ResidentialPage({
                         <td className="px-3 py-2 text-muted-foreground">由客户端会话独立维护</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              title="配置公网端点"
+                              onClick={() => setEndpointChannel(channel)}
+                              className="inline-flex size-7 items-center justify-center rounded-md border hover:bg-muted"
+                            >
+                              <Pencil className="size-3.5" />
+                            </button>
                             <button
                               type="button"
                               title="重置公共轮换 Token（旧链接立即失效）"
@@ -419,6 +449,19 @@ export function ResidentialPage({
           onSaved={async () => {
             setChannelDialogOpen(false)
             onNotice("渠道已创建，客户端入口可用")
+            await reload()
+          }}
+          onNotice={onNotice}
+        />
+      )}
+
+      {endpointChannel && (
+        <ChannelEndpointDialog
+          channel={endpointChannel}
+          onClose={() => setEndpointChannel(null)}
+          onSaved={async () => {
+            setEndpointChannel(null)
+            onNotice("住宅公网端点已保存")
             await reload()
           }}
           onNotice={onNotice}
@@ -850,6 +893,9 @@ function ChannelDialog({
           bind_address: form.bindAddress.trim(),
           port: Number(form.port),
         },
+        public_endpoint: form.publicHost.trim()
+          ? { host: form.publicHost.trim(), port: Number(form.publicPort) || Number(form.port), tls: form.publicTLS }
+          : undefined,
         enabled: form.enabled,
       }
       if (form.authUsername || form.authPassword) {
@@ -940,6 +986,22 @@ function ChannelDialog({
               端口
               <Input value={form.port} onChange={(event) => update("port", event.target.value)} inputMode="numeric" required />
             </label>
+            <label className="grid gap-1 text-xs sm:col-span-2">
+              公网主机名 / IP
+              <Input value={form.publicHost} onChange={(event) => update("publicHost", event.target.value)} placeholder="例如 proxy.example.com 或 VPS 公网 IP" />
+              <span className="text-[11px] text-muted-foreground">只填写客户端实际连接的地址；本机监听仍可保持 127.0.0.1。</span>
+            </label>
+            <label className="grid gap-1 text-xs">
+              公网端口
+              <Input value={form.publicPort} onChange={(event) => update("publicPort", event.target.value)} inputMode="numeric" placeholder={form.port} />
+            </label>
+            <label className="flex items-center gap-2 self-end rounded-md border px-3 py-2 text-xs">
+              <Checkbox checked={form.publicTLS} onCheckedChange={(value) => update("publicTLS", value === true)} />
+              公网 HTTP 端点使用 TLS
+            </label>
+            <div className="sm:col-span-2 rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning">
+              住宅渠道是 HTTP / SOCKS5 / Mixed 代理，不是 Clash 订阅或 VLESS/VMess/Trojan WS。Cloudflare 橙云与仅支持 WebSocket 的 Edge Relay 不能承载 HTTP CONNECT 或 SOCKS5；公网端点必须指向实际能转发该协议的 VPS / 四层代理 / 受支持反向代理。
+            </div>
             <label className="grid gap-1 text-xs">
               入口账号（可选）
               <Input value={form.authUsername} onChange={(event) => update("authUsername", event.target.value)} autoComplete="off" />
@@ -953,6 +1015,113 @@ function ChannelDialog({
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
             <Button type="submit" disabled={saving}><Wrench className="mr-1 size-3.5" />{saving ? "创建中…" : "创建"}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function hasPublicEndpoint(channel: ResidentialChannel): boolean {
+  return Boolean(channel.public_endpoint?.host?.trim()) && channel.public_endpoint.port > 0
+}
+
+function publicHostPort(channel: ResidentialChannel): string {
+  const endpoint = channel.public_endpoint
+  if (!hasPublicEndpoint(channel)) return "未配置公网端点"
+  const host = endpoint.host.includes(":") && !endpoint.host.startsWith("[") ? `[${endpoint.host}]` : endpoint.host
+  return `${host}:${endpoint.port}`
+}
+
+function formatPublicEndpoint(channel: ResidentialChannel): string {
+  return hasPublicEndpoint(channel) ? `公网 ${publicHostPort(channel)}` : "未配置公网端点"
+}
+
+function proxyAddresses(channel: ResidentialChannel): string[] {
+  if (!hasPublicEndpoint(channel)) return []
+  const endpoint = channel.public_endpoint
+  const hostPort = publicHostPort(channel)
+  const httpScheme = endpoint.tls ? "https" : "http"
+  if (channel.endpoint.kind === "http") return [`${httpScheme}://${hostPort}`]
+  if (channel.endpoint.kind === "socks") return [`socks5://${hostPort}`]
+  return [`${httpScheme}://${hostPort}`, `socks5://${hostPort}`]
+}
+
+function publicPath(channel: ResidentialChannel, path: string): string {
+  if (!hasPublicEndpoint(channel)) return path
+  const endpoint = channel.public_endpoint
+  const host = endpoint.host.includes(":") && !endpoint.host.startsWith("[") ? `[${endpoint.host}]` : endpoint.host
+  const defaultPort = endpoint.tls ? 443 : 80
+  const port = endpoint.port === defaultPort ? "" : `:${endpoint.port}`
+  return `${endpoint.tls ? "https" : "http"}://${host}${port}${path}`
+}
+
+function ChannelEndpointDialog({
+  channel,
+  onClose,
+  onSaved,
+  onNotice,
+}: {
+  channel: ResidentialChannel
+  onClose: () => void
+  onSaved: () => Promise<void>
+  onNotice: (message: string, tone?: "success" | "error") => void
+}) {
+  const [host, setHost] = useState(channel.public_endpoint?.host ?? "")
+  const [port, setPort] = useState(String(channel.public_endpoint?.port || channel.endpoint.port))
+  const [tls, setTLS] = useState(channel.public_endpoint?.tls ?? false)
+  const [saving, setSaving] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      await api.updateResidentialChannel(channel.id, {
+        version: channel.version,
+        name: channel.name,
+        region: channel.region,
+        region_mode: channel.region_mode,
+        random_regions: channel.random_regions,
+        public_endpoint: { host: host.trim(), port: Number(port), tls },
+        enabled: channel.enabled,
+      })
+      await onSaved()
+    } catch (cause) {
+      if (cause instanceof ApiError) onNotice(cause.message, "error")
+      else onNotice(String(cause), "error")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-lg">
+        <form onSubmit={(event) => void submit(event)}>
+          <DialogHeader>
+            <DialogTitle>配置住宅公网端点</DialogTitle>
+            <DialogDescription>这里是客户端实际连接的地址，不是 Mihomo 的本机监听地址。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 px-5 py-4 sm:grid-cols-2">
+            <label className="grid gap-1 text-xs sm:col-span-2">
+              公网主机名 / IP
+              <Input value={host} onChange={(event) => setHost(event.target.value)} placeholder="proxy.example.com 或 VPS 公网 IP" autoComplete="off" required />
+            </label>
+            <label className="grid gap-1 text-xs">
+              公网端口
+              <Input value={port} onChange={(event) => setPort(event.target.value)} inputMode="numeric" required />
+            </label>
+            <label className="flex items-center gap-2 self-end rounded-md border px-3 py-2 text-xs">
+              <Checkbox checked={tls} onCheckedChange={(value) => setTLS(value === true)} />
+              公网 HTTP 端点使用 TLS
+            </label>
+            <div className="rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning sm:col-span-2">
+              仅填写已配置反向代理或四层转发的地址。住宅 Mixed 的两种复制地址分别是 HTTP 和 SOCKS5，不能导入为 Clash / v2rayN 节点。
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
+            <Button type="submit" disabled={saving}>{saving ? "保存中…" : "保存公网端点"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

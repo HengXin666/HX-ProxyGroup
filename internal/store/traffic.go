@@ -160,6 +160,54 @@ ORDER BY updated_at DESC, resource_id ASC LIMIT ? OFFSET ?
 	return records, nil
 }
 
+func (s *Store) ListTrafficSummaries(
+	ctx context.Context,
+	resourceType string,
+	from, to time.Time,
+	limit, offset int,
+) ([]TrafficTotalRecord, error) {
+	if !validTrafficResource(resourceType) || from.IsZero() || to.IsZero() || !from.Before(to) || limit < 1 || limit > 200 || offset < 0 {
+		return nil, errors.New("invalid traffic summaries query")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT b.resource_type, b.resource_id,
+       SUM(b.upload_bytes), SUM(b.download_bytes),
+       SUM(b.connection_count), MAX(b.peak_active_connections),
+       COALESCE(MAX(t.updated_at), '')
+FROM traffic_buckets b
+LEFT JOIN traffic_totals t
+  ON t.resource_type = b.resource_type AND t.resource_id = b.resource_id
+WHERE b.resource_type = ? AND b.bucket_start >= ? AND b.bucket_start < ?
+GROUP BY b.resource_type, b.resource_id
+ORDER BY (SUM(b.upload_bytes) + SUM(b.download_bytes)) DESC, b.resource_id ASC
+LIMIT ? OFFSET ?
+`, resourceType, from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano), limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list traffic summaries: %w", err)
+	}
+	defer rows.Close()
+	records := make([]TrafficTotalRecord, 0)
+	for rows.Next() {
+		var record TrafficTotalRecord
+		var updatedAt string
+		if err := rows.Scan(&record.ResourceType, &record.ResourceID, &record.UploadBytes,
+			&record.DownloadBytes, &record.ConnectionCount, &record.ActiveConnections, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan traffic summary: %w", err)
+		}
+		if updatedAt != "" {
+			record.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+			if err != nil {
+				return nil, fmt.Errorf("parse traffic summary timestamp: %w", err)
+			}
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate traffic summaries: %w", err)
+	}
+	return records, nil
+}
+
 func (s *Store) ListTrafficBuckets(ctx context.Context, resourceType, resourceID string, from, to time.Time, granularity time.Duration, limit int) ([]TrafficBucketRecord, error) {
 	if !validTrafficResource(resourceType) || resourceID == "" || !validTrafficGranularity(granularity) {
 		return nil, errors.New("invalid traffic query")

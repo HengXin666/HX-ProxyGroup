@@ -404,7 +404,16 @@ export interface OverviewSample {
   download_bytes_per_second: number
   active_connections: number
   running: boolean
+  resources?: OverviewResourceSample[]
   error_code?: string
+}
+
+export interface OverviewResourceSample {
+  resource_type: TrafficResourceType
+  resource_id: string
+  upload_bytes_per_second: number
+  download_bytes_per_second: number
+  active_connections: number
 }
 
 export type TrafficResourceType = "listener" | "proxy_group" | "node"
@@ -591,6 +600,7 @@ export interface ResidentialChannel {
   region_mode: ResidentialRegionMode
   random_regions?: string[]
   endpoint: ResidentialChannelEndpoint
+  public_endpoint: ListenerPublicEndpoint
   active_session_count: number
   pool_size?: number
   active_session_index: number
@@ -629,6 +639,7 @@ export interface CreateResidentialChannelRequest {
     port: number
     auth?: { username: string; password: string }
   }
+  public_endpoint?: ListenerPublicEndpoint
   enabled?: boolean
 }
 
@@ -638,6 +649,7 @@ export interface UpdateResidentialChannelRequest {
   region?: string
   region_mode?: ResidentialRegionMode
   random_regions?: string[]
+  public_endpoint?: ListenerPublicEndpoint
   enabled: boolean
 }
 

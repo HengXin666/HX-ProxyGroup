@@ -64,6 +64,8 @@ type GroupService interface {
 
 type ListenerService interface {
 	Create(context.Context, listener.CreateRequest) (listener.Listener, error)
+	Get(context.Context, string) (listener.Listener, error)
+	Update(context.Context, string, listener.UpdateRequest) (listener.Listener, error)
 	Delete(context.Context, string, int) error
 }
 

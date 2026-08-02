@@ -96,6 +96,18 @@ location ^~ /__hx-proxy__/ {
 服务端也会按客户端 User-Agent 返回对应格式。`format=uri` 可用于诊断明文分享 URI。订阅内容只包含
 当前服务器入口，不包含上游机场节点凭据。Token 本身是访问凭证，泄露后应立即轮换。
 
+### 住宅渠道的边界
+
+住宅渠道的 `HTTP`、`SOCKS5` 和 `Mixed` 是 Mihomo 的原生代理入口，不是 Clash 配置、VLESS/VMess/Trojan
+节点，也不是 WebSocket 协议。当前 Edge Relay 只接受固定路径下已经升级的 WebSocket，因此不能把住宅入口
+伪装成 `/__hx-proxy__/` WebSocket，也不能把 Cloudflare 橙云或仅支持 WebSocket 的雷池上游当作 HTTP CONNECT
+或 SOCKS5 的转发器。
+
+住宅渠道必须在「住宅代理」页配置实际可达的公网端点：直接暴露已认证的 VPS 端口，或使用能够转发对应
+HTTP/SOCKS5 字节流的四层代理。页面只复制 `http(s)://` 和 `socks5://` 地址，不提供 Clash、v2rayN、
+sing-box 导入链接；没有公网端点时不会复制 `127.0.0.1` 等本机监听地址。`/rot/` 轮换 API 也必须由同一
+个实际可达的 HTTP 反向代理路径转发，不能复用仅 WebSocket 的 Edge Relay。
+
 ### Clash Verge 导入诊断
 
 在运行 Clash Verge 的同一台机器上请求订阅地址。执行前把示例域名替换为实际域名；不要在日志、

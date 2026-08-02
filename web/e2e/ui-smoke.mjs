@@ -36,6 +36,7 @@ await page.getByRole("heading", { name: "代理服务" }).waitFor()
 if (await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight)) throw new Error("proxy service page must not create document-level vertical scrolling")
 await page.getByLabel("服务名称").fill("本机订阅验证")
 await page.getByLabel("本地端口").fill("17891")
+await page.getByLabel("公网主机名 / IP（可选）").fill("proxy.example.com")
 await page.getByRole("button", { name: "创建并启动" }).click()
 await page.getByText("本机订阅验证", { exact: true }).waitFor()
 
@@ -59,8 +60,8 @@ const results = await page.evaluate(async (sharePath) => {
   }
 }, listener.share_path)
 if (results.clash.status !== 200 || results.clash.format !== "clash" || !results.clash.body.includes("proxies:")) throw new Error("Clash localhost subscription failed")
-if (results.v2rayn.status !== 200 || results.v2rayn.format !== "v2rayn" || !Buffer.from(results.v2rayn.body, "base64").toString().includes("127.0.0.1:17891")) throw new Error("v2rayN localhost subscription failed")
-if (results.shadowrocket.status !== 200 || results.shadowrocket.format !== "v2rayn" || !Buffer.from(results.shadowrocket.body, "base64").toString().includes("127.0.0.1:17891")) throw new Error("Shadowrocket localhost subscription failed")
+if (results.v2rayn.status !== 200 || results.v2rayn.format !== "v2rayn" || !Buffer.from(results.v2rayn.body, "base64").toString().includes("proxy.example.com:17891")) throw new Error("v2rayN public endpoint subscription failed")
+if (results.shadowrocket.status !== 200 || results.shadowrocket.format !== "v2rayn" || !Buffer.from(results.shadowrocket.body, "base64").toString().includes("proxy.example.com:17891")) throw new Error("Shadowrocket public endpoint subscription failed")
 if (results.singbox.status !== 200 || results.singbox.format !== "sing-box" || JSON.parse(results.singbox.body).outbounds.length === 0) throw new Error("sing-box localhost subscription failed")
 
 await page.getByText("本机订阅验证", { exact: true }).click()

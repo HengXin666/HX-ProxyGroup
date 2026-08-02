@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
+	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
 	"github.com/HengXin666/HX-ProxyGroup/internal/overview"
 )
 
@@ -25,6 +26,10 @@ func (s *Server) handleOverviewStream(writer http.ResponseWriter, request *http.
 	writer.Header().Set("Cache-Control", "no-cache, no-store")
 	writer.Header().Set("Connection", "keep-alive")
 	writer.Header().Set("X-Accel-Buffering", "no")
+	if liveTraffic, ok := s.traffic.(TrafficLiveService); ok {
+		s.handleLiveOverviewStream(writer, request, flusher, liveTraffic)
+		return
+	}
 
 	previous, previousAt, _ := s.readOverviewSnapshot(request, time.Now().UTC())
 	initial := overview.Sample{
@@ -58,6 +63,80 @@ func (s *Server) handleOverviewStream(writer http.ResponseWriter, request *http.
 			flusher.Flush()
 		}
 	}
+}
+
+func (s *Server) handleLiveOverviewStream(
+	writer http.ResponseWriter,
+	request *http.Request,
+	flusher http.Flusher,
+	liveTraffic TrafficLiveService,
+) {
+	subscription := liveTraffic.SubscribeLive()
+	defer subscription.Close()
+	live := liveTraffic.LiveSnapshot()
+	history := make([]overview.Sample, 0, len(live.History))
+	for _, sample := range live.History {
+		history = append(history, overviewSampleFromLive(sample, s.overview.Status().Running))
+	}
+	if len(history) > 0 {
+		if err := writeOverviewHistory(writer, history); err != nil {
+			return
+		}
+		flusher.Flush()
+	} else {
+		previous, previousAt, _ := s.readOverviewSnapshot(request, time.Now().UTC())
+		initial := overview.Sample{
+			Timestamp: previousAt, ActiveConnections: len(previous.Connections), Running: s.overview.Status().Running,
+		}
+		if err := writeOverviewSample(writer, initial); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case sample, ok := <-subscription.C:
+			if !ok {
+				return
+			}
+			if err := writeOverviewSample(writer, overviewSampleFromLive(sample, s.overview.Status().Running)); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func overviewSampleFromLive(sample metrics.LiveSample, running bool) overview.Sample {
+	resources := make([]overview.ResourceSample, 0, len(sample.Resources))
+	for _, resource := range sample.Resources {
+		resources = append(resources, overview.ResourceSample{
+			ResourceType:        resource.ResourceType,
+			ResourceID:          resource.ResourceID,
+			UploadBytesPerSec:   resource.UploadBytesPerSec,
+			DownloadBytesPerSec: resource.DownloadBytesPerSec,
+			ActiveConnections:   resource.ActiveConnections,
+		})
+	}
+	return overview.Sample{
+		Timestamp:           sample.Timestamp,
+		UploadBytesPerSec:   sample.UploadBytesPerSec,
+		DownloadBytesPerSec: sample.DownloadBytesPerSec,
+		ActiveConnections:   int(sample.ActiveConnections),
+		Running:             running,
+		Resources:           resources,
+	}
+}
+
+func writeOverviewHistory(writer http.ResponseWriter, samples []overview.Sample) error {
+	payload, err := json.Marshal(samples)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(writer, "event: history\ndata: %s\n\n", payload)
+	return err
 }
 
 func (s *Server) readOverviewSnapshot(request *http.Request, fallback time.Time) (overview.Snapshot, time.Time, error) {

@@ -179,6 +179,27 @@ func TestShareExportRendersAuthenticatedURIs(t *testing.T) {
 	}
 }
 
+func TestShareExportUsesConfiguredPublicEndpointAndRejectsLoopbackFallback(t *testing.T) {
+	service, database, ctx := newShareTestService(t)
+	groupID := createShareTestGroup(t, ctx, database)
+
+	created, err := service.Create(ctx, CreateRequest{
+		Name: "public-http", Kind: "http", BindAddress: "127.0.0.1", Port: 7892, ProxyGroupID: groupID,
+		PublicEndpoint: PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	export, err := service.ExportByShareToken(ctx, strings.TrimPrefix(created.SharePath, "/sub/"), "127.0.0.1:19090")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if export.Host != "proxy.example.com" || export.Port != 443 || !strings.HasPrefix(export.Body, "https://proxy.example.com:443") {
+		t.Fatalf("configured endpoint was not used: %+v, body=%q", export, export.Body)
+	}
+
+}
+
 func TestShareExportRejectsDisabledListenerAndRotates(t *testing.T) {
 	service, database, ctx := newShareTestService(t)
 	groupID := createShareTestGroup(t, ctx, database)

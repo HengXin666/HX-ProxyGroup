@@ -336,7 +336,7 @@ func (s *Service) normalize(
 	if !ip.IsLoopback() && authMode == "none" {
 		return normalizedListener{}, fmt.Errorf("%w: non-loopback listeners require username/password authentication", ErrInvalid)
 	}
-	transportJSON, publicEndpointJSON, err := normalizeEndpointConfig(advanced, transport, publicEndpoint)
+	transportJSON, publicEndpointJSON, err := normalizeEndpointConfig(advanced, transport, publicEndpoint, port)
 	if err != nil {
 		return normalizedListener{}, err
 	}
@@ -399,9 +399,26 @@ func isAdvancedKind(kind string) bool {
 	return kind == "vless" || kind == "vmess" || kind == "trojan"
 }
 
-func normalizeEndpointConfig(advanced bool, transport Transport, endpoint PublicEndpoint) (string, string, error) {
-	if !advanced {
+func normalizeEndpointConfig(advanced bool, transport Transport, endpoint PublicEndpoint, listenerPort int) (string, string, error) {
+	if !advanced && strings.TrimSpace(endpoint.Host) == "" {
 		return "{}", "{}", nil
+	}
+	if !advanced {
+		endpoint.Host = strings.ToLower(strings.TrimSpace(endpoint.Host))
+		if !validEndpointHost(endpoint.Host) {
+			return "", "", fmt.Errorf("%w: public_endpoint.host must be a public IP address or domain name", ErrInvalid)
+		}
+		if endpoint.Port == 0 {
+			endpoint.Port = listenerPort
+		}
+		if endpoint.Port < 1 || endpoint.Port > 65535 {
+			return "", "", fmt.Errorf("%w: public_endpoint.port must be between 1 and 65535", ErrInvalid)
+		}
+		encoded, err := json.Marshal(endpoint)
+		if err != nil {
+			return "", "", fmt.Errorf("encode listener public endpoint: %w", err)
+		}
+		return "{}", string(encoded), nil
 	}
 	transport.Type = strings.ToLower(strings.TrimSpace(transport.Type))
 	if transport.Type == "" {
@@ -434,6 +451,20 @@ func normalizeEndpointConfig(advanced bool, transport Transport, endpoint Public
 		return "", "", fmt.Errorf("encode listener public endpoint: %w", err)
 	}
 	return string(transportEncoded), string(endpointEncoded), nil
+}
+
+// ValidatePublicEndpoint validates the endpoint metadata used by a standard
+// HTTP, SOCKS5, or Mixed listener without changing any stored state.
+func ValidatePublicEndpoint(endpoint PublicEndpoint, listenerPort int) error {
+	_, _, err := normalizeEndpointConfig(false, Transport{}, endpoint, listenerPort)
+	return err
+}
+
+func validEndpointHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback() && !ip.IsUnspecified()
+	}
+	return validPublicHost(host)
 }
 
 // NormalizeWebSocketPath maps user-facing paths into the reserved edge

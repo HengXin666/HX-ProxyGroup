@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,9 +33,13 @@ func (s *Server) handleTraffic(writer http.ResponseWriter, request *http.Request
 			s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", "offset must be non-negative")
 			return
 		}
-		items, err := s.traffic.ListSummaries(request.Context(), resourceType, limit, offset)
+		items, err := s.listTrafficSummaries(request, resourceType, limit, offset)
 		if err != nil {
-			s.handleError(writer, request, err)
+			if errors.Is(err, metrics.ErrInvalidQuery) {
+				s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+			} else {
+				s.handleError(writer, request, err)
+			}
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"items": items, "limit": limit, "offset": offset})
@@ -73,6 +78,29 @@ func (s *Server) handleTraffic(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	writeJSON(writer, http.StatusOK, series)
+}
+
+func (s *Server) listTrafficSummaries(request *http.Request, resourceType string, limit, offset int) ([]metrics.Summary, error) {
+	fromValue := strings.TrimSpace(request.URL.Query().Get("from"))
+	toValue := strings.TrimSpace(request.URL.Query().Get("to"))
+	if fromValue == "" && toValue == "" {
+		return s.traffic.ListSummaries(request.Context(), resourceType, limit, offset)
+	}
+	if fromValue == "" || toValue == "" {
+		return nil, fmt.Errorf("%w: from and to must be provided together", metrics.ErrInvalidQuery)
+	}
+	from, err := time.Parse(time.RFC3339, fromValue)
+	if err != nil {
+		return nil, fmt.Errorf("%w: from must be an RFC3339 timestamp", metrics.ErrInvalidQuery)
+	}
+	to, err := time.Parse(time.RFC3339, toValue)
+	if err != nil {
+		return nil, fmt.Errorf("%w: to must be an RFC3339 timestamp", metrics.ErrInvalidQuery)
+	}
+	if rangeService, ok := s.traffic.(TrafficRangeService); ok {
+		return rangeService.ListSummariesBetween(request.Context(), resourceType, from, to, limit, offset)
+	}
+	return nil, fmt.Errorf("%w: traffic range summaries are unavailable", metrics.ErrInvalidQuery)
 }
 
 func parseBoundedInteger(raw string, fallback, minimum, maximum int) (int, bool) {

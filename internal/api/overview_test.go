@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
+	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
 	"github.com/HengXin666/HX-ProxyGroup/internal/overview"
 )
 
@@ -68,5 +69,45 @@ func TestOverviewStreamRejectsWrites(t *testing.T) {
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+type fakeLiveTrafficService struct {
+	*fakeTrafficService
+	live metrics.LiveSnapshot
+}
+
+func (service *fakeLiveTrafficService) LiveSnapshot() metrics.LiveSnapshot {
+	return service.live
+}
+
+func (service *fakeLiveTrafficService) SubscribeLive() *metrics.LiveSubscription {
+	return &metrics.LiveSubscription{C: make(chan metrics.LiveSample)}
+}
+
+func TestOverviewStreamSendsCollectorHistoryWithoutDuplicateSample(t *testing.T) {
+	first := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	traffic := &fakeLiveTrafficService{
+		fakeTrafficService: &fakeTrafficService{},
+		live: metrics.LiveSnapshot{History: []metrics.LiveSample{
+			{Timestamp: first, DownloadBytesPerSec: 100, ActiveConnections: 1},
+			{Timestamp: first.Add(time.Second), DownloadBytesPerSec: 200, ActiveConnections: 2},
+		}},
+	}
+	server, err := NewServer(&stubBundleService{}, slog.New(slog.NewTextHandler(io.Discard, nil)), WithTraffic(traffic), WithOverview(&fakeOverviewService{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/overview/stream", nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	body := recorder.Body.String()
+	if strings.Count(body, "event: history") != 1 || strings.Count(body, "event: sample") != 0 {
+		t.Fatalf("unexpected live SSE events: %q", body)
+	}
+	if !strings.Contains(body, `"download_bytes_per_second":200`) {
+		t.Fatalf("collector history missing: %q", body)
 	}
 }

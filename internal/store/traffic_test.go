@@ -45,6 +45,13 @@ VALUES ('node-1', 'fingerprint-1', 'Node 1', 'socks5', X'01', 'candidate', ?, ?,
 	if total.UploadBytes != 44 || total.DownloadBytes != 66 || total.ConnectionCount != 5 || total.ActiveConnections != 1 {
 		t.Fatalf("total = %+v", total)
 	}
+	today, err := storage.ListTrafficSummaries(ctx, TrafficResourceNode, now.Add(-time.Hour), now.Add(time.Minute), 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(today) != 1 || today[0].UploadBytes != 30 || today[0].DownloadBytes != 40 || today[0].ConnectionCount != 2 {
+		t.Fatalf("time range summary = %+v", today)
+	}
 	if err := storage.CompactTraffic(ctx, now); err != nil {
 		t.Fatal(err)
 	}

@@ -104,6 +104,15 @@ type TrafficService interface {
 	Query(context.Context, string, string, time.Time, time.Time, int) (metrics.Series, error)
 }
 
+type TrafficRangeService interface {
+	ListSummariesBetween(context.Context, string, time.Time, time.Time, int, int) ([]metrics.Summary, error)
+}
+
+type TrafficLiveService interface {
+	LiveSnapshot() metrics.LiveSnapshot
+	SubscribeLive() *metrics.LiveSubscription
+}
+
 type SettingsService interface {
 	Get(context.Context) (systemsettings.Settings, error)
 	Update(context.Context, systemsettings.Settings) (systemsettings.Settings, error)

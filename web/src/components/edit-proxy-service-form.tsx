@@ -25,6 +25,8 @@ export function EditProxyServiceForm({ listener, group, nodes, subscriptions, on
   const [port, setPort] = useState(listener.port)
   const [enabled, setEnabled] = useState(listener.enabled)
   const [publicHost, setPublicHost] = useState(listener.public_endpoint?.host ?? "")
+  const [publicPort, setPublicPort] = useState(String(listener.public_endpoint?.port || listener.port))
+  const [publicTLS, setPublicTLS] = useState(listener.public_endpoint?.tls ?? false)
   const [wsPath, setWSPath] = useState(listener.transport?.ws_path ?? "/__hx-proxy__/hx-proxy")
   const [replaceAuth, setReplaceAuth] = useState(false)
   const [clearAuth, setClearAuth] = useState(false)
@@ -56,7 +58,7 @@ export function EditProxyServiceForm({ listener, group, nodes, subscriptions, on
         auth: replaceAuth ? { username: username.trim(), password } : undefined,
         clear_auth: clearAuth,
         transport: advanced ? { type: "ws", ws_path: wsPath.trim() } : undefined,
-        public_endpoint: advanced ? { host: publicHost.trim(), port: 443, tls: true } : undefined,
+        public_endpoint: publicHost.trim() ? { host: publicHost.trim(), port: advanced ? 443 : (Number(publicPort) || port), tls: advanced || publicTLS } : undefined,
         enabled,
       })
       await onSaved()
@@ -76,6 +78,7 @@ export function EditProxyServiceForm({ listener, group, nodes, subscriptions, on
     {mode === "manual" && <CheckGrid title="固定节点" items={nodes.map((item) => ({ id: item.id, label: `${item.display_name} · ${item.last_latency_ms == null ? "未测试" : `${item.last_latency_ms}ms`}` }))} selected={nodeIDs} onChange={setNodeIDs} />}
     <div className="border-t pt-4"><div className="mb-3 text-xs font-semibold">入口配置</div><div className="grid gap-3 md:grid-cols-4"><Field label="协议"><Select value={kind} onValueChange={(value) => setKind(value as ListenerKind)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["mixed", "http", "socks", "vless", "vmess", "trojan"].map((value) => <SelectItem key={value} value={value}>{value.toUpperCase()}{["vless", "vmess", "trojan"].includes(value) ? " WS" : ""}</SelectItem>)}</SelectContent></Select></Field><Field label="绑定 IP"><Input value={advanced ? "127.0.0.1" : bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} /></Field><Field label="端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} /></Field><label className="flex h-8 items-center gap-2 self-end rounded-md border bg-card px-3 text-xs"><Checkbox checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />启用入口</label></div></div>
     {advanced && <div className="grid gap-3 md:grid-cols-2"><Field label="Cloudflare / 雷池域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} /></Field><Field label="WebSocket Path（固定前缀 /__hx-proxy__/）"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} /></Field></div>}
+    {!advanced && <div className="grid gap-3 md:grid-cols-2"><Field label="公网主机名 / IP（可选）"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="VPS 公网地址" /></Field><Field label="公网端口"><Input type="number" min={1} max={65535} value={publicPort} onChange={(event) => setPublicPort(event.target.value)} /></Field><label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-xs md:col-span-2"><Checkbox checked={publicTLS} onCheckedChange={(value) => setPublicTLS(value === true)} />公网 HTTP 端点使用 TLS</label></div>}
     <div className="grid gap-3 md:grid-cols-2"><label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-xs"><Checkbox checked={replaceAuth} onCheckedChange={(value) => { setReplaceAuth(value === true); if (value) setClearAuth(false) }} />设置新凭据</label><label className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-xs"><Checkbox checked={clearAuth} onCheckedChange={(value) => { setClearAuth(value === true); if (value) setReplaceAuth(false) }} disabled={advanced} />清除现有认证</label></div>
     {replaceAuth && <div className="grid gap-3 md:grid-cols-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field></div>}
   </div>

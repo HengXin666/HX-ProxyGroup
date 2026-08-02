@@ -17,6 +17,7 @@ HX-ProxyGroup 从 Mihomo External Controller 的连接快照采集统计。普�
 ## 聚合与保留
 
 - 每秒读取一次连接快照并在内存计算字节增量。
+- 后台采集任务独立于总览页面常驻运行；总览 SSE 只订阅采集器的有界历史和实时样本，不会因为浏览器关闭而停止采集。
 - 每分钟用一个 SQLite 短事务批量写入，不逐数据包、逐字节或逐连接写库。
 - 近 24 小时保留 1 分钟粒度，2 到 7 天压缩为 5 分钟，8 到 30 天压缩为 1 小时。
 - 趋势数据超过 30 天后清除；不受 30 天趋势保留影响的累计值会保留到本地实体删除。
@@ -29,6 +30,14 @@ HX-ProxyGroup 从 Mihomo External Controller 的连接快照采集统计。普�
 ```text
 GET /api/v1/traffic?resource_type=node&limit=100&offset=0
 ```
+
+按时间范围汇总入口、代理组或节点：
+
+```text
+GET /api/v1/traffic?resource_type=listener&from=<RFC3339>&to=<RFC3339>&limit=200&offset=0
+```
+
+该接口返回范围内上传、下载、连接数和峰值活动连接；范围必须同时提供 `from`/`to`，最长 30 天，分页最多 200 条。总览使用它读取每个入口的历史累计和当天汇总。
 
 单个资源的趋势与累计值：
 

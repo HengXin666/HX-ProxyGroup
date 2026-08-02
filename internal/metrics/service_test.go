@@ -58,6 +58,9 @@ func (*fakeRepository) GetTrafficTotal(_ context.Context, resourceType, resource
 func (*fakeRepository) ListTrafficTotals(context.Context, string, int, int) ([]store.TrafficTotalRecord, error) {
 	return nil, nil
 }
+func (*fakeRepository) ListTrafficSummaries(context.Context, string, time.Time, time.Time, int, int) ([]store.TrafficTotalRecord, error) {
+	return nil, nil
+}
 func (*fakeRepository) ListTrafficBuckets(context.Context, string, string, time.Time, time.Time, time.Duration, int) ([]store.TrafficBucketRecord, error) {
 	return nil, nil
 }
@@ -102,6 +105,61 @@ func TestServiceAggregatesConnectionDeltasAndResetsActiveGauge(t *testing.T) {
 	}
 	if len(repository.writes) != 2 || repository.writes[1].ActiveConnections != 0 || repository.writes[1].ConnectionCount != 0 {
 		t.Fatalf("gauge reset write = %+v", repository.writes)
+	}
+}
+
+func TestCollectPublishesLiveSamplesAndKeepsActiveResources(t *testing.T) {
+	resource := Resource{Type: store.TrafficResourceListener, ID: "listener-1"}
+	source := &fakeSource{snapshot: RuntimeSnapshot{Connections: []Connection{{
+		ID: "connection-1", Upload: 100, Download: 200, Resources: []Resource{resource},
+	}}}}
+	service, err := NewService(&fakeRepository{}, source, nil, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return start }
+	subscription := service.SubscribeLive()
+	defer subscription.Close()
+	if err := service.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := <-subscription.C
+	if len(first.Resources) != 1 || first.Resources[0].ResourceID != resource.ID {
+		t.Fatalf("first live sample resources = %+v", first.Resources)
+	}
+
+	service.now = func() time.Time { return start.Add(2 * time.Second) }
+	if err := service.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := <-subscription.C
+	if second.UploadBytesPerSec != 0 || second.DownloadBytesPerSec != 0 {
+		t.Fatalf("unchanged connection should have zero rate: %+v", second)
+	}
+	if len(second.Resources) != 1 || second.Resources[0].ActiveConnections != 1 {
+		t.Fatalf("active resource disappeared from live sample: %+v", second.Resources)
+	}
+
+	live := service.LiveSnapshot()
+	if len(live.History) != 2 || live.Latest.Timestamp != second.Timestamp {
+		t.Fatalf("live snapshot = %+v", live)
+	}
+	if len(live.Latest.Resources) != 1 {
+		t.Fatalf("latest resource history was not cloned: %+v", live.Latest.Resources)
+	}
+}
+
+func TestLiveSubscriptionCloseIsIdempotent(t *testing.T) {
+	service, err := NewService(&fakeRepository{}, &fakeSource{}, nil, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := service.SubscribeLive()
+	subscription.Close()
+	subscription.Close()
+	if _, ok := <-subscription.C; ok {
+		t.Fatal("closed live subscription channel is still open")
 	}
 }
 

@@ -4,7 +4,7 @@
 
 HX-ProxyGroup 使用**控制面 / 数据面分离**：
 
-- **控制面 `hx-proxygroupd`**：Go 单体服务，负责订阅、规则、调度、统计、告警、管理 API、配置编译和数据面监督。
+- **控制面 `hx-proxygroupd`**：Go 单体服务，负责订阅、规则、调度、统计、告警、管理 API、配置编译和数据面监督；可选的 Edge Relay 只转发固定 WebSocket 路由。
 - **数据面 `mihomo`**：负责全部代理协议、Listener、Proxy Provider、Proxy Group、连接转发和实时流量数据。
 - **前端 `web`**：React 构建为静态资源，由控制面直接提供。
 - **存储 `SQLite`**：保存配置、快照、任务状态、统计聚合、告警和审计数据。
@@ -19,10 +19,14 @@ flowchart LR
     DP --> UP[Subscription Nodes]
     DP --> DIRECT[Server DIRECT Egress]
     Client[Proxy Clients] -->|HTTP / SOCKS5 / VLESS / VMess / Trojan| DP
-    RP[Cloudflare / LeiChi / Reverse Proxy] -->|WS / gRPC| DP
+    RP[Cloudflare / LeiChi / Reverse Proxy] -->|fixed WS path| CP
+    CP -->|Edge Relay| DP
 ```
 
-关键约束：**代理流量不经过控制面。** 控制面退出时，已经启动的数据面仍应继续使用最后一版有效配置提供代理。
+关键约束：**协议处理和目标连接建立始终属于 Mihomo 数据面。** 普通入口不经过控制面；为兼容
+Cloudflare / 雷池单上游拓扑，控制面只在固定 `/__hx-proxy__/` 命名空间内提供受限 WebSocket
+Edge Relay，转发已经升级的连接，不解析 VLESS、VMess 或 Trojan，不接受任意目标地址。控制面退出
+时，直接监听的数据面仍应继续使用最后一版有效配置提供代理；Edge Relay 的新连接需等待控制面恢复。
 
 ---
 
@@ -48,8 +52,10 @@ v1 需求与 Mihomo 的原生抽象高度一致：
 systemd
 ├── hx-proxygroup.service
 │   └── /usr/local/lib/hx-proxygroup/current/hx-proxygroupd --mihomo-external
-└── hx-proxygroup-dataplane.service
-    └── /usr/local/lib/hx-proxygroup/current/mihomo -f /var/lib/hx-proxygroup/runtime/active.yaml
+├── hx-proxygroup-dataplane.service
+│   └── /usr/local/lib/hx-proxygroup/current/mihomo -f /var/lib/hx-proxygroup/runtime/active.yaml
+└── hx-proxygroup-terminal.service
+    └── /usr/local/lib/hx-proxygroup/current/hx-proxygroupd --terminal-helper
 ```
 
 建议目录：
@@ -78,7 +84,7 @@ systemd
 └── audit.log                   # 可选；默认优先 journald
 ```
 
-控制面和数据面使用同一不可登录系统用户运行。systemd 分别拥有两个进程；控制面只通过 Unix Controller 校验和热重载数据面配置，退出时不终止外部 Mihomo。只有确实需要的网络能力通过 systemd capability 精确授予，不使用长期 root 进程。
+控制面和数据面使用同一不可登录系统用户运行。systemd 分别拥有控制面、数据面和终端 helper 三个进程；控制面只通过 Unix Controller 校验和热重载数据面配置，退出时不终止外部 Mihomo。终端 helper 是唯一的 root 进程，只提供控制面用户可访问的本机 PTY Unix Socket，不承载代理流量；控制面本身继续使用 systemd 文件、设备和 capability 沙箱。
 
 ---
 
@@ -543,11 +549,15 @@ Admin -> VPN / private network / protected HTTPS -> hx-proxygroupd
 Client
   -> Cloudflare HTTPS 443
   -> LeiChi HTTPS virtual host
-  -> localhost VLESS/VMess/Trojan WS or gRPC Listener
+  -> hx-proxygroupd:19090 /__hx-proxy__/<route>
+  -> localhost VLESS/VMess/Trojan WS Listener
   -> assigned Proxy Group or DIRECT
 ```
 
-雷池负责 TLS 终止时，内部 Listener 可不启用 TLS，但必须只监听环回地址。若端到端 TLS 终止在 Mihomo，则雷池使用四层透传或正确的 TLS 回源模式。
+雷池负责 TLS 终止时，内部 Mihomo Listener 仍只监听环回地址；控制面 Edge Relay 根据公网
+`Host` 和完整 WebSocket Path 精确选择 Listener。所有高级 Listener 的路径都规范化为
+`/__hx-proxy__/` 前缀，`/sub/` 只用于订阅下载，不是代理数据路径。Edge Relay 的目标地址只
+能是控制面已知的环回 Listener，不能由请求 URL 或查询参数指定。
 
 ### 13.3 原生 TCP / UDP
 
@@ -600,11 +610,15 @@ v1 只提供进程内注册表，不引入动态插件 ABI：
 
 ## 16. 关键架构决策记录
 
-### ADR-001：控制面不转发代理流量
+### ADR-001：Mihomo 负责协议，Edge Relay 只转发固定 WebSocket
 
-**决定**：Listener 直接由 Mihomo 监听并绑定 Proxy Group。
+**决定**：Listener 和全部协议编解码仍由 Mihomo 负责；为支持 Cloudflare / 雷池只配置一个
+HX 上游，`hx-proxygroupd` 在保留的 `/__hx-proxy__/` 路径下提供受限 WebSocket Edge Relay。
+普通 HTTP、SOCKS5、Mixed 和直接 WebSocket Listener 仍由 Mihomo 直接承载。
 
-**原因**：减少一次用户态转发、降低 CPU 和内存、避免控制面成为吞吐瓶颈。
+**原因**：不在 Go 中实现代理协议，同时允许雷池不为每个 Mihomo 端口维护上游。Relay 只在
+WebSocket Upgrade 后复制连接字节，使用 Host 和规范化路径做白名单路由，设有并发上限；
+需要最低延迟或控制面独立生命周期的部署仍可让雷池直接回源 Mihomo Listener。
 
 ### ADR-002：v1 使用 SQLite
 

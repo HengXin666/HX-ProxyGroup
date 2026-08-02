@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,6 +50,21 @@ type Config struct {
 	MaxLifetime time.Duration
 	// MaxSessions bounds concurrently open sessions.
 	MaxSessions int
+	// PrivilegedSocket is a local Unix socket served by the optional root PTY
+	// helper. When set, terminal sessions are created by that helper so the
+	// administrator can use su/sudo without running the control plane as root.
+	PrivilegedSocket string
+}
+
+// Session is the PTY-like surface shared by local and helper-backed shells.
+// The control plane owns lifecycle and authentication; implementations only
+// provide terminal I/O and window management.
+type Session interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	TerminalMode() (Mode, error)
+	Resize(columns, rows int) error
+	Close(cause string)
 }
 
 type Service struct {
@@ -55,7 +72,7 @@ type Service struct {
 	logger *slog.Logger
 
 	mutex    sync.Mutex
-	sessions map[string]*Session
+	sessions map[string]Session
 }
 
 func NewService(config Config, logger *slog.Logger) (*Service, error) {
@@ -74,7 +91,7 @@ func NewService(config Config, logger *slog.Logger) (*Service, error) {
 	return &Service{
 		config:   config,
 		logger:   logger,
-		sessions: make(map[string]*Session),
+		sessions: make(map[string]Session),
 	}, nil
 }
 
@@ -86,6 +103,7 @@ type Status struct {
 	ActiveSessions int  `json:"active_sessions"`
 	MaxSessions    int  `json:"max_sessions"`
 	IdleTimeoutSec int  `json:"idle_timeout_seconds"`
+	Privileged     bool `json:"privileged"`
 }
 
 func (s *Service) Status() Status {
@@ -97,12 +115,13 @@ func (s *Service) Status() Status {
 		ActiveSessions: active,
 		MaxSessions:    s.config.MaxSessions,
 		IdleTimeoutSec: int(s.config.IdleTimeout / time.Second),
+		Privileged:     strings.TrimSpace(s.config.PrivilegedSocket) != "",
 	}
 }
 
 // Open starts a new shell session. ctx cancellation (the WebSocket closing)
 // terminates the session. actor and remote are audit metadata only.
-func (s *Service) Open(ctx context.Context, actor, remote string) (*Session, error) {
+func (s *Service) Open(ctx context.Context, actor, remote string) (Session, error) {
 	if !s.config.Enabled {
 		return nil, ErrDisabled
 	}
@@ -121,28 +140,41 @@ func (s *Service) Open(ctx context.Context, actor, remote string) (*Session, err
 		delete(s.sessions, id)
 		s.mutex.Unlock()
 	}
-	ptyFile, command, err := startShell(s.config.Shell, os.Environ())
+	now := time.Now()
+	var base Session
+	var shellName string
+	var err error
+	if socketPath := strings.TrimSpace(s.config.PrivilegedSocket); socketPath != "" {
+		base, err = openRemoteSession(ctx, socketPath)
+		shellName = "root PTY helper"
+	} else {
+		var ptyFile *os.File
+		var command *exec.Cmd
+		ptyFile, command, err = startShell(s.config.Shell, os.Environ())
+		if err == nil {
+			base = newPTYSession(ptyFile, command)
+			shellName = command.Path
+		}
+	}
 	if err != nil {
 		release()
 		return nil, err
 	}
-	now := time.Now()
-	session := &Session{
-		ID:         id,
-		StartedAt:  now,
-		pty:        ptyFile,
-		command:    command,
+	session := &trackedSession{
+		Session:    base,
+		id:         id,
+		startedAt:  now,
 		lastActive: now,
 	}
-	session.onClose = func(closed *Session, cause string) {
+	session.onClose = func(closed *trackedSession, cause string) {
 		release()
 		s.logger.Info("terminal session closed",
 			"audit", "terminal",
-			"session_id", closed.ID,
+			"session_id", closed.id,
 			"actor", actor,
 			"remote", remote,
 			"cause", cause,
-			"duration_ms", time.Since(closed.StartedAt).Milliseconds(),
+			"duration_ms", time.Since(closed.startedAt).Milliseconds(),
 		)
 	}
 	_ = session.Resize(defaultShellSizeCols, defaultShellSizeRows)
@@ -156,7 +188,8 @@ func (s *Service) Open(ctx context.Context, actor, remote string) (*Session, err
 		"session_id", id,
 		"actor", actor,
 		"remote", remote,
-		"shell", command.Path,
+		"shell", shellName,
+		"privileged", strings.TrimSpace(s.config.PrivilegedSocket) != "",
 	)
 	go session.watch(ctx, s.config.IdleTimeout, s.config.MaxLifetime)
 	return session, nil
@@ -165,7 +198,7 @@ func (s *Service) Open(ctx context.Context, actor, remote string) (*Session, err
 // Shutdown closes every open session (service stop).
 func (s *Service) Shutdown() {
 	s.mutex.Lock()
-	open := make([]*Session, 0, len(s.sessions))
+	open := make([]Session, 0, len(s.sessions))
 	for _, session := range s.sessions {
 		if session != nil {
 			open = append(open, session)

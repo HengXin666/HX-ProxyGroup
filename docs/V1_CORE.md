@@ -238,7 +238,7 @@ v1 将用户提出的会话需求映射为可组合策略：
 - [x] 支持绑定环回、指定网卡地址或未指定地址；非环回地址强制启用认证。
 - [x] 数据库拒绝重复端点，Mihomo 校验与启动就绪检查处理系统端口占用。
 - [x] 端口变更经过候选配置校验、受控重启和失败回滚。
-- [x] Listener 通过 Mihomo `proxy` 字段直接绑定代理组，流量无需经过 Go 控制面转发。
+- [x] Listener 通过 Mihomo `proxy` 字段直接绑定代理组；普通入口流量无需经过 Go 控制面，Cloudflare / 雷池 WebSocket 入口可选经过固定路径 Edge Relay。
 - [x] 支持为 Listener 配置用户名和密码。
 - [x] API 不回显凭据，后端以 AEAD 密文保存并仅在配置编译时解密。
 - [ ] 支持连接数、空闲超时、最大并发和速率限制。
@@ -289,15 +289,17 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 客户端
   -> Cloudflare :443
   -> 雷池 / 反向代理 :443
+  -> 127.0.0.1:19090 HX Edge Relay
   -> 127.0.0.1:<listener-port>
   -> Mihomo Listener
   -> DIRECT 或指定 Proxy Group
 ```
 
 - [x] 提供 VLESS / VMess / Trojan 的 WebSocket 模板；gRPC 模板尚未开放。
-- [x] WebSocket 模板支持配置域名（同时作为 SNI/Host）、WS Path 和外部 TLS 端口；gRPC Service Name 尚未开放。
+- [x] WebSocket 模板支持配置域名（同时作为 SNI/Host）、规范化 WS Path 和外部 TLS 端口；所有路径统一使用 `/__hx-proxy__/` 前缀，gRPC Service Name 尚未开放。
 - [x] WebSocket 数据面 Listener 强制仅绑定环回地址，由反向代理转发。
-- [ ] 管理 API 不得经过同一公开路径暴露。
+- [x] Edge Relay 只接受 `/__hx-proxy__/` 下的 WebSocket Upgrade，并按 Host 与完整路径转发到环回 Mihomo Listener；不接受任意 URL、TCP、UDP 或 QUIC。
+- [x] 管理 API、前端和 `/sub/` 与代理路径保持独立，不经过 Edge Relay。
 - [ ] 正确处理 WebSocket Upgrade、HTTP/2 gRPC 和真实来源 IP Header。
 - [x] 文档明确：普通 Cloudflare 代理不转发任意原生 TCP/UDP；raw TCP/UDP 需要直连、Cloudflare Spectrum 或其他四层转发能力。
 - [ ] 提供雷池健康检查路径，且该路径不泄露节点或版本信息。
@@ -391,9 +393,9 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 
 ### 9.3 v2 页面
 
-- [x] 浏览器内终端（本机 PTY Shell；跳板式 SSH 远程连接不在本迭代范围）。
+- [x] 浏览器内终端（本机 PTY Shell；生产通过受限 Unix Socket 使用独立 root PTY helper，跳板式 SSH 远程连接不在本迭代范围）。
 - [x] 基于成熟组件实现：前端 xterm.js，后端 creack/pty + coder/websocket，不自行实现终端协议。
-- [x] 默认开启浏览器终端并保留紧急关闭开关（`HX_PROXYGROUP_TERMINAL=0`），强制管理员认证和 TOTP 2FA step-up 验证、空闲超时（10 分钟）、会话寿命上限（2 小时）、并发上限、结构化审计日志和页面内高风险操作提示。
+- [x] 默认开启浏览器终端并保留紧急关闭开关（`HX_PROXYGROUP_TERMINAL=0`），强制管理员认证和 TOTP 2FA step-up 验证、空闲超时（10 分钟）、会话寿命上限（2 小时）、并发上限、结构化审计日志和页面内高风险操作提示；生产终端支持 `su` / `sudo`。
 
 ---
 
@@ -483,7 +485,7 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 
 - [x] 生产环境保持一个控制面进程和一个 Mihomo 数据面进程。
 - [x] 不为每个节点或代理组启动独立数据面进程。
-- [x] 控制面不进入代理数据转发路径。
+- [x] 控制面不实现协议和目标连接转发；仅在显式启用 Cloudflare / 雷池拓扑时，经固定 `/__hx-proxy__/` Edge Relay 转发 WebSocket 连接。
 - [x] 前端构建产物由控制面作为静态文件直接服务。
 - [x] 订阅刷新等后台任务使用有界 worker pool。
 - [x] 统计数据库写入按批次和事务执行。

@@ -46,6 +46,13 @@ var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if len(os.Args) > 1 && os.Args[1] == "--terminal-helper" {
+		if err := runTerminalHelper(logger, os.Args[2:]); err != nil {
+			logger.Error("terminal helper stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(logger); err != nil {
 		logger.Error("service stopped", "error", err)
 		os.Exit(1)
@@ -68,6 +75,7 @@ func run(logger *slog.Logger) error {
 	flag.IntVar(&cfg.MihomoMaxProcs, "mihomo-max-procs", cfg.MihomoMaxProcs, "maximum CPU threads available to Mihomo")
 	flag.Int64Var(&cfg.MihomoLogMaxBytes, "mihomo-log-max-bytes", cfg.MihomoLogMaxBytes, "maximum bytes in each Mihomo log file")
 	flag.IntVar(&cfg.MihomoLogBackups, "mihomo-log-backups", cfg.MihomoLogBackups, "number of rotated Mihomo log files to keep")
+	flag.StringVar(&cfg.TerminalPrivilegedSocket, "terminal-socket", cfg.TerminalPrivilegedSocket, "local root PTY helper socket")
 	flag.Parse()
 
 	if err := cfg.Validate(); err != nil {
@@ -257,8 +265,9 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	terminalService, err := terminal.NewService(terminal.Config{
-		Enabled: cfg.TerminalEnabled,
-		Shell:   cfg.TerminalShell,
+		Enabled:          cfg.TerminalEnabled,
+		Shell:            cfg.TerminalShell,
+		PrivilegedSocket: cfg.TerminalPrivilegedSocket,
 	}, logger)
 	if err != nil {
 		return err
@@ -421,6 +430,23 @@ func run(logger *slog.Logger) error {
 		serverErr := <-serverErrors
 		return errors.Join(shutdownErr, serverErr, drainBackground(0))
 	}
+}
+
+func runTerminalHelper(logger *slog.Logger, arguments []string) error {
+	flags := flag.NewFlagSet("terminal-helper", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	var config terminal.HelperConfig
+	flags.StringVar(&config.SocketPath, "terminal-socket", "/run/hx-proxygroup/terminal.sock", "Unix socket path")
+	flags.StringVar(&config.SocketGroup, "terminal-socket-group", "hx-proxygroup", "Unix socket group")
+	flags.StringVar(&config.AllowedUser, "terminal-helper-user", "hx-proxygroup", "only accept this local Unix socket user")
+	flags.StringVar(&config.Shell, "terminal-shell", "", "shell executable")
+	flags.IntVar(&config.MaxSessions, "terminal-max-sessions", 2, "maximum helper sessions")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return terminal.RunHelper(ctx, config, logger)
 }
 
 type portableState struct {

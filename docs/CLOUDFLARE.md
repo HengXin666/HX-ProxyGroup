@@ -1,11 +1,13 @@
 # Cloudflare 反向代理接入
 
-HX-ProxyGroup 仍是控制面，实际服务端协议由本机受管 Mihomo Listener 提供。当前可创建
-VLESS、VMess、Trojan over WebSocket 入口，并让反向代理在公网 `443` 终止 TLS 后转发到
-环回 Listener。
+HX-ProxyGroup 仍由 Mihomo 提供实际服务端协议。为了让雷池只配置一个 HX 上游，控制面
+内置一个受限的 WebSocket Edge Relay：它只识别固定的 `/__hx-proxy__/` 路由前缀，按
+`Host + 完整路径` 查找已启用的环回 Mihomo Listener，再把 Upgrade 连接转发过去。
+它不解析 VLESS、VMess 或 Trojan，也不接受任意 URL、TCP、UDP 或 QUIC 转发。
 
 ```text
 客户端 -> Cloudflare :443 -> Nginx/Caddy/雷池 :443
+       -> 127.0.0.1:19090 -> HX Edge Relay
        -> 127.0.0.1:<listener-port> -> Mihomo -> Proxy Group/DIRECT
 ```
 
@@ -16,8 +18,14 @@ VLESS、VMess、Trojan over WebSocket 入口，并让反向代理在公网 `443`
 - 绑定 IP：固定为 `127.0.0.1`，不得直接公开无 TLS 的回源端口。
 - 本地端口：反向代理连接的端口，例如 `18088`。
 - Cloudflare 域名：客户端实际连接的橙云域名，例如 `proxy.example.com`。
-- WebSocket Path：独立且不可与管理 API 重叠的路径，例如 `/hx-edge-7f3a`。
+- WebSocket Path：填写一个路径片段，例如 `/edge-7f3a`。服务端会统一规范化为
+  `/__hx-proxy__/edge-7f3a`；已经带此前缀的路径保持不变。路径只允许安全 ASCII 片段，
+  不允许查询串、片段标识、反斜杠、重复斜杠和 `.` / `..` 路径段。
 - 凭据：VLESS/VMess 使用 UUID；Trojan 使用高强度随机密码。
+
+`/__hx-proxy__/` 是 HX 预留的代理路由命名空间。订阅导出和 Mihomo 配置使用规范化后的
+完整路径，雷池也必须原样保留这个路径。路径不是认证机制，真正的凭据仍由 Mihomo
+Listener 校验。
 
 ## Cloudflare 设置
 
@@ -39,12 +47,14 @@ location ^~ /sub/ {
     proxy_read_timeout 30s;
 }
 
-location = /hx-edge-7f3a {
-    proxy_pass http://127.0.0.1:18088;
+# HX Edge Relay 处理所有规范化的 WebSocket 代理路径，再转给对应 Mihomo Listener。
+location ^~ /__hx-proxy__/ {
+    proxy_pass http://127.0.0.1:19090;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
     proxy_read_timeout 300s;
 }
 ```
@@ -52,20 +62,25 @@ location = /hx-edge-7f3a {
 雷池中使用同一拓扑时：
 
 1. 创建域名为 `proxy.example.com` 的 HTTPS 站点并启用 WebSocket。
-2. 上游填写 `http://127.0.0.1:18088`，转发路径精确匹配 `/hx-edge-7f3a`。
-3. 为 `/sub/` 单独创建上游 `http://127.0.0.1:19090`，不要落入管理前端的 SPA 回退。
-4. 不把 `/api/` 或 Mihomo External Controller 加入这个公网站点。
+2. 代理路径 `/__hx-proxy__/` 和订阅路径 `/sub/` 都回源到同一个
+   `http://127.0.0.1:19090`，不要把 WebSocket 路径直接回源到某个 Mihomo 端口。
+3. 保留原始 `Host` 和完整 URI Path，启用 WebSocket Upgrade，代理读取超时至少设置为
+   `300s` 或按雷池的长连接配置处理。
+4. 不把 `/api/`、管理页面或 Mihomo External Controller 加入这个公网站点。
 
 「代理服务」页会根据已创建的高级入口显示实际域名、环回端口和 WebSocket Path，并提供客户端订阅；
 雷池配置必须与这些值完全一致。
 
-示例中的 `19090` 是 HX 控制面端口，`18088` 是 Mihomo Listener 端口，两者不能互换。
+示例中的 `19090` 是 HX 控制面和 Edge Relay 端口，`18088` 是 Mihomo Listener 端口；
+使用该拓扑时雷池的代理 WebSocket 和 `/sub/` 都回源到 `19090`，不能把代理路径直接回源到
+`18088`。HX 会依据 Host 和 `/__hx-proxy__/...` 完整路径选择 `18088` 或其他 Listener。
 `/sub/` 路由需要放在通用 SPA fallback 或默认 `location /` 之前，并保留原始查询参数。不要将
 `/api/`、管理页面或 Mihomo External Controller 一并公开。Cloudflare 对 `/sub/*` 应关闭缓存、
 浏览器完整性检查和交互式质询，否则代理客户端可能下载到 HTML 质询页面。
 
-反向代理配置的 WebSocket Path 和本地端口必须与 HX-ProxyGroup 中的入口完全一致。应用配置后
-应先从 Cloudflare 外部网络执行真实代理请求，再分发订阅。
+反向代理必须保留 WebSocket Path 和 Host，且客户端订阅中的完整路径必须与 HX-ProxyGroup
+中展示的规范化路径完全一致。应用配置后应先从 Cloudflare 外部网络执行真实代理请求，再
+分发订阅。
 
 ## 客户端订阅
 

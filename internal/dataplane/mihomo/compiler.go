@@ -150,6 +150,7 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	endpoints := make([]Endpoint, 0, len(listeners))
 	residentialFallbackRules := make([]string, 0)
 	usedEndpoints := make(map[string]string)
+	usedEdgeRoutes := make(map[string]string)
 	routesByListener := make(map[string][]store.ResidentialClientRouteRecord)
 	for _, route := range clientRoutes {
 		if route.ChannelEnabled {
@@ -169,6 +170,16 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 			return Compiled{}, fmt.Errorf("listeners %q and %q use the same endpoint %s", other, record.Name, endpointKey)
 		}
 		usedEndpoints[endpointKey] = record.Name
+		if isWebSocketListener(record.Kind) {
+			routeKey, err := edgeRouteKey(record)
+			if err != nil {
+				return Compiled{}, err
+			}
+			if other, exists := usedEdgeRoutes[routeKey]; exists {
+				return Compiled{}, fmt.Errorf("listeners %q and %q use the same public WebSocket route", other, record.Name)
+			}
+			usedEdgeRoutes[routeKey] = record.Name
+		}
 		clientRoutesForListener := routesByListener[record.ID]
 		config, err := c.compileListener(record, group.Name, clientRoutesForListener)
 		if err != nil {
@@ -481,7 +492,11 @@ func (c *Compiler) compileListener(
 		if transport.Type != "ws" || transport.WSPath == "" {
 			return nil, fmt.Errorf("listener %q has invalid WebSocket transport", record.Name)
 		}
-		config["ws-path"] = transport.WSPath
+		normalizedPath, err := listener.NormalizeWebSocketPath(transport.WSPath)
+		if err != nil {
+			return nil, fmt.Errorf("listener %q has invalid WebSocket path: %w", record.Name, err)
+		}
+		config["ws-path"] = normalizedPath
 		if record.Kind == "vless" || record.Kind == "trojan" {
 			config["allow-insecure"] = true
 		}
@@ -491,6 +506,26 @@ func (c *Compiler) compileListener(
 
 func isWebSocketListener(kind string) bool {
 	return kind == "vless" || kind == "vmess" || kind == "trojan"
+}
+
+func edgeRouteKey(record store.ListenerRecord) (string, error) {
+	var transport listener.Transport
+	if err := json.Unmarshal([]byte(record.TransportJSON), &transport); err != nil {
+		return "", fmt.Errorf("decode listener %q transport: %w", record.Name, err)
+	}
+	path, err := listener.NormalizeWebSocketPath(transport.WSPath)
+	if err != nil {
+		return "", fmt.Errorf("listener %q has invalid WebSocket path: %w", record.Name, err)
+	}
+	var endpoint listener.PublicEndpoint
+	if err := json.Unmarshal([]byte(record.PublicEndpointJSON), &endpoint); err != nil {
+		return "", fmt.Errorf("decode listener %q public endpoint: %w", record.Name, err)
+	}
+	host := strings.ToLower(strings.TrimSpace(endpoint.Host))
+	if host == "" {
+		return "", fmt.Errorf("listener %q has no public WebSocket host", record.Name)
+	}
+	return host + "\x00" + path, nil
 }
 
 func nodeProxyName(fingerprint string) string {

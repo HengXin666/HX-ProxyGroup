@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 readonly CONTROL_SERVICE="hx-proxygroup.service"
 readonly DATAPLANE_SERVICE="hx-proxygroup-dataplane.service"
+readonly TERMINAL_SERVICE="hx-proxygroup-terminal.service"
 readonly SERVICE_USER="hx-proxygroup"
 readonly SERVICE_GROUP="hx-proxygroup"
 readonly REPOSITORY="HengXin666/HX-ProxyGroup"
@@ -53,6 +54,8 @@ Options:
 
 Release bundles are named hx-proxygroup_<tag>_linux_<amd64|arm64>.tar.gz and
 contain bin/hx-proxygroupd, bin/mihomo, web/, deploy/systemd/, install.sh, and LICENSE.
+The production unit keeps the control plane unprivileged and uses a local root
+PTY helper for the administrator terminal after login and TOTP verification.
 USAGE
 }
 
@@ -205,7 +208,7 @@ validate_stage() {
     [[ -x "${stage}/bin/hx-proxygroupd" ]] || fail "bundle is missing bin/hx-proxygroupd"
     [[ -x "${stage}/bin/mihomo" ]] || fail "bundle is missing bin/mihomo"
     [[ -f "${stage}/web/index.html" ]] || fail "bundle is missing web/index.html"
-    [[ -f "${stage}/deploy/systemd/${CONTROL_SERVICE}" && -f "${stage}/deploy/systemd/${DATAPLANE_SERVICE}" ]] || fail "bundle is missing systemd units"
+    [[ -f "${stage}/deploy/systemd/${CONTROL_SERVICE}" && -f "${stage}/deploy/systemd/${DATAPLANE_SERVICE}" && -f "${stage}/deploy/systemd/${TERMINAL_SERVICE}" ]] || fail "bundle is missing systemd units"
     [[ -f "${stage}/LICENSE" ]] || fail "bundle is missing LICENSE"
     "${stage}/bin/mihomo" -t -d "${DATA_DIR}/runtime" -f "${DATA_DIR}/runtime/active.yaml" >/dev/null
 }
@@ -222,6 +225,7 @@ install_version() {
     install -m 0755 -o root -g root "${stage}/install.sh" "${INSTALLER_PATH}"
     install -m 0644 -o root -g root "${stage}/deploy/systemd/${CONTROL_SERVICE}" "${UNIT_DIR}/${CONTROL_SERVICE}"
     install -m 0644 -o root -g root "${stage}/deploy/systemd/${DATAPLANE_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}"
+    install -m 0644 -o root -g root "${stage}/deploy/systemd/${TERMINAL_SERVICE}" "${UNIT_DIR}/${TERMINAL_SERVICE}"
 }
 
 switch_current() {
@@ -234,7 +238,11 @@ switch_current() {
 wait_until_ready() {
     local attempt
     for ((attempt=1; attempt<=45; attempt++)); do
-        if systemctl is-active --quiet "${CONTROL_SERVICE}" && systemctl is-active --quiet "${DATAPLANE_SERVICE}"; then
+        local terminal_ready="true"
+        if [[ -f "${INSTALL_ROOT}/current/deploy/systemd/${TERMINAL_SERVICE}" ]]; then
+            systemctl is-active --quiet "${TERMINAL_SERVICE}" || terminal_ready="false"
+        fi
+        if systemctl is-active --quiet "${CONTROL_SERVICE}" && systemctl is-active --quiet "${DATAPLANE_SERVICE}" && [[ "${terminal_ready}" == "true" ]]; then
             if command -v curl >/dev/null 2>&1 && curl --fail --silent --max-time 1 http://127.0.0.1:19090/health/ready >/dev/null; then return 0; fi
         fi
         sleep 1
@@ -246,8 +254,34 @@ restart_services() {
     systemctl daemon-reload
     systemctl enable "${DATAPLANE_SERVICE}" "${CONTROL_SERVICE}" >/dev/null
     systemctl restart "${DATAPLANE_SERVICE}"
+    if [[ -f "${INSTALL_ROOT}/current/deploy/systemd/${TERMINAL_SERVICE}" ]]; then
+        systemctl enable "${TERMINAL_SERVICE}" >/dev/null
+        systemctl restart "${TERMINAL_SERVICE}"
+    else
+        systemctl disable --now "${TERMINAL_SERVICE}" >/dev/null 2>&1 || true
+    fi
     systemctl restart "${CONTROL_SERVICE}"
     wait_until_ready
+}
+
+save_previous_units() {
+    local unit
+    for unit in "${CONTROL_SERVICE}" "${DATAPLANE_SERVICE}" "${TERMINAL_SERVICE}"; do
+        if [[ -f "${UNIT_DIR}/${unit}" ]]; then
+            install -m 0644 "${UNIT_DIR}/${unit}" "${WORK_DIR}/old-${unit}"
+        fi
+    done
+}
+
+restore_previous_units() {
+    local unit
+    for unit in "${CONTROL_SERVICE}" "${DATAPLANE_SERVICE}" "${TERMINAL_SERVICE}"; do
+        if [[ -f "${WORK_DIR}/old-${unit}" ]]; then
+            install -m 0644 "${WORK_DIR}/old-${unit}" "${UNIT_DIR}/${unit}"
+        else
+            rm -f -- "${UNIT_DIR}/${unit}"
+        fi
+    done
 }
 
 install_or_upgrade() {
@@ -256,6 +290,7 @@ install_or_upgrade() {
     WORK_DIR="$(mktemp -d)"; trap '[[ -z "${WORK_DIR}" ]] || rm -rf -- "${WORK_DIR}"' EXIT
     local stage="${WORK_DIR}/stage" old_target=""
     install -d -m 0700 "${stage}"
+    save_previous_units
     if [[ -n "${BINARY_SOURCE}${MIHOMO_SOURCE}${WEB_SOURCE}" || "${VERSION}" == "dev" ]]; then prepare_local_stage "${stage}"; else prepare_release_stage "${stage}"; fi
     validate_stage "${stage}"
     [[ ! -L "${INSTALL_ROOT}/current" ]] || old_target="$(readlink -f "${INSTALL_ROOT}/current" || true)"
@@ -263,11 +298,12 @@ install_or_upgrade() {
     switch_current "${INSTALL_ROOT}/versions/${VERSION}"
     if [[ "${START_SERVICES}" == "false" ]]; then systemctl daemon-reload; log "installed ${VERSION}; service start skipped"; return; fi
     if ! restart_services; then
-        systemctl status "${DATAPLANE_SERVICE}" "${CONTROL_SERVICE}" --no-pager || true
-        journalctl -u "${DATAPLANE_SERVICE}" -u "${CONTROL_SERVICE}" -n 80 --no-pager || true
+        systemctl status "${DATAPLANE_SERVICE}" "${TERMINAL_SERVICE}" "${CONTROL_SERVICE}" --no-pager || true
+        journalctl -u "${DATAPLANE_SERVICE}" -u "${TERMINAL_SERVICE}" -u "${CONTROL_SERVICE}" -n 80 --no-pager || true
         if [[ -n "${old_target}" && -d "${old_target}" ]]; then
             warn "upgrade failed; restoring ${old_target}"
             switch_current "${old_target}"
+            restore_previous_units
             restart_services || warn "previous version did not recover automatically"
         fi
         fail "installation failed readiness checks"
@@ -284,9 +320,11 @@ repair_installation() {
     if [[ -f "${source}/deploy/systemd/${CONTROL_SERVICE}" ]]; then
         install -m 0644 "${source}/deploy/systemd/${CONTROL_SERVICE}" "${UNIT_DIR}/${CONTROL_SERVICE}"
         install -m 0644 "${source}/deploy/systemd/${DATAPLANE_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}"
+        install -m 0644 "${source}/deploy/systemd/${TERMINAL_SERVICE}" "${UNIT_DIR}/${TERMINAL_SERVICE}"
     else
         install -m 0644 "${SCRIPT_DIR}/deploy/systemd/${CONTROL_SERVICE}" "${UNIT_DIR}/${CONTROL_SERVICE}"
         install -m 0644 "${SCRIPT_DIR}/deploy/systemd/${DATAPLANE_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}"
+        install -m 0644 "${SCRIPT_DIR}/deploy/systemd/${TERMINAL_SERVICE}" "${UNIT_DIR}/${TERMINAL_SERVICE}"
     fi
     "${source}/mihomo" -t -d "${DATA_DIR}/runtime" -f "${DATA_DIR}/runtime/active.yaml" >/dev/null
     [[ "${START_SERVICES}" == "false" ]] || restart_services || fail "services did not recover after repair"
@@ -316,15 +354,15 @@ backup_installation() {
 
 show_status() {
     require_command systemctl
-    systemctl status "${DATAPLANE_SERVICE}" "${CONTROL_SERVICE}" --no-pager || true
+    systemctl status "${DATAPLANE_SERVICE}" "${TERMINAL_SERVICE}" "${CONTROL_SERVICE}" --no-pager || true
     [[ ! -L "${INSTALL_ROOT}/current" ]] || log "active version: $(readlink -f "${INSTALL_ROOT}/current")"
 }
 
 uninstall_program() {
     require_root; load_os_release; check_platform
     if [[ -d "${DATA_DIR}" ]]; then backup_installation; fi
-    systemctl disable --now "${CONTROL_SERVICE}" "${DATAPLANE_SERVICE}" >/dev/null 2>&1 || true
-    rm -f -- "${UNIT_DIR}/${CONTROL_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}" "${INSTALLER_PATH}"
+    systemctl disable --now "${CONTROL_SERVICE}" "${TERMINAL_SERVICE}" "${DATAPLANE_SERVICE}" >/dev/null 2>&1 || true
+    rm -f -- "${UNIT_DIR}/${CONTROL_SERVICE}" "${UNIT_DIR}/${TERMINAL_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}" "${INSTALLER_PATH}"
     systemctl daemon-reload
     log "program removed; configuration, data, versions, and disaster backup were preserved"
 }
@@ -332,8 +370,8 @@ uninstall_program() {
 purge_all() {
     require_root
     [[ "${CONFIRM_PURGE}" == "true" ]] || fail "purge requires --confirm-purge"
-    systemctl disable --now "${CONTROL_SERVICE}" "${DATAPLANE_SERVICE}" >/dev/null 2>&1 || true
-    rm -f -- "${UNIT_DIR}/${CONTROL_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}" "${INSTALLER_PATH}"
+    systemctl disable --now "${CONTROL_SERVICE}" "${TERMINAL_SERVICE}" "${DATAPLANE_SERVICE}" >/dev/null 2>&1 || true
+    rm -f -- "${UNIT_DIR}/${CONTROL_SERVICE}" "${UNIT_DIR}/${TERMINAL_SERVICE}" "${UNIT_DIR}/${DATAPLANE_SERVICE}" "${INSTALLER_PATH}"
     rm -rf -- "${INSTALL_ROOT}" "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}"
     id -u "${SERVICE_USER}" >/dev/null 2>&1 && userdel "${SERVICE_USER}" || true
     getent group "${SERVICE_GROUP}" >/dev/null && groupdel "${SERVICE_GROUP}" || true

@@ -215,6 +215,7 @@ export function TerminalPage({
           <div className="flex items-center gap-2 text-sm font-medium">
             <TerminalSquare className="size-4 text-muted-foreground" />
             服务器终端
+            {status?.privileged && <span className="rounded-full border border-warning-border bg-warning-muted px-2 py-0.5 text-[11px] text-warning-foreground">root PTY</span>}
             <ConnectionBadge state={connection} />
           </div>
           <div className="flex items-center gap-2">

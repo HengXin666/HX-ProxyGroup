@@ -110,7 +110,8 @@ runtime/
 [Unit]
 Description=HX-ProxyGroup Control Plane
 Wants=network-online.target
-After=network-online.target hx-proxygroup-dataplane.service
+Requires=hx-proxygroup-dataplane.service hx-proxygroup-terminal.service
+After=network-online.target hx-proxygroup-dataplane.service hx-proxygroup-terminal.service
 
 [Service]
 Type=simple
@@ -122,7 +123,8 @@ ExecStart=/usr/local/lib/hx-proxygroup/current/hx-proxygroupd \
   --config /etc/hx-proxygroup/config.yaml \
   --web-root /usr/local/lib/hx-proxygroup/current/web \
   --mihomo /usr/local/lib/hx-proxygroup/current/mihomo \
-  --mihomo-external
+  --mihomo-external \
+  --terminal-socket /run/hx-proxygroup/terminal.sock
 Restart=on-failure
 RestartSec=5s
 StartLimitIntervalSec=300
@@ -170,13 +172,20 @@ ReadWritePaths=/var/lib/hx-proxygroup/runtime
 WantedBy=multi-user.target
 ```
 
-仓库中的 `deploy/systemd/` 是发布包的权威 unit。两个服务均以非 root 用户运行，管理 API 只监听 `127.0.0.1`，External Controller 使用 Unix Socket，并启用 systemd 文件系统、设备、内核和 capability 沙箱。
+### 5.3 终端 Helper Unit
 
-### 5.3 服务协作
+生产安装额外运行 `hx-proxygroup-terminal.service`：它以 root 启动同一控制面二进制的
+`--terminal-helper` 模式，在 `/run/hx-proxygroup/terminal.sock` 提供 PTY。Socket 为
+`root:hx-proxygroup`、`0660`，helper 同时通过 Linux `SO_PEERCRED` 校验对端 UID；它不监听
+TCP/HTTP，也不承载代理流量。控制面退出或关闭时，`PartOf` 会回收 helper 和其 root PTY。
+
+仓库中的 `deploy/systemd/` 是发布包的权威 unit。控制面和数据面均以非 root 用户运行，管理 API 只监听 `127.0.0.1`，External Controller 使用 Unix Socket，并启用 systemd 文件系统、设备、内核和 capability 沙箱。浏览器终端另有一个 root PTY helper，只监听控制面用户可访问的本机 Unix Socket；它不接收网络流量，终端 WebSocket 仍必须通过管理员登录和 TOTP 2FA。
+
+### 5.4 服务协作
 
 - 数据面必须能独立加载最后有效配置启动。
 - 控制面可以检查和修正数据面状态，但不应成为数据面启动的硬前置。
-- 安装器切换完整 Release 时会重启两个服务以保证二进制契约一致；日常配置热重载和控制面自身退出不会停止健康数据面。
+- 安装器切换完整 Release 时会重启控制面、终端 helper 和数据面以保证二进制契约一致；日常配置热重载和控制面自身退出不会停止健康数据面。
 - 数据面升级前先验证新二进制和当前配置兼容性。
 - systemd 重启次数和最近退出码写入系统状态与告警。
 
@@ -445,6 +454,10 @@ Listener 用户密码的处理取决于数据面能力：若数据面需要明�
 - 只有来自显式可信代理地址的 `X-Forwarded-For` / `Forwarded` 才可信。
 - 管理面与代理节点使用不同域名和路由。
 - WebSocket Path 使用不可预测或可轮换值不能替代真实认证。
+- Edge Relay 只接受固定 `/__hx-proxy__/` 前缀下的 WebSocket Upgrade，按 Host 和完整路径
+  匹配已启用的环回 Mihomo Listener；请求不能提供任意上游地址或查询参数改变目标。
+- Edge Relay 活跃连接数有界；控制面重启不会杀掉 Mihomo 数据面，但经 Relay 的新连接需要
+  等待控制面 readiness 恢复。
 - TLS 终止点、回源协议和客户端生成配置必须一致。
 - 不允许将 Mihomo External Controller 直接交给雷池公网转发。
 
@@ -536,6 +549,7 @@ inactive -> pending -> firing -> acknowledged/silenced -> resolved
 - Listener 端口冲突。
 - 数据面 External Controller 断连重连。
 - SMTP 测试服务器。
+- 固定前缀 Edge Relay 的 WebSocket Upgrade、Host/Path 路由、未知路径和双向字节转发。
 - 反向代理 WebSocket / gRPC。
 
 ### 15.3 端到端测试
@@ -545,7 +559,7 @@ inactive -> pending -> firing -> acknowledged/silenced -> resolved
 - Sticky Session 在节点健康时保持稳定、失效时切换。
 - DIRECT 出口显示服务器公网 IP。
 - Clash / V2RayN / sing-box 导出订阅可导入。
-- 雷池 443 -> 本地 WS Listener。
+- 雷池 443 -> HX `/__hx-proxy__/` Edge Relay -> 本地 WS Listener。
 - 服务器重启后所有端口和策略恢复。
 
 ### 15.4 故障注入

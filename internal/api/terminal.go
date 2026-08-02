@@ -16,7 +16,7 @@ import (
 type TerminalService interface {
 	Enabled() bool
 	Status() terminal.Status
-	Open(ctx context.Context, actor, remote string) (*terminal.Session, error)
+	Open(ctx context.Context, actor, remote string) (terminal.Session, error)
 }
 
 func WithTerminal(service TerminalService) Option {

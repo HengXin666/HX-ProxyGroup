@@ -33,7 +33,9 @@ func TestSystemdUnitKeepsManagementAPIPrivate(t *testing.T) {
 		"--master-key /var/lib/hx-proxygroup/master.key",
 		"--web-root /usr/local/lib/hx-proxygroup/current/web",
 		"--mihomo-external",
-		"After=network-online.target hx-proxygroup-dataplane.service",
+		"Requires=hx-proxygroup-dataplane.service hx-proxygroup-terminal.service",
+		"After=network-online.target hx-proxygroup-dataplane.service hx-proxygroup-terminal.service",
+		"--terminal-socket /run/hx-proxygroup/terminal.sock",
 		"Restart=on-failure",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
@@ -44,6 +46,30 @@ func TestSystemdUnitKeepsManagementAPIPrivate(t *testing.T) {
 		if !strings.Contains(unit, expected) {
 			t.Errorf("systemd unit is missing %q", expected)
 		}
+	}
+}
+
+func TestPrivilegedTerminalSystemdUnitIsRootOnlyAndSocketScoped(t *testing.T) {
+	t.Parallel()
+	content, err := os.ReadFile("deploy/systemd/hx-proxygroup-terminal.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := string(content)
+	for _, expected := range []string{
+		"User=root",
+		"--terminal-helper",
+		"--terminal-socket /run/hx-proxygroup/terminal.sock",
+		"--terminal-socket-group hx-proxygroup",
+		"--terminal-helper-user hx-proxygroup",
+		"RuntimeDirectoryMode=0750",
+	} {
+		if !strings.Contains(unit, expected) {
+			t.Errorf("privileged terminal unit is missing %q", expected)
+		}
+	}
+	if strings.Contains(unit, "ListenStream=") {
+		t.Fatal("privileged terminal must not expose a network socket")
 	}
 }
 
@@ -80,7 +106,7 @@ func TestInstallScriptDocumentsVerifiedReleaseAndOneLineUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := string(content)
-	for _, expected := range []string{"SHA256SUMS", "verify_bundle", "safe_extract_bundle", "switch_current", "sudo hx-proxygroup-install upgrade", "hx-proxygroup-dataplane.service"} {
+	for _, expected := range []string{"SHA256SUMS", "verify_bundle", "safe_extract_bundle", "switch_current", "sudo hx-proxygroup-install upgrade", "hx-proxygroup-dataplane.service", "hx-proxygroup-terminal.service"} {
 		if !strings.Contains(script, expected) {
 			t.Errorf("install script is missing %q", expected)
 		}
@@ -175,6 +201,7 @@ func assertReleaseArchive(t *testing.T, path string) {
 		"./install.sh":                           false,
 		"./deploy/systemd/hx-proxygroup.service": false,
 		"./deploy/systemd/hx-proxygroup-dataplane.service": false,
+		"./deploy/systemd/hx-proxygroup-terminal.service":  false,
 	}
 	reader := tar.NewReader(compressed)
 	for {

@@ -14,6 +14,54 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
+func TestNormalizeWebSocketPathReservesEdgeNamespace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "legacy path is prefixed", input: "/edge", want: WebSocketPathPrefix + "edge"},
+		{name: "nested legacy path is prefixed", input: "/tenant/edge", want: WebSocketPathPrefix + "tenant/edge"},
+		{name: "canonical path is stable", input: WebSocketPathPrefix + "edge", want: WebSocketPathPrefix + "edge"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := NormalizeWebSocketPath(test.input)
+			if err != nil {
+				t.Fatalf("NormalizeWebSocketPath() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("NormalizeWebSocketPath() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeWebSocketPathRejectsAmbiguousRoutes(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		"",
+		"edge",
+		"/__hx-proxy__",
+		WebSocketPathPrefix,
+		"/edge?format=ws",
+		"/edge#fragment",
+		"/edge\\other",
+		"/edge//other",
+		"/edge/../other",
+		"/edge%2Fother",
+	} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := NormalizeWebSocketPath(input); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("NormalizeWebSocketPath(%q) error = %v, want ErrInvalid", input, err)
+			}
+		})
+	}
+}
+
 type testReconciler struct {
 	calls int
 }

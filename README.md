@@ -21,7 +21,7 @@
 ![HX-ProxyGroup 全局总览](docs/screenshots/global-overview-desktop.png)
 
 > [!IMPORTANT]
-> HX-ProxyGroup 是代理控制平面，不是新的代理协议内核。VMess、VLESS、Trojan、Hysteria、TUIC、SOCKS5、HTTP CONNECT 等数据转发由当前安装的 Mihomo 构建负责，代理流量不经过 Go 控制面。
+> HX-ProxyGroup 是代理控制平面，不是新的代理协议内核。VMess、VLESS、Trojan、Hysteria、TUIC、SOCKS5、HTTP CONNECT 等协议仍由当前安装的 Mihomo 构建负责。普通 Listener 直接由 Mihomo 提供；Cloudflare / 雷池 WebSocket 拓扑可选经过 HX 的受限 Edge Relay，Relay 只做固定路径的连接转发，不解析或实现代理协议。
 
 ## 为什么使用 HX-ProxyGroup
 
@@ -86,6 +86,7 @@
 - 支持按订阅、名称/地区标签、协议、生命周期、延迟和评分动态筛选成员。
 - HTTP CONNECT、SOCKS5 和 Mixed Listener 可直接绑定 Proxy Group。
 - VLESS、VMess、Trojan over WebSocket 服务端入口由 Mihomo 提供。
+- Cloudflare / 雷池可将 `/__hx-proxy__/` WebSocket 路由统一转发到控制面，由受限 Edge Relay 精确转给本机 Mihomo Listener；控制面不解析 VLESS、VMess 或 Trojan。
 - 可导出 Clash/Mihomo、v2rayN URI 列表和 sing-box 客户端订阅。
 - 路由规则可将站点集合指向 `DIRECT`、`REJECT` 或指定 Proxy Group。
 
@@ -121,15 +122,18 @@ flowchart LR
     DP --> Nodes[订阅节点]
     DP --> Direct[服务器 DIRECT 出口]
     Clients[代理客户端] -->|HTTP / SOCKS5 / Mixed / WS| DP
+    RP[Cloudflare / 雷池] -->|fixed WebSocket path| CP
+    CP -->|Edge Relay| DP
 ```
 
 ```text
 systemd
 ├── hx-proxygroup.service              # Go 控制面、管理 API、静态前端
-└── hx-proxygroup-dataplane.service    # Mihomo 数据面、真实代理转发
+├── hx-proxygroup-dataplane.service    # Mihomo 数据面、真实代理转发
+└── hx-proxygroup-terminal.service     # 仅经 Unix Socket 提供 root PTY
 ```
 
-生产环境只有一个控制面进程和一个数据面进程。控制面不复制、不代理用户流量；控制面重启时，健康的数据面继续使用最后有效配置工作。
+生产环境只有一个控制面进程和一个数据面进程，root PTY helper 是只处理管理员终端的隔离辅助进程。默认代理入口仍由 Mihomo 直接承载；启用 Cloudflare / 雷池拓扑时，控制面内的 Edge Relay 只接收固定 `/__hx-proxy__/` 前缀下的 WebSocket Upgrade，并把连接转发到环回 Mihomo Listener，不承担协议解析。控制面重启时，直接监听的健康数据面继续使用最后有效配置工作；经 Edge Relay 的新连接会在控制面恢复后继续可用。
 
 详细的模块边界、领域模型和配置事务见 [架构设计](docs/ARCHITECTURE.md)。
 
@@ -241,7 +245,7 @@ bash run.sh --no-install-frontend-deps
 
 ## 生产安装
 
-生产安装面向使用 systemd 的 Linux `amd64` / `arm64` 服务器。安装脚本会下载固定 GitHub Release、校验 SHA-256、安装控制面、Mihomo 和静态前端，再注册双服务。
+生产安装面向使用 systemd 的 Linux `amd64` / `arm64` 服务器。安装脚本会下载固定 GitHub Release、校验 SHA-256、安装控制面、Mihomo 和静态前端，再注册控制面、数据面和终端 helper 三个服务。
 
 > [!NOTE]
 > 在线安装依赖 Release 中已上传符合 [发布包契约](scripts/package-release.sh) 的架构包与 `SHA256SUMS`。
@@ -256,13 +260,13 @@ curl -fsSLO https://raw.githubusercontent.com/HengXin666/HX-ProxyGroup/main/inst
 sudo hx-proxygroup-install upgrade
 ```
 
-安装器在切换版本前校验新 Mihomo 与当前配置；双服务 readiness 失败时原子恢复上一版 `current` 链接并重启旧版本。升级成功后安装器自身也会更新。
+安装器在切换版本前校验新 Mihomo 与当前配置；三个服务 readiness 失败时原子恢复上一版 `current` 链接并重启旧版本。升级成功后安装器自身也会更新。
 
 | 命令 | 用途 |
 | --- | --- |
 | `sudo hx-proxygroup-install upgrade` | 获取并升级到最新固定 Release |
 | `sudo hx-proxygroup-install upgrade --version vX.Y.Z` | 安装指定版本 |
-| `sudo hx-proxygroup-install status` | 查看双服务与当前版本 |
+| `sudo hx-proxygroup-install status` | 查看三个服务与当前版本 |
 | `sudo hx-proxygroup-install repair` | 恢复目录权限、unit 和服务 |
 | `sudo hx-proxygroup-install backup` | 创建包含秘密的 `0600` 灾难归档 |
 | `sudo hx-proxygroup-install uninstall` | 移除服务和程序，保留数据与备份 |
@@ -285,7 +289,7 @@ sudo bash install.sh install --offline-dir /path/to/release
 
 /etc/hx-proxygroup/                 # 最小启动配置
 /var/lib/hx-proxygroup/             # SQLite、密钥、快照、运行配置、备份
-/etc/systemd/system/                # 控制面与数据面 unit
+/etc/systemd/system/                # 控制面、数据面与终端 helper unit
 ```
 
 ## 订阅与协议兼容性
@@ -364,7 +368,7 @@ HX_PROXYGROUP_TERMINAL=0 bash run.sh
 
 这是 HX-ProxyGroup 所在服务器的本机 PTY Shell。普通命令行模式下，前端读取服务端 PTY 的 `ECHO` / `ICANON` 状态，只对可打印字符做有界预测回显，因此网络较慢时键入内容仍会立即出现在本地；真实命令结果仍取决于网络和服务器响应。密码提示、控制键、未知状态及 vim/top 等 raw/full-screen 程序不会预测回显。
 
-WebSocket 只接受同源连接，并在会话存续期间周期性复核数据库中的管理员 Session；退出全部会话、修改账号或密码、Session 过期都会关闭已连接终端。Shell 只继承必要的身份、路径与区域环境，控制面配置和凭据不会注入终端。启用此功能仍等价于向管理员授予 `hx-proxygroup` 服务账号的命令执行权限，日常运维应优先使用带密钥和系统级审计的 SSH。完整威胁模型与漏洞报告方式见 [安全策略](SECURITY.md)。
+WebSocket 只接受同源连接，并在会话存续期间周期性复核数据库中的管理员 Session；退出全部会话、修改账号或密码、Session 过期都会关闭已连接终端。生产安装使用 root PTY helper，但控制面本身仍以 `hx-proxygroup` 运行；helper 只监听权限为 `0660` 的本机 Unix Socket，并校验对端 UID。通过管理员登录和 2FA 后，终端可以直接使用 `su`、`sudo` 及完整 root 环境，因此应把它视为 root 管理入口，日常运维仍优先使用带密钥和系统级审计的 SSH。`run.sh` 本地模式没有 root helper，只提供当前运行用户的 PTY。完整威胁模型与漏洞报告方式见 [安全策略](SECURITY.md)。
 
 ### 备份语义
 

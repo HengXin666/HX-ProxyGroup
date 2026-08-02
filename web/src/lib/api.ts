@@ -150,6 +150,7 @@ export type TerminalStatus = {
   active_sessions: number
   max_sessions: number
   idle_timeout_seconds: number
+  privileged: boolean
   two_factor_configured: boolean
   two_factor_enabled: boolean
   two_factor_verified: boolean
@@ -512,6 +513,25 @@ export const api = {
   listenerShareURL(sharePath: string, format?: "v2rayn" | "clash" | "sing-box" | "uri"): string {
     const suffix = format ? `?format=${encodeURIComponent(format)}` : ""
     return `${window.location.protocol}//${window.location.host}${sharePath}${suffix}`
+  },
+
+  async listenerShareContent(sharePath: string): Promise<string> {
+    const response = await fetch(api.listenerShareURL(sharePath, "uri"))
+    if (!response.ok) {
+      let payload: ApiErrorPayload | undefined
+      try {
+        payload = (await response.json()) as ApiErrorPayload
+      } catch {
+        payload = undefined
+      }
+      throw new ApiError(
+        payload?.error?.message || `请求失败：HTTP ${response.status}`,
+        response.status,
+        payload?.error?.code,
+        payload?.error?.request_id,
+      )
+    }
+    return response.text()
   },
 
   deleteListener(id: string, version: number): Promise<void> {

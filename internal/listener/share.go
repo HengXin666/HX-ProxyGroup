@@ -75,6 +75,13 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 	var endpoint PublicEndpoint
 	_ = json.Unmarshal([]byte(record.TransportJSON), &transport)
 	_ = json.Unmarshal([]byte(record.PublicEndpointJSON), &endpoint)
+	if isAdvancedKind(record.Kind) {
+		normalizedPath, err := NormalizeWebSocketPath(transport.WSPath)
+		if err != nil {
+			return ShareExport{}, err
+		}
+		transport.WSPath = normalizedPath
+	}
 	host := exportHost(record.BindAddress, requestHost)
 	port := record.Port
 	if isAdvancedKind(record.Kind) {

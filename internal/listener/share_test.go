@@ -57,7 +57,10 @@ func TestAdvancedShareExportSupportsThreeClientFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(export.Body, "proxy.example.com:443") || !strings.Contains(export.Body, "path=%2Fedge") {
+	if created.Transport.WSPath != WebSocketPathPrefix+"edge" {
+		t.Fatalf("listener path = %q, want %q", created.Transport.WSPath, WebSocketPathPrefix+"edge")
+	}
+	if !strings.Contains(export.Body, "proxy.example.com:443") || !strings.Contains(export.Body, "path=%2F__hx-proxy__%2Fedge") {
 		t.Fatalf("unexpected URI export: %s", export.Body)
 	}
 	clashBody, clashName, _, err := export.Render("clash")

@@ -34,6 +34,9 @@ type Config struct {
 	TerminalEnabled bool
 	// TerminalShell optionally overrides the shell used by the terminal.
 	TerminalShell string
+	// TerminalPrivilegedSocket selects the local root PTY helper used by the
+	// production systemd unit. Empty keeps local development unprivileged.
+	TerminalPrivilegedSocket string
 }
 
 func Default() Config {
@@ -53,11 +56,12 @@ func Default() Config {
 			"HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE",
 			"auto",
 		),
-		MihomoMaxProcs:    envIntOrDefault("HX_PROXYGROUP_MIHOMO_MAX_PROCS", min(runtime.NumCPU(), 4)),
-		MihomoLogMaxBytes: int64(envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_MAX_BYTES", 8<<20)),
-		MihomoLogBackups:  envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_BACKUPS", 2),
-		TerminalEnabled:   envOrDefault("HX_PROXYGROUP_TERMINAL", "1") != "0",
-		TerminalShell:     envOrDefault("HX_PROXYGROUP_TERMINAL_SHELL", ""),
+		MihomoMaxProcs:           envIntOrDefault("HX_PROXYGROUP_MIHOMO_MAX_PROCS", min(runtime.NumCPU(), 4)),
+		MihomoLogMaxBytes:        int64(envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_MAX_BYTES", 8<<20)),
+		MihomoLogBackups:         envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_BACKUPS", 2),
+		TerminalEnabled:          envOrDefault("HX_PROXYGROUP_TERMINAL", "1") != "0",
+		TerminalShell:            envOrDefault("HX_PROXYGROUP_TERMINAL_SHELL", ""),
+		TerminalPrivilegedSocket: envOrDefault("HX_PROXYGROUP_TERMINAL_SOCKET", ""),
 	}
 }
 

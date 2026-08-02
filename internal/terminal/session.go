@@ -14,20 +14,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Session is one PTY-backed shell. It is created by the Service and closed
-// either explicitly, by idle timeout, or by the absolute lifetime cap.
-type Session struct {
-	ID        string
-	StartedAt time.Time
-
+// ptySession is one local PTY-backed shell. Lifecycle ownership lives in the
+// trackedSession wrapper so local and helper-backed sessions behave alike.
+type ptySession struct {
 	pty     *os.File
 	command *exec.Cmd
 
-	mutex      sync.Mutex
-	lastActive time.Time
-	closed     bool
-	closeCause string
-	onClose    func(*Session, string)
+	mutex  sync.Mutex
+	closed bool
 }
 
 // Mode describes the kernel-managed PTY input mode. Clients may only predict
@@ -36,6 +30,49 @@ type Session struct {
 type Mode struct {
 	Echo      bool
 	Canonical bool
+}
+
+// trackedSession adds lifecycle bookkeeping shared by all terminal backends.
+// Its methods are intentionally small so the API cannot bypass idle timeout
+// accounting when a remote helper is selected.
+type trackedSession struct {
+	Session
+	id         string
+	startedAt  time.Time
+	lastActive time.Time
+
+	mutex   sync.Mutex
+	closed  bool
+	onClose func(*trackedSession, string)
+}
+
+func (s *trackedSession) Read(buffer []byte) (int, error) {
+	count, err := s.Session.Read(buffer)
+	if count > 0 {
+		s.touch()
+	}
+	return count, err
+}
+
+func (s *trackedSession) Write(data []byte) (int, error) {
+	s.touch()
+	return s.Session.Write(data)
+}
+
+func (s *trackedSession) Close(cause string) {
+	s.mutex.Lock()
+	if s.closed {
+		s.mutex.Unlock()
+		return
+	}
+	s.closed = true
+	onClose := s.onClose
+	s.mutex.Unlock()
+
+	s.Session.Close(cause)
+	if onClose != nil {
+		onClose(s, cause)
+	}
 }
 
 // startShell launches the login shell inside a new PTY.
@@ -64,9 +101,13 @@ func startShell(shell string, environment []string) (*os.File, *exec.Cmd, error)
 	return ptyFile, command, nil
 }
 
+func newPTYSession(ptyFile *os.File, command *exec.Cmd) *ptySession {
+	return &ptySession{pty: ptyFile, command: command}
+}
+
 // safeShellEnvironment prevents application credentials or deployment
-// controls from leaking into an interactive shell. The terminal runs as the
-// service account and receives only conventional locale and identity values.
+// controls from leaking into an interactive shell. It receives only
+// conventional locale and identity values, regardless of the PTY backend.
 func safeShellEnvironment(environment []string, shell string) []string {
 	allowed := map[string]struct{}{
 		"HOME": {}, "USER": {}, "LOGNAME": {}, "PATH": {}, "LANG": {}, "TZ": {},
@@ -110,22 +151,17 @@ func environmentValue(environment []string, target string) string {
 
 // Read streams PTY output; it blocks like a file read and returns an error
 // after Close.
-func (s *Session) Read(buffer []byte) (int, error) {
-	count, err := s.pty.Read(buffer)
-	if count > 0 {
-		s.touch()
-	}
-	return count, err
+func (s *ptySession) Read(buffer []byte) (int, error) {
+	return s.pty.Read(buffer)
 }
 
 // Write feeds user keystrokes into the shell.
-func (s *Session) Write(data []byte) (int, error) {
-	s.touch()
+func (s *ptySession) Write(data []byte) (int, error) {
 	return s.pty.Write(data)
 }
 
 // TerminalMode reads the current line discipline flags directly from the PTY.
-func (s *Session) TerminalMode() (Mode, error) {
+func (s *ptySession) TerminalMode() (Mode, error) {
 	settings, err := unix.IoctlGetTermios(int(s.pty.Fd()), unix.TCGETS)
 	if err != nil {
 		return Mode{}, fmt.Errorf("read terminal mode: %w", err)
@@ -137,7 +173,7 @@ func (s *Session) TerminalMode() (Mode, error) {
 }
 
 // Resize adjusts the PTY window.
-func (s *Session) Resize(columns, rows int) error {
+func (s *ptySession) Resize(columns, rows int) error {
 	if columns < 1 || columns > 1000 || rows < 1 || rows > 1000 {
 		return errors.New("terminal size out of range")
 	}
@@ -146,15 +182,13 @@ func (s *Session) Resize(columns, rows int) error {
 
 // Close terminates the shell and the PTY. It is idempotent; the first cause
 // wins and is reported to the audit hook.
-func (s *Session) Close(cause string) {
+func (s *ptySession) Close(_ string) {
 	s.mutex.Lock()
 	if s.closed {
 		s.mutex.Unlock()
 		return
 	}
 	s.closed = true
-	s.closeCause = cause
-	onClose := s.onClose
 	s.mutex.Unlock()
 
 	_ = s.pty.Close()
@@ -162,18 +196,15 @@ func (s *Session) Close(cause string) {
 		_ = s.command.Process.Kill()
 	}
 	_ = s.command.Wait()
-	if onClose != nil {
-		onClose(s, cause)
-	}
 }
 
-func (s *Session) touch() {
+func (s *trackedSession) touch() {
 	s.mutex.Lock()
 	s.lastActive = time.Now()
 	s.mutex.Unlock()
 }
 
-func (s *Session) idleSince() time.Time {
+func (s *trackedSession) idleSince() time.Time {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	return s.lastActive
@@ -181,10 +212,10 @@ func (s *Session) idleSince() time.Time {
 
 // watch enforces the idle timeout and the absolute lifetime cap with a
 // single goroutine per session that exits when the session closes.
-func (s *Session) watch(ctx context.Context, idleTimeout, maxLifetime time.Duration) {
+func (s *trackedSession) watch(ctx context.Context, idleTimeout, maxLifetime time.Duration) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	deadline := s.StartedAt.Add(maxLifetime)
+	deadline := s.startedAt.Add(maxLifetime)
 	for {
 		select {
 		case <-ctx.Done():

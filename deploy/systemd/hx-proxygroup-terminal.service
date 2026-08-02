@@ -1,0 +1,31 @@
+[Unit]
+Description=HX-ProxyGroup Privileged Terminal PTY Helper
+Documentation=https://github.com/HengXin666/HX-ProxyGroup
+After=local-fs.target
+Before=hx-proxygroup.service
+PartOf=hx-proxygroup.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+RuntimeDirectory=hx-proxygroup
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=no
+Environment=HOME=/root
+Environment=USER=root
+Environment=LOGNAME=root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/lib/hx-proxygroup/current/hx-proxygroupd --terminal-helper --terminal-socket /run/hx-proxygroup/terminal.sock --terminal-socket-group hx-proxygroup --terminal-helper-user hx-proxygroup
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+UMask=0077
+LimitNOFILE=1048576
+
+# This unit deliberately owns the only root shell path. The control plane
+# remains sandboxed and can reach it only through the local group-owned socket.
+
+[Install]
+WantedBy=multi-user.target

@@ -145,7 +145,7 @@ func TestTerminalModeTracksEchoAndCanonicalState(t *testing.T) {
 	}
 }
 
-func waitTerminalMode(t *testing.T, session *Session, matches func(Mode) bool) Mode {
+func waitTerminalMode(t *testing.T, session Session, matches func(Mode) bool) Mode {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	var last Mode

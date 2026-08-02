@@ -50,6 +50,12 @@ type Transport struct {
 	WSPath string `json:"ws_path,omitempty"`
 }
 
+// WebSocketPathPrefix reserves a dedicated namespace for public WebSocket
+// proxy routes. Keeping the edge namespace separate from /api, /sub and the
+// frontend prevents future control-plane routes from colliding with a proxy
+// listener path.
+const WebSocketPathPrefix = "/__hx-proxy__/"
+
 type PublicEndpoint struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
@@ -357,6 +363,11 @@ func fromRecord(record store.ListenerRecord) Listener {
 	var publicEndpoint PublicEndpoint
 	_ = json.Unmarshal([]byte(record.TransportJSON), &transport)
 	_ = json.Unmarshal([]byte(record.PublicEndpointJSON), &publicEndpoint)
+	if isAdvancedKind(record.Kind) {
+		if normalizedPath, err := NormalizeWebSocketPath(transport.WSPath); err == nil {
+			transport.WSPath = normalizedPath
+		}
+	}
 	return Listener{
 		ID:             record.ID,
 		Name:           record.Name,
@@ -396,10 +407,14 @@ func normalizeEndpointConfig(advanced bool, transport Transport, endpoint Public
 	if transport.Type == "" {
 		transport.Type = "ws"
 	}
-	transport.WSPath = strings.TrimSpace(transport.WSPath)
-	if transport.Type != "ws" || !strings.HasPrefix(transport.WSPath, "/") || len(transport.WSPath) > 256 {
-		return "", "", fmt.Errorf("%w: WebSocket transport requires a ws_path beginning with / and at most 256 characters", ErrInvalid)
+	if transport.Type != "ws" {
+		return "", "", fmt.Errorf("%w: WebSocket transport only supports ws", ErrInvalid)
 	}
+	normalizedPath, err := NormalizeWebSocketPath(transport.WSPath)
+	if err != nil {
+		return "", "", err
+	}
+	transport.WSPath = normalizedPath
 	endpoint.Host = strings.ToLower(strings.TrimSpace(endpoint.Host))
 	if !validPublicHost(endpoint.Host) {
 		return "", "", fmt.Errorf("%w: public_endpoint.host must be a valid domain name", ErrInvalid)
@@ -419,6 +434,54 @@ func normalizeEndpointConfig(advanced bool, transport Transport, endpoint Public
 		return "", "", fmt.Errorf("encode listener public endpoint: %w", err)
 	}
 	return string(transportEncoded), string(endpointEncoded), nil
+}
+
+// NormalizeWebSocketPath maps user-facing paths into the reserved edge
+// namespace. Existing paths from older releases are upgraded lazily, so a
+// database upgrade does not invalidate a listener before its next edit.
+func NormalizeWebSocketPath(value string) (string, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" || !strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("%w: ws_path must begin with /", ErrInvalid)
+	}
+	if raw == strings.TrimSuffix(WebSocketPathPrefix, "/") || raw == WebSocketPathPrefix {
+		return "", fmt.Errorf("%w: ws_path must contain a route after %s", ErrInvalid, WebSocketPathPrefix)
+	}
+	if strings.ContainsAny(raw, "?#\\") {
+		return "", fmt.Errorf("%w: ws_path must be a path without query, fragment, or backslash", ErrInvalid)
+	}
+	normalized := raw
+	if !strings.HasPrefix(normalized, WebSocketPathPrefix) {
+		normalized = WebSocketPathPrefix + strings.TrimPrefix(normalized, "/")
+	}
+	if len(normalized) > 256 || !validNormalizedWebSocketPath(normalized) {
+		return "", fmt.Errorf("%w: ws_path must use the %s prefix and contain only safe path segments", ErrInvalid, WebSocketPathPrefix)
+	}
+	return normalized, nil
+}
+
+func validNormalizedWebSocketPath(value string) bool {
+	if !strings.HasPrefix(value, WebSocketPathPrefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(value, WebSocketPathPrefix)
+	if suffix == "" || strings.Contains(suffix, "//") || strings.HasSuffix(suffix, "/") {
+		return false
+	}
+	for _, segment := range strings.Split(suffix, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		for _, character := range segment {
+			if (character < 'a' || character > 'z') &&
+				(character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') &&
+				character != '-' && character != '_' && character != '.' && character != '~' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validPublicHost(host string) bool {

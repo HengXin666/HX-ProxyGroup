@@ -303,6 +303,7 @@ type Server struct {
 	logger           *slog.Logger
 	ready            atomic.Bool
 	overviewInterval time.Duration
+	edgeSlots        chan struct{}
 }
 
 type errorResponse struct {
@@ -322,7 +323,12 @@ func NewServer(bundles BundleService, logger *slog.Logger, options ...Option) (*
 	if logger == nil {
 		logger = slog.Default()
 	}
-	server := &Server{bundles: bundles, logger: logger, overviewInterval: time.Second}
+	server := &Server{
+		bundles:          bundles,
+		logger:           logger,
+		overviewInterval: time.Second,
+		edgeSlots:        make(chan struct{}, maxEdgeRelayConnections),
+	}
 	for _, option := range options {
 		if option == nil {
 			continue
@@ -385,6 +391,9 @@ func (s *Server) Handler() http.Handler {
 		// Public token-addressed subscription export; the token itself is
 		// the credential, so the route stays outside /api/v1 auth.
 		mux.HandleFunc("/sub/", s.handleListenerShare)
+		// Public WebSocket proxy routes use a reserved namespace and are
+		// resolved to loopback Mihomo listeners by the edge relay.
+		mux.HandleFunc(listener.WebSocketPathPrefix, s.handleEdgeRelay)
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)

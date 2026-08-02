@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import {
-  Check,
+	Check,
+	Copy,
   Gauge,
   Globe2,
   KeyRound,
@@ -28,7 +29,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { api } from "@/lib/api"
+import { api, type TwoFactorSetup, type TwoFactorStatus } from "@/lib/api"
 import {
   defaultThemeColor,
   savedTheme,
@@ -82,6 +83,10 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [changingAccount, setChangingAccount] = useState<"username" | "password" | null>(null)
+  const [twoFactorStatus, setTwoFactorStatus] = useState<TwoFactorStatus | null>(null)
+  const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null)
+  const [twoFactorCode, setTwoFactorCode] = useState("")
+  const [twoFactorBusy, setTwoFactorBusy] = useState<"setup" | "enable" | "disable" | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -91,6 +96,11 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
   }, [onNotice])
 
   useEffect(() => { void load() }, [load])
+  const loadTwoFactor = useCallback(async () => {
+    try { setTwoFactorStatus(await api.twoFactorStatus()) }
+    catch (error) { onNotice(error instanceof Error ? error.message : "加载 2FA 状态失败", "error") }
+  }, [onNotice])
+  useEffect(() => { void loadTwoFactor() }, [loadTwoFactor])
   useEffect(() => subscribeTheme(setCurrentTheme), [])
   useEffect(() => subscribeThemeColor((color) => { setCurrentThemeColor(color); setThemeColorDraft(color) }), [])
   useEffect(() => { setNewUsername(username ?? "") }, [username])
@@ -152,6 +162,49 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
   async function logoutAll() {
     try { await api.logoutAll(); onSignedOut() }
     catch (error) { onNotice(error instanceof Error ? error.message : "注销会话失败", "error") }
+  }
+
+  async function beginTwoFactorSetup() {
+    setTwoFactorBusy("setup")
+    try {
+      setTwoFactorSetup(await api.setupTwoFactor())
+      setTwoFactorStatus((current) => current ? { ...current, configured: true, enabled: false, verified: false } : current)
+      setTwoFactorCode("")
+      onNotice("2FA 密钥已生成，请先添加到验证器，再输入当前验证码启用")
+    } catch (error) { onNotice(error instanceof Error ? error.message : "生成 2FA 密钥失败", "error") }
+    finally { setTwoFactorBusy(null) }
+  }
+
+  async function enableTwoFactor() {
+    if (!/^\d{6}$/.test(twoFactorCode.trim())) { onNotice("请输入 6 位 2FA 验证码", "error"); return }
+    setTwoFactorBusy("enable")
+    try {
+      await api.enableTwoFactor(twoFactorCode.trim())
+      setTwoFactorSetup(null)
+      setTwoFactorCode("")
+      await loadTwoFactor()
+      onNotice("2FA 已启用，浏览器终端现在需要验证码解锁")
+    } catch (error) { onNotice(error instanceof Error ? error.message : "启用 2FA 失败", "error") }
+    finally { setTwoFactorBusy(null) }
+  }
+
+  async function disableTwoFactor() {
+    if (!/^\d{6}$/.test(twoFactorCode.trim())) { onNotice("请输入 6 位 2FA 验证码", "error"); return }
+    setTwoFactorBusy("disable")
+    try {
+      await api.disableTwoFactor(twoFactorCode.trim())
+      setTwoFactorCode("")
+      await loadTwoFactor()
+      onNotice("2FA 已关闭，终端在重新配置 2FA 前不可用")
+    } catch (error) { onNotice(error instanceof Error ? error.message : "关闭 2FA 失败", "error") }
+    finally { setTwoFactorBusy(null) }
+  }
+
+  async function copyTwoFactorValue(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value)
+      onNotice(`${label}已复制`)
+    } catch { onNotice(`无法复制${label}，请手动选择文本`, "error") }
   }
 
   function changeThemeColor(color: string) {
@@ -255,14 +308,23 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
           </SettingsPanel>
         </TabsContent>
 
-        <TabsContent value="account">
-          <SettingsPanel icon={UserRound} title="管理员账号" description="修改账号或密码都会注销全部现有会话。" action={<Button variant="outline" size="sm" onClick={() => void logoutAll()}><LogOut />注销所有会话</Button>}>
-            <div className="divide-y rounded-md border">
-              <div className="grid gap-3 p-4 lg:grid-cols-[minmax(180px,0.6fr)_minmax(220px,1fr)_minmax(220px,1fr)_auto] lg:items-end"><div><div className="text-sm font-semibold">登录账号</div><div className="mt-1 text-xs text-muted-foreground">当前账号：{username || "管理员"}</div></div><Field label="新账号"><Input aria-label="新管理员账号" autoComplete="username" value={newUsername} onChange={(event) => setNewUsername(event.target.value)} /></Field><Field label="当前密码"><Input aria-label="修改账号的当前密码" type="password" autoComplete="current-password" value={usernamePassword} onChange={(event) => setUsernamePassword(event.target.value)} /></Field><Button onClick={() => void changeUsername()} disabled={changingAccount !== null || !usernamePassword || newUsername.trim() === username}>{changingAccount === "username" ? <LoaderCircle className="animate-spin" /> : <UserRound />}修改账号</Button></div>
-              <div className="grid gap-3 p-4 lg:grid-cols-[minmax(180px,0.6fr)_minmax(180px,1fr)_minmax(180px,1fr)_minmax(180px,1fr)_auto] lg:items-end"><div><div className="text-sm font-semibold">登录密码</div><div className="mt-1 text-xs text-muted-foreground">密码长度为 10 到 128 个字符</div></div><Field label="当前密码"><Input aria-label="当前密码" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field><Field label="新密码"><Input aria-label="新密码" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field><Field label="确认新密码"><Input aria-label="确认新密码" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></Field><Button onClick={() => void changePassword()} disabled={changingAccount !== null || !currentPassword || !newPassword || !confirmPassword}>{changingAccount === "password" ? <LoaderCircle className="animate-spin" /> : <KeyRound />}修改密码</Button></div>
-            </div>
-          </SettingsPanel>
-        </TabsContent>
+          <TabsContent value="account">
+            <SettingsPanel icon={UserRound} title="管理员账号" description="修改账号或密码都会注销全部现有会话。" action={<Button variant="outline" size="sm" onClick={() => void logoutAll()}><LogOut />注销所有会话</Button>}>
+              <div className="divide-y rounded-md border">
+                <div className="grid gap-3 p-4 lg:grid-cols-[minmax(180px,0.6fr)_minmax(220px,1fr)_minmax(220px,1fr)_auto] lg:items-end"><div><div className="text-sm font-semibold">登录账号</div><div className="mt-1 text-xs text-muted-foreground">当前账号：{username || "管理员"}</div></div><Field label="新账号"><Input aria-label="新管理员账号" autoComplete="username" value={newUsername} onChange={(event) => setNewUsername(event.target.value)} /></Field><Field label="当前密码"><Input aria-label="修改账号的当前密码" type="password" autoComplete="current-password" value={usernamePassword} onChange={(event) => setUsernamePassword(event.target.value)} /></Field><Button onClick={() => void changeUsername()} disabled={changingAccount !== null || !usernamePassword || newUsername.trim() === username}>{changingAccount === "username" ? <LoaderCircle className="animate-spin" /> : <UserRound />}修改账号</Button></div>
+                <div className="grid gap-3 p-4 lg:grid-cols-[minmax(180px,0.6fr)_minmax(180px,1fr)_minmax(180px,1fr)_minmax(180px,1fr)_auto] lg:items-end"><div><div className="text-sm font-semibold">登录密码</div><div className="mt-1 text-xs text-muted-foreground">密码长度为 10 到 128 个字符</div></div><Field label="当前密码"><Input aria-label="当前密码" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field><Field label="新密码"><Input aria-label="新密码" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field><Field label="确认新密码"><Input aria-label="确认新密码" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></Field><Button onClick={() => void changePassword()} disabled={changingAccount !== null || !currentPassword || !newPassword || !confirmPassword}>{changingAccount === "password" ? <LoaderCircle className="animate-spin" /> : <KeyRound />}修改密码</Button></div>
+              </div>
+              <div className="mt-4 border-t pt-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div><div className="text-sm font-semibold">终端 2FA</div><div className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">浏览器终端默认开启，但必须使用验证器的一次性验证码解锁。密钥只在生成时显示，服务端以加密形式保存。</div></div>
+                  <span className={cn("rounded-full border px-2 py-0.5 text-[11px]", twoFactorStatus?.enabled ? "border-success-border bg-success-muted text-success-foreground" : "border-warning-border bg-warning-muted text-warning-foreground")}>{twoFactorStatus?.enabled ? "已启用" : "未启用"}</span>
+                </div>
+                {!twoFactorStatus?.enabled && !twoFactorSetup && <div className="mt-3 flex flex-wrap items-center gap-3"><Button variant="outline" size="sm" onClick={() => void beginTwoFactorSetup()} disabled={twoFactorBusy !== null}>{twoFactorBusy === "setup" ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}生成 2FA 密钥</Button><span className="text-xs text-muted-foreground">支持 Google Authenticator、Authy、1Password 等 TOTP 验证器。</span></div>}
+                {twoFactorSetup && <div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3"><div className="text-xs font-medium">将密钥添加到验证器</div><div className="grid gap-3 lg:grid-cols-2"><CopyField label="密钥" value={twoFactorSetup.secret} onCopy={() => void copyTwoFactorValue(twoFactorSetup.secret, "密钥")} /><CopyField label="otpauth 地址" value={twoFactorSetup.otpauth_url} onCopy={() => void copyTwoFactorValue(twoFactorSetup.otpauth_url, "otpauth 地址")} /></div><div className="flex flex-wrap items-end gap-2"><Field label="验证器当前验证码"><Input aria-label="启用 2FA 的验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} /></Field><Button size="sm" onClick={() => void enableTwoFactor()} disabled={twoFactorBusy !== null}>{twoFactorBusy === "enable" ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}启用 2FA</Button></div></div>}
+                {twoFactorStatus?.enabled && <div className="mt-3 flex flex-wrap items-end gap-2"><Field label="关闭前的当前验证码"><Input aria-label="关闭 2FA 的验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} /></Field><Button variant="outline" size="sm" onClick={() => void disableTwoFactor()} disabled={twoFactorBusy !== null}>{twoFactorBusy === "disable" ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}关闭 2FA</Button></div>}
+              </div>
+            </SettingsPanel>
+          </TabsContent>
       </Tabs>
     </div>
   )
@@ -275,3 +337,4 @@ function Swatch({ className, label }: { className: string; label: string }) { re
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-xs"><span className="mb-1 block font-medium">{label}</span>{children}</label> }
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) { return <label className="flex h-8 items-center gap-2 text-xs font-medium"><Checkbox checked={checked} onCheckedChange={(value) => onChange(value === true)} />{label}</label> }
 function ListField({ label, values, onChange }: { label: string; values: string[]; onChange: (values: string[]) => void }) { return <Field label={label}><Textarea className="min-h-28 font-mono text-xs" value={values.join("\n")} onChange={(event) => onChange(event.target.value.split("\n").map((value) => value.trim()).filter(Boolean))} /></Field> }
+function CopyField({ label, value, onCopy }: { label: string; value: string; onCopy: () => void }) { return <Field label={label}><div className="flex gap-2"><Input readOnly value={value} className="min-w-0 font-mono text-xs" /><Button type="button" variant="outline" size="icon" title={`复制${label}`} aria-label={`复制${label}`} onClick={onCopy}><Copy /></Button></div></Field> }

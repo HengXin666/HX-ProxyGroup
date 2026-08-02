@@ -371,6 +371,7 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 - [x] 登录 Session 使用 HttpOnly、SameSite=Strict Cookie（TLS 下自动 Secure）；数据库仅存 Token 的 SHA-256。
 - [x] 支持 CSRF 防护（写操作要求 X-CSRF-Token）、登录限速与失败锁定（5 次失败锁 5 分钟）。
 - [x] 支持修改管理员账号或密码并强制注销全部 Session（password_version 递增使旧会话全部失效）。
+- [x] 支持 TOTP 2FA 密钥生成、加密存储、验证码校验和 Session 级终端 step-up 解锁；关闭 2FA 需要当前验证码。
 - [x] 管理 API 强制绑定显式环回地址；管理员配置完成前 API 仅在环回可达。
 
 ### 9.2 页面
@@ -392,7 +393,7 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 
 - [x] 浏览器内终端（本机 PTY Shell；跳板式 SSH 远程连接不在本迭代范围）。
 - [x] 基于成熟组件实现：前端 xterm.js，后端 creack/pty + coder/websocket，不自行实现终端协议。
-- [x] 具备独立权限开关（`HX_PROXYGROUP_TERMINAL=1`，默认关闭）、强制管理员认证、空闲超时（10 分钟）、会话寿命上限（2 小时）、并发上限、结构化审计日志和页面内高风险操作提示。
+- [x] 默认开启浏览器终端并保留紧急关闭开关（`HX_PROXYGROUP_TERMINAL=0`），强制管理员认证和 TOTP 2FA step-up 验证、空闲超时（10 分钟）、会话寿命上限（2 小时）、并发上限、结构化审计日志和页面内高风险操作提示。
 
 ---
 

@@ -17,12 +17,20 @@ type AdminAccountRecord struct {
 }
 
 type AdminSessionRecord struct {
-	TokenHash       string
-	CSRFToken       string
-	PasswordVersion int
+	TokenHash           string
+	CSRFToken           string
+	PasswordVersion     int
+	CreatedAt           time.Time
+	LastUsedAt          time.Time
+	ExpiresAt           time.Time
+	TwoFactorVerifiedAt *time.Time
+}
+
+type AdminTwoFactorRecord struct {
+	SecretEncrypted []byte
+	Enabled         bool
 	CreatedAt       time.Time
-	LastUsedAt      time.Time
-	ExpiresAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // GetAdminAccount returns the single administrator account or ErrNotFound
@@ -127,12 +135,13 @@ VALUES (?, ?, ?, ?, ?, ?)
 
 func (s *Store) GetAdminSession(ctx context.Context, tokenHash string) (AdminSessionRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT token_hash, csrf_token, password_version, created_at, last_used_at, expires_at
+SELECT token_hash, csrf_token, password_version, created_at, last_used_at, expires_at, two_factor_verified_at
 FROM admin_sessions WHERE token_hash = ?
 `, tokenHash)
 	var record AdminSessionRecord
 	var createdAt, lastUsedAt, expiresAt string
-	if err := row.Scan(&record.TokenHash, &record.CSRFToken, &record.PasswordVersion, &createdAt, &lastUsedAt, &expiresAt); errors.Is(err, sql.ErrNoRows) {
+	var twoFactorVerifiedAt sql.NullString
+	if err := row.Scan(&record.TokenHash, &record.CSRFToken, &record.PasswordVersion, &createdAt, &lastUsedAt, &expiresAt, &twoFactorVerifiedAt); errors.Is(err, sql.ErrNoRows) {
 		return AdminSessionRecord{}, ErrNotFound
 	} else if err != nil {
 		return AdminSessionRecord{}, fmt.Errorf("get admin session: %w", err)
@@ -147,7 +156,97 @@ FROM admin_sessions WHERE token_hash = ?
 	if record.ExpiresAt, err = time.Parse(time.RFC3339Nano, expiresAt); err != nil {
 		return AdminSessionRecord{}, fmt.Errorf("parse session expires_at: %w", err)
 	}
+	if twoFactorVerifiedAt.Valid {
+		verifiedAt, parseErr := time.Parse(time.RFC3339Nano, twoFactorVerifiedAt.String)
+		if parseErr != nil {
+			return AdminSessionRecord{}, fmt.Errorf("parse session two_factor_verified_at: %w", parseErr)
+		}
+		record.TwoFactorVerifiedAt = &verifiedAt
+	}
 	return record, nil
+}
+
+func (s *Store) SetAdminSessionTwoFactorVerifiedAt(ctx context.Context, tokenHash string, verifiedAt *time.Time) error {
+	var value any
+	if verifiedAt != nil {
+		value = verifiedAt.UTC().Format(time.RFC3339Nano)
+	}
+	_, err := s.db.ExecContext(ctx, `
+UPDATE admin_sessions SET two_factor_verified_at = ? WHERE token_hash = ?
+`, value, tokenHash)
+	if err != nil {
+		return fmt.Errorf("set admin session two-factor verification: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ClearAdminSessionTwoFactorVerification(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE admin_sessions SET two_factor_verified_at = NULL`)
+	if err != nil {
+		return fmt.Errorf("clear admin session two-factor verification: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetAdminTwoFactor(ctx context.Context) (AdminTwoFactorRecord, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT secret_encrypted, enabled, created_at, updated_at
+FROM admin_two_factor WHERE id = 1
+`)
+	var record AdminTwoFactorRecord
+	var enabled int
+	var createdAt, updatedAt string
+	if err := row.Scan(&record.SecretEncrypted, &enabled, &createdAt, &updatedAt); errors.Is(err, sql.ErrNoRows) {
+		return AdminTwoFactorRecord{}, ErrNotFound
+	} else if err != nil {
+		return AdminTwoFactorRecord{}, fmt.Errorf("get admin two-factor: %w", err)
+	}
+	record.Enabled = enabled == 1
+	var err error
+	if record.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return AdminTwoFactorRecord{}, fmt.Errorf("parse admin two-factor created_at: %w", err)
+	}
+	if record.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return AdminTwoFactorRecord{}, fmt.Errorf("parse admin two-factor updated_at: %w", err)
+	}
+	return record, nil
+}
+
+func (s *Store) UpsertAdminTwoFactor(ctx context.Context, record AdminTwoFactorRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO admin_two_factor (id, secret_encrypted, enabled, created_at, updated_at)
+VALUES (1, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    secret_encrypted = excluded.secret_encrypted,
+    enabled = excluded.enabled,
+    created_at = excluded.created_at,
+    updated_at = excluded.updated_at
+`, record.SecretEncrypted, boolInt(record.Enabled), record.CreatedAt.UTC().Format(time.RFC3339Nano), record.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("upsert admin two-factor: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateAdminTwoFactorEnabled(ctx context.Context, enabled bool, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE admin_two_factor SET enabled = ?, updated_at = ? WHERE id = 1
+`, boolInt(enabled), now.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("update admin two-factor: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteAdminTwoFactor(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM admin_two_factor WHERE id = 1`)
+	if err != nil {
+		return fmt.Errorf("delete admin two-factor: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) TouchAdminSession(ctx context.Context, tokenHash string, lastUsedAt time.Time) error {
@@ -174,6 +273,13 @@ func (s *Store) DeleteAllAdminSessions(ctx context.Context) error {
 		return fmt.Errorf("delete admin sessions: %w", err)
 	}
 	return nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // DeleteExpiredAdminSessions removes sessions past their absolute expiry or

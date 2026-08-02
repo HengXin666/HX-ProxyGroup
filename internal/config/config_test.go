@@ -18,6 +18,17 @@ func TestConfigValidateAcceptsExplicitLoopbackAddresses(t *testing.T) {
 	}
 }
 
+func TestConfigEnablesTerminalByDefaultAndSupportsEmergencyDisable(t *testing.T) {
+	t.Setenv("HX_PROXYGROUP_TERMINAL", "")
+	if !Default().TerminalEnabled {
+		t.Fatal("terminal must be enabled by default")
+	}
+	t.Setenv("HX_PROXYGROUP_TERMINAL", "0")
+	if Default().TerminalEnabled {
+		t.Fatal("HX_PROXYGROUP_TERMINAL=0 must disable the terminal")
+	}
+}
+
 func TestConfigValidateRejectsPublicAndAmbiguousAddresses(t *testing.T) {
 	t.Parallel()
 

@@ -150,6 +150,22 @@ export type TerminalStatus = {
   active_sessions: number
   max_sessions: number
   idle_timeout_seconds: number
+  two_factor_configured: boolean
+  two_factor_enabled: boolean
+  two_factor_verified: boolean
+  two_factor_verification_ttl_seconds: number
+}
+
+export type TwoFactorStatus = {
+  configured: boolean
+  enabled: boolean
+  verified: boolean
+  verification_ttl_seconds: number
+}
+
+export type TwoFactorSetup = {
+  secret: string
+  otpauth_url: string
 }
 
 export type NodeQualitySettings = {
@@ -216,6 +232,35 @@ export const api = {
     return request("/api/v1/auth/username", {
       method: "PUT",
       body: JSON.stringify({ current_password: currentPassword, new_username: newUsername }),
+    })
+  },
+
+  twoFactorStatus(): Promise<TwoFactorStatus> {
+    return request("/api/v1/auth/2fa/status")
+  },
+
+  setupTwoFactor(): Promise<TwoFactorSetup> {
+    return request("/api/v1/auth/2fa/setup", { method: "POST" })
+  },
+
+  enableTwoFactor(code: string): Promise<void> {
+    return request("/api/v1/auth/2fa/enable", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    })
+  },
+
+  disableTwoFactor(code: string): Promise<void> {
+    return request("/api/v1/auth/2fa/disable", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    })
+  },
+
+  verifyTwoFactor(code: string): Promise<void> {
+    return request("/api/v1/auth/2fa/verify", {
+      method: "POST",
+      body: JSON.stringify({ code }),
     })
   },
 

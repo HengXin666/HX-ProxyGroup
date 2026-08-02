@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { AlertTriangle, Play, Square, TerminalSquare } from "lucide-react"
+import { AlertTriangle, LoaderCircle, Play, ShieldCheck, Square, TerminalSquare } from "lucide-react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import "@xterm/xterm/css/xterm.css"
 
 import { ApiError, api, type TerminalStatus } from "@/lib/api"
+import { Input } from "@/components/ui/input"
 import { PredictiveEcho, type TerminalMode } from "@/lib/terminal-echo"
 import { subscribeTheme } from "@/lib/theme"
 
@@ -22,6 +23,8 @@ export function TerminalPage({
   const echoRef = useRef(new PredictiveEcho())
   const [status, setStatus] = useState<TerminalStatus | null>(null)
   const [connection, setConnection] = useState<ConnectionState>("idle")
+  const [twoFactorCode, setTwoFactorCode] = useState("")
+  const [unlocking, setUnlocking] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -44,8 +47,26 @@ export function TerminalPage({
     setConnection("closed")
   }, [])
 
+  async function unlockTerminal() {
+    if (!/^\d{6}$/.test(twoFactorCode.trim())) {
+      onNotice("请输入 6 位 2FA 验证码", "error")
+      return
+    }
+    setUnlocking(true)
+    try {
+      await api.verifyTwoFactor(twoFactorCode.trim())
+      setTwoFactorCode("")
+      setStatus(await api.terminalStatus())
+      onNotice("终端已解锁，15 分钟内可建立终端会话")
+    } catch (cause) {
+      onNotice(cause instanceof Error ? cause.message : "2FA 验证失败", "error")
+    } finally {
+      setUnlocking(false)
+    }
+  }
+
   const connect = useCallback(() => {
-    if (!containerRef.current || socketRef.current) return
+    if (!containerRef.current || socketRef.current || !status?.two_factor_verified) return
     setConnection("connecting")
 
     if (!terminalRef.current) {
@@ -108,7 +129,7 @@ export function TerminalPage({
       terminal.write(`\r\n\x1b[33m[会话已结束${event.reason ? `：${event.reason}` : ""}]\x1b[0m\r\n`)
     }
     socket.onerror = () => {
-      onNotice("终端连接失败，请确认已登录且服务端已启用终端", "error")
+      onNotice("终端连接失败，请确认已登录并完成 2FA 解锁", "error")
     }
 
     const inputDisposable = terminal.onData((data) => {
@@ -128,7 +149,7 @@ export function TerminalPage({
       observer.disconnect()
       predictiveEcho.reset()
     })
-  }, [onNotice])
+  }, [onNotice, status])
 
   useEffect(() => () => disconnect(), [disconnect])
   useEffect(() => subscribeTheme(() => {
@@ -142,11 +163,36 @@ export function TerminalPage({
         <div className="rounded-md border border-warning-border bg-warning-muted px-4 py-3 text-sm text-warning-foreground">
           <div className="font-medium">终端功能未启用</div>
           <p className="mt-1 text-xs leading-5">
-            浏览器终端默认关闭。请在服务端以环境变量{" "}
-            <code className="rounded bg-card/60 px-1">HX_PROXYGROUP_TERMINAL=1</code>{" "}
-            启动控制面后刷新本页。启用后仍需管理员登录才能连接。
+            当前服务端已显式关闭终端。终端默认开启；如需恢复，请移除环境变量{" "}
+            <code className="rounded bg-card/60 px-1">HX_PROXYGROUP_TERMINAL=0</code>{" "}
+            后重启控制面。
           </p>
         </div>
+      </div>
+    )
+  }
+
+  if (status && !status.two_factor_enabled) {
+    return (
+      <div className="space-y-4">
+        <PageHeader />
+        <div className="rounded-md border border-warning-border bg-warning-muted px-4 py-3 text-sm text-warning-foreground">
+          <div className="font-medium">需要先启用 2FA</div>
+          <p className="mt-1 text-xs leading-5">请进入“全局配置 → 账号安全”，生成并启用 TOTP 2FA。终端默认开启，但没有 2FA 时不会接受 Shell 连接。</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (status && !status.two_factor_verified) {
+    return (
+      <div className="space-y-4">
+        <PageHeader />
+        <section className="max-w-md rounded-md border bg-card p-4">
+          <div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />验证 2FA 后解锁终端</div>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">输入验证器当前显示的 6 位验证码。验证成功后，当前登录会话可在 {Math.round(status.two_factor_verification_ttl_seconds / 60)} 分钟内建立终端连接。</p>
+          <div className="mt-4 flex items-end gap-2"><label className="block min-w-0 flex-1 text-xs font-medium">一次性验证码<Input aria-label="终端 2FA 验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-1 font-mono tracking-[0.25em]" /></label><button type="button" onClick={() => void unlockTerminal()} disabled={unlocking} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60">{unlocking ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}解锁</button></div>
+        </section>
       </div>
     )
   }
@@ -185,7 +231,7 @@ export function TerminalPage({
               <button
                 type="button"
                 onClick={connect}
-                disabled={connection === "connecting"}
+                disabled={connection === "connecting" || !status?.two_factor_verified}
                 className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
               >
                 <Play className="size-3.5" />

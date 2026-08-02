@@ -21,6 +21,11 @@ type AuthService interface {
 	LogoutAll(ctx context.Context) error
 	ChangePassword(ctx context.Context, currentPassword, newPassword string) error
 	ChangeUsername(ctx context.Context, currentPassword, newUsername string) error
+	TwoFactorStatus(ctx context.Context, token string) (auth.TwoFactorStatus, error)
+	BeginTwoFactorSetup(ctx context.Context) (auth.TwoFactorSetup, error)
+	EnableTwoFactor(ctx context.Context, code string) error
+	DisableTwoFactor(ctx context.Context, code string) error
+	VerifyTwoFactor(ctx context.Context, token, clientKey, code string) error
 }
 
 func WithAuth(service AuthService) Option {
@@ -41,6 +46,11 @@ func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/logout-all", s.handleAuthLogoutAll)
 	mux.HandleFunc("/api/v1/auth/password", s.handleAuthPassword)
 	mux.HandleFunc("/api/v1/auth/username", s.handleAuthUsername)
+	mux.HandleFunc("/api/v1/auth/2fa/status", s.handleAuthTwoFactorStatus)
+	mux.HandleFunc("/api/v1/auth/2fa/setup", s.handleAuthTwoFactorSetup)
+	mux.HandleFunc("/api/v1/auth/2fa/enable", s.handleAuthTwoFactorEnable)
+	mux.HandleFunc("/api/v1/auth/2fa/disable", s.handleAuthTwoFactorDisable)
+	mux.HandleFunc("/api/v1/auth/2fa/verify", s.handleAuthTwoFactorVerify)
 }
 
 // requireAuth guards /api/v1/* once the administrator account exists.
@@ -222,6 +232,89 @@ func (s *Server) handleAuthUsername(writer http.ResponseWriter, request *http.Re
 	}
 	http.SetCookie(writer, sessionCookie(request, "", -1))
 	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAuthTwoFactorStatus(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, request, http.MethodGet)
+		return
+	}
+	status, err := s.auth.TwoFactorStatus(request.Context(), sessionToken(request))
+	if err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, status)
+}
+
+func (s *Server) handleAuthTwoFactorSetup(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(writer, request, http.MethodPost)
+		return
+	}
+	setup, err := s.auth.BeginTwoFactorSetup(request.Context())
+	if err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, setup)
+}
+
+func (s *Server) handleAuthTwoFactorEnable(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(writer, request, http.MethodPost)
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := decodeJSONBody(writer, request, &body); err != nil {
+		s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.auth.EnableTwoFactor(request.Context(), body.Code); err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "enabled"})
+}
+
+func (s *Server) handleAuthTwoFactorDisable(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(writer, request, http.MethodPost)
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := decodeJSONBody(writer, request, &body); err != nil {
+		s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.auth.DisableTwoFactor(request.Context(), body.Code); err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "disabled"})
+}
+
+func (s *Server) handleAuthTwoFactorVerify(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(writer, request, http.MethodPost)
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := decodeJSONBody(writer, request, &body); err != nil {
+		s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.auth.VerifyTwoFactor(request.Context(), sessionToken(request), clientAddress(request), body.Code); err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "verified"})
 }
 
 func sessionToken(request *http.Request) string {

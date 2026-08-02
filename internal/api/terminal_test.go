@@ -16,11 +16,12 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
+	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 	terminalservice "github.com/HengXin666/HX-ProxyGroup/internal/terminal"
 )
 
-func TestTerminalWebSocketRejectsCrossOriginAndTracksSessionRevocation(t *testing.T) {
+func TestTerminalWebSocketRejectsCrossOriginAndTracksStepUpRevocation(t *testing.T) {
 	root := t.TempDir()
 	database, err := store.Open(context.Background(), filepath.Join(root, "terminal-api.db"))
 	if err != nil {
@@ -29,7 +30,11 @@ func TestTerminalWebSocketRejectsCrossOriginAndTracksSessionRevocation(t *testin
 	defer database.Close()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tokenPath := filepath.Join(root, "admin-setup-token")
-	authService, err := auth.NewService(database, tokenPath, logger)
+	box, err := secret.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authService, err := auth.NewService(database, tokenPath, logger, box)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +46,17 @@ func TestTerminalWebSocketRejectsCrossOriginAndTracksSessionRevocation(t *testin
 		t.Fatal(err)
 	}
 	if err := authService.Setup(context.Background(), strings.TrimSpace(string(setupToken)), "admin", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	twoFactorSetup, err := authService.BeginTwoFactorSetup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	twoFactorCode, err := auth.TOTPCode(twoFactorSetup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authService.EnableTwoFactor(context.Background(), twoFactorCode); err != nil {
 		t.Fatal(err)
 	}
 	authSession, err := authService.Login(context.Background(), "127.0.0.1", "admin", "correct horse battery")
@@ -62,6 +78,17 @@ func TestTerminalWebSocketRejectsCrossOriginAndTracksSessionRevocation(t *testin
 
 	headers := http.Header{}
 	headers.Set("Cookie", sessionCookieName+"="+authSession.Token)
+	headers.Set("Origin", testServer.URL)
+	if connection, response, err := websocket.Dial(context.Background(), websocketURL, &websocket.DialOptions{HTTPHeader: headers}); err == nil {
+		connection.CloseNow()
+		t.Fatal("unverified two-factor terminal WebSocket must be rejected")
+	} else if response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("unverified two-factor response = %#v, err = %v", response, err)
+	}
+	if err := authService.VerifyTwoFactor(context.Background(), authSession.Token, "127.0.0.1", twoFactorCode); err != nil {
+		t.Fatal(err)
+	}
+
 	headers.Set("Origin", "https://attacker.invalid")
 	if connection, response, err := websocket.Dial(context.Background(), websocketURL, &websocket.DialOptions{HTTPHeader: headers}); err == nil {
 		connection.CloseNow()
@@ -114,11 +141,59 @@ func TestTerminalWebSocketRejectsCrossOriginAndTracksSessionRevocation(t *testin
 		t.Fatal("terminal session did not become active")
 	}
 
-	if err := authService.LogoutAll(context.Background()); err != nil {
+	if err := authService.DisableTwoFactor(context.Background(), twoFactorCode); err != nil {
 		t.Fatal(err)
 	}
 	closedCtx, cancelClosed := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelClosed()
+	for {
+		if _, _, err := connection.Read(closedCtx); err != nil {
+			break
+		}
+	}
+	deadline = time.Now().Add(time.Second)
+	for terminalService.Status().ActiveSessions != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if terminalService.Status().ActiveSessions != 0 {
+		t.Fatal("disabled two-factor authentication left terminal running")
+	}
+
+	// Re-enable 2FA on the same administrator session to verify that a later
+	// session revocation still terminates an already-open terminal.
+	twoFactorSetup, err = authService.BeginTwoFactorSetup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	twoFactorCode, err = auth.TOTPCode(twoFactorSetup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authService.EnableTwoFactor(context.Background(), twoFactorCode); err != nil {
+		t.Fatal(err)
+	}
+	if err := authService.VerifyTwoFactor(context.Background(), authSession.Token, "127.0.0.1", twoFactorCode); err != nil {
+		t.Fatal(err)
+	}
+	connection, _, err = websocket.Dial(context.Background(), websocketURL, &websocket.DialOptions{HTTPHeader: headers})
+	if err != nil {
+		t.Fatalf("same-origin terminal redial: %v", err)
+	}
+	defer connection.CloseNow()
+	if _, _, err := connection.Read(readCtx); err != nil {
+		t.Fatalf("read terminal mode after re-enable: %v", err)
+	}
+	deadline = time.Now().Add(time.Second)
+	for terminalService.Status().ActiveSessions != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if terminalService.Status().ActiveSessions != 1 {
+		t.Fatal("terminal session did not become active after re-enabling two-factor authentication")
+	}
+
+	if err := authService.LogoutAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	for {
 		if _, _, err := connection.Read(closedCtx); err != nil {
 			break

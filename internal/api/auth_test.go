@@ -12,8 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
+	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
@@ -26,7 +28,11 @@ func newAuthTestServer(t *testing.T) (*httptest.Server, *auth.Service, string) {
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	tokenPath := filepath.Join(root, "admin-setup-token")
-	authService, err := auth.NewService(database, tokenPath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	box, err := secret.New(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("new secret box: %v", err)
+	}
+	authService, err := auth.NewService(database, tokenPath, slog.New(slog.NewTextHandler(io.Discard, nil)), box)
 	if err != nil {
 		t.Fatalf("new auth service: %v", err)
 	}
@@ -146,6 +152,47 @@ func TestAuthBootstrapAndEnforcement(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("authenticated GET must succeed, got %d", response.StatusCode)
+	}
+
+	// TOTP setup returns the secret only during the explicit enrollment flow.
+	requestHeaders := map[string]string{"Cookie": sessionCookie.String(), "X-CSRF-Token": login.CSRFToken}
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/2fa/setup", map[string]string{}, requestHeaders)
+	var twoFactorSetup auth.TwoFactorSetup
+	if err := json.NewDecoder(response.Body).Decode(&twoFactorSetup); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated || twoFactorSetup.Secret == "" || twoFactorSetup.OTPAuthURL == "" {
+		t.Fatalf("2FA setup failed: %d %+v", response.StatusCode, twoFactorSetup)
+	}
+	code, err := auth.TOTPCode(twoFactorSetup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/2fa/enable", map[string]string{"code": code}, requestHeaders)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("2FA enable failed: %d", response.StatusCode)
+	}
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/2fa/verify", map[string]string{"code": code}, requestHeaders)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("2FA verify failed: %d", response.StatusCode)
+	}
+
+	authedRequest, _ = http.NewRequest(http.MethodGet, testServer.URL+"/api/v1/auth/2fa/status", nil)
+	authedRequest.AddCookie(sessionCookie)
+	response, err = client.Do(authedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var twoFactorStatus auth.TwoFactorStatus
+	if err := json.NewDecoder(response.Body).Decode(&twoFactorStatus); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !twoFactorStatus.Enabled || !twoFactorStatus.Verified {
+		t.Fatalf("unexpected 2FA status: %d %+v", response.StatusCode, twoFactorStatus)
 	}
 
 	// Mutating request without CSRF header is rejected.

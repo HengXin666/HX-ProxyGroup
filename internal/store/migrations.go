@@ -535,6 +535,22 @@ ALTER TABLE residential_client_sessions
     ADD COLUMN country_code TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		version: 22,
+		name:    "admin_totp_and_session_step_up",
+		sql: `
+CREATE TABLE admin_two_factor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    secret_encrypted BLOB NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+ALTER TABLE admin_sessions
+    ADD COLUMN two_factor_verified_at TEXT;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

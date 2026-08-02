@@ -29,8 +29,8 @@ type Config struct {
 	MihomoMaxProcs        int
 	MihomoLogMaxBytes     int64
 	MihomoLogBackups      int
-	// TerminalEnabled gates the v2 in-browser terminal. Off by default;
-	// set HX_PROXYGROUP_TERMINAL=1 to enable.
+	// TerminalEnabled gates the v2 in-browser terminal. It is enabled by
+	// default and requires administrator login plus TOTP step-up verification.
 	TerminalEnabled bool
 	// TerminalShell optionally overrides the shell used by the terminal.
 	TerminalShell string
@@ -56,7 +56,7 @@ func Default() Config {
 		MihomoMaxProcs:    envIntOrDefault("HX_PROXYGROUP_MIHOMO_MAX_PROCS", min(runtime.NumCPU(), 4)),
 		MihomoLogMaxBytes: int64(envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_MAX_BYTES", 8<<20)),
 		MihomoLogBackups:  envIntOrDefault("HX_PROXYGROUP_MIHOMO_LOG_BACKUPS", 2),
-		TerminalEnabled:   envOrDefault("HX_PROXYGROUP_TERMINAL", "") == "1",
+		TerminalEnabled:   envOrDefault("HX_PROXYGROUP_TERMINAL", "1") != "0",
 		TerminalShell:     envOrDefault("HX_PROXYGROUP_TERMINAL_SHELL", ""),
 	}
 }

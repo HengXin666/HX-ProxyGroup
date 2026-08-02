@@ -630,6 +630,18 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusTooManyRequests, "login_locked_out", "too many failed logins, retry later")
 	case errors.Is(err, auth.ErrInvalidSetupToken):
 		s.writeAPIError(writer, request, http.StatusForbidden, "invalid_setup_token", "setup token is missing or wrong")
+	case errors.Is(err, auth.ErrTwoFactorUnavailable):
+		s.writeAPIError(writer, request, http.StatusServiceUnavailable, "two_factor_unavailable", "two-factor authentication is unavailable")
+	case errors.Is(err, auth.ErrTwoFactorNotConfigured):
+		s.writeAPIError(writer, request, http.StatusConflict, "two_factor_not_configured", "configure two-factor authentication first")
+	case errors.Is(err, auth.ErrTwoFactorAlreadyEnabled):
+		s.writeAPIError(writer, request, http.StatusConflict, "two_factor_already_enabled", "two-factor authentication is already enabled")
+	case errors.Is(err, auth.ErrTwoFactorNotEnabled):
+		s.writeAPIError(writer, request, http.StatusConflict, "two_factor_not_enabled", "two-factor authentication is not enabled")
+	case errors.Is(err, auth.ErrInvalidTwoFactorCode):
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "invalid_two_factor_code", "the two-factor authentication code is invalid")
+	case errors.Is(err, auth.ErrTwoFactorLockedOut):
+		s.writeAPIError(writer, request, http.StatusTooManyRequests, "two_factor_locked_out", "too many two-factor authentication attempts, retry later")
 	case errors.Is(err, auth.ErrAlreadyConfigured):
 		s.writeAPIError(writer, request, http.StatusConflict, "already_configured", "administrator account already exists")
 	case errors.Is(err, auth.ErrNotConfigured):

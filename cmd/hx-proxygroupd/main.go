@@ -200,6 +200,7 @@ func run(logger *slog.Logger) error {
 		database,
 		filepath.Join(cfg.DataDirectory, "admin-setup-token"),
 		logger,
+		secretBox,
 	)
 	if err != nil {
 		return err

@@ -4,7 +4,7 @@
 // from xterm.js in the frontend.
 //
 // Safety model (docs/V1_CORE.md 9.3):
-//   - independent feature gate, disabled by default;
+//   - enabled by default, with an emergency environment kill switch;
 //   - administrator authentication is required unconditionally;
 //   - idle timeout and an absolute lifetime cap per session;
 //   - bounded concurrent sessions;
@@ -37,7 +37,8 @@ const (
 )
 
 type Config struct {
-	// Enabled gates the whole feature. Off by default.
+	// Enabled gates the whole feature. The control-plane default is enabled;
+	// callers may explicitly disable it for emergency lockdown.
 	Enabled bool
 	// Shell overrides the login shell; empty uses $SHELL then /bin/bash.
 	Shell string

@@ -34,7 +34,25 @@ func (s *Server) handleTerminalStatus(writer http.ResponseWriter, request *http.
 		methodNotAllowed(writer, request, http.MethodGet)
 		return
 	}
-	writeJSON(writer, http.StatusOK, s.terminal.Status())
+	status := struct {
+		terminal.Status
+		TwoFactorConfigured bool `json:"two_factor_configured"`
+		TwoFactorEnabled    bool `json:"two_factor_enabled"`
+		TwoFactorVerified   bool `json:"two_factor_verified"`
+		TwoFactorTTLSeconds int  `json:"two_factor_verification_ttl_seconds"`
+	}{Status: s.terminal.Status()}
+	if s.auth != nil {
+		twoFactor, err := s.auth.TwoFactorStatus(request.Context(), sessionToken(request))
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		status.TwoFactorConfigured = twoFactor.Configured
+		status.TwoFactorEnabled = twoFactor.Enabled
+		status.TwoFactorVerified = twoFactor.Verified
+		status.TwoFactorTTLSeconds = twoFactor.VerificationTTLSeconds
+	}
+	writeJSON(writer, http.StatusOK, status)
 }
 
 // terminalMessage is the client -> server control protocol. Server -> client
@@ -74,7 +92,20 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 		return
 	}
 	if !s.terminal.Enabled() {
-		s.writeAPIError(writer, request, http.StatusForbidden, "terminal_disabled", "terminal is disabled; set HX_PROXYGROUP_TERMINAL=1 to enable it")
+		s.writeAPIError(writer, request, http.StatusForbidden, "terminal_disabled", "terminal is disabled; set HX_PROXYGROUP_TERMINAL=1 or remove HX_PROXYGROUP_TERMINAL=0")
+		return
+	}
+	twoFactor, err := s.auth.TwoFactorStatus(request.Context(), token)
+	if err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	if !twoFactor.Enabled {
+		s.writeAPIError(writer, request, http.StatusForbidden, "terminal_requires_two_factor", "configure and enable two-factor authentication before opening the terminal")
+		return
+	}
+	if !twoFactor.Verified {
+		s.writeAPIError(writer, request, http.StatusForbidden, "terminal_requires_two_factor_verification", "verify a current two-factor authentication code before opening the terminal")
 		return
 	}
 	connection, err := websocket.Accept(writer, request, nil)
@@ -155,6 +186,12 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 			case <-ticker.C:
 				checkCtx, checkCancel := context.WithTimeout(socketCtx, 5*time.Second)
 				_, authErr := s.auth.Authenticate(checkCtx, token)
+				if authErr == nil {
+					twoFactor, twoFactorErr := s.auth.TwoFactorStatus(checkCtx, token)
+					if twoFactorErr != nil || !twoFactor.Enabled || !twoFactor.Verified {
+						authErr = errors.New("administrator two-factor verification is no longer valid")
+					}
+				}
 				checkCancel()
 				if authErr != nil {
 					shell.Close("administrator session revoked")

@@ -16,24 +16,32 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
 var (
-	ErrNotConfigured      = errors.New("administrator account is not configured")
-	ErrAlreadyConfigured  = errors.New("administrator account already exists")
-	ErrInvalidCredentials = errors.New("invalid username or password")
-	ErrInvalidSetupToken  = errors.New("invalid setup token")
-	ErrSessionExpired     = errors.New("session is missing or expired")
-	ErrLockedOut          = errors.New("too many failed logins, retry later")
-	ErrInvalidUsername    = errors.New("username must contain 3 to 64 characters")
-	ErrWeakPassword       = errors.New("password must contain 10 to 128 characters")
+	ErrNotConfigured           = errors.New("administrator account is not configured")
+	ErrAlreadyConfigured       = errors.New("administrator account already exists")
+	ErrInvalidCredentials      = errors.New("invalid username or password")
+	ErrInvalidSetupToken       = errors.New("invalid setup token")
+	ErrSessionExpired          = errors.New("session is missing or expired")
+	ErrLockedOut               = errors.New("too many failed logins, retry later")
+	ErrInvalidUsername         = errors.New("username must contain 3 to 64 characters")
+	ErrWeakPassword            = errors.New("password must contain 10 to 128 characters")
+	ErrTwoFactorUnavailable    = errors.New("two-factor authentication is unavailable")
+	ErrTwoFactorNotConfigured  = errors.New("two-factor authentication is not configured")
+	ErrTwoFactorAlreadyEnabled = errors.New("two-factor authentication is already enabled")
+	ErrTwoFactorNotEnabled     = errors.New("two-factor authentication is not enabled")
+	ErrInvalidTwoFactorCode    = errors.New("invalid two-factor authentication code")
+	ErrTwoFactorLockedOut      = errors.New("too many two-factor authentication attempts, retry later")
 )
 
 const (
-	sessionAbsoluteTTL = 7 * 24 * time.Hour
-	sessionIdleTimeout = 24 * time.Hour
-	tokenBytes         = 32
+	sessionAbsoluteTTL       = 7 * 24 * time.Hour
+	sessionIdleTimeout       = 24 * time.Hour
+	tokenBytes               = 32
+	twoFactorVerificationTTL = 15 * time.Minute
 )
 
 type Repository interface {
@@ -47,25 +55,34 @@ type Repository interface {
 	DeleteAdminSession(context.Context, string) error
 	DeleteAllAdminSessions(context.Context) error
 	DeleteExpiredAdminSessions(context.Context, time.Time, time.Duration) error
+	SetAdminSessionTwoFactorVerifiedAt(context.Context, string, *time.Time) error
+	ClearAdminSessionTwoFactorVerification(context.Context) error
+	GetAdminTwoFactor(context.Context) (store.AdminTwoFactorRecord, error)
+	UpsertAdminTwoFactor(context.Context, store.AdminTwoFactorRecord) error
+	UpdateAdminTwoFactorEnabled(context.Context, bool, time.Time) error
+	DeleteAdminTwoFactor(context.Context) error
 }
 
 // Session is the authenticated view handed to the API layer.
 type Session struct {
-	Token     string
-	CSRFToken string
-	Username  string
-	ExpiresAt time.Time
+	Token               string
+	CSRFToken           string
+	Username            string
+	ExpiresAt           time.Time
+	TwoFactorVerifiedAt *time.Time
 }
 
 type Service struct {
-	repository     Repository
-	setupTokenPath string
-	logger         *slog.Logger
-	limiter        *loginLimiter
-	now            func() time.Time
+	repository       Repository
+	setupTokenPath   string
+	logger           *slog.Logger
+	limiter          *loginLimiter
+	twoFactorBox     *secret.Box
+	twoFactorLimiter *loginLimiter
+	now              func() time.Time
 }
 
-func NewService(repository Repository, setupTokenPath string, logger *slog.Logger) (*Service, error) {
+func NewService(repository Repository, setupTokenPath string, logger *slog.Logger, secretBoxes ...*secret.Box) (*Service, error) {
 	if repository == nil {
 		return nil, errors.New("auth repository is required")
 	}
@@ -75,12 +92,18 @@ func NewService(repository Repository, setupTokenPath string, logger *slog.Logge
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var twoFactorBox *secret.Box
+	if len(secretBoxes) > 0 {
+		twoFactorBox = secretBoxes[0]
+	}
 	return &Service{
-		repository:     repository,
-		setupTokenPath: setupTokenPath,
-		logger:         logger,
-		limiter:        newLoginLimiter(5, 5*time.Minute),
-		now:            time.Now,
+		repository:       repository,
+		setupTokenPath:   setupTokenPath,
+		logger:           logger,
+		limiter:          newLoginLimiter(5, 5*time.Minute),
+		twoFactorBox:     twoFactorBox,
+		twoFactorLimiter: newLoginLimiter(5, 5*time.Minute),
+		now:              time.Now,
 	}, nil
 }
 
@@ -248,7 +271,12 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, erro
 	if now.Sub(record.LastUsedAt) > time.Minute {
 		_ = s.repository.TouchAdminSession(ctx, record.TokenHash, now)
 	}
-	return Session{Token: token, CSRFToken: record.CSRFToken, Username: account.Username, ExpiresAt: record.ExpiresAt}, nil
+	verifiedAt := record.TwoFactorVerifiedAt
+	if verifiedAt != nil && now.Sub(*verifiedAt) >= twoFactorVerificationTTL {
+		verifiedAt = nil
+		_ = s.repository.SetAdminSessionTwoFactorVerifiedAt(ctx, record.TokenHash, nil)
+	}
+	return Session{Token: token, CSRFToken: record.CSRFToken, Username: account.Username, ExpiresAt: record.ExpiresAt, TwoFactorVerifiedAt: verifiedAt}, nil
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {

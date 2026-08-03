@@ -20,17 +20,24 @@ sticky 渠道，不扩展普通 Proxy Group 或 Listener 的公共语义。
 代理流量仍由 Mihomo 转发。Go 控制面只管理会话状态、编译 `IN-USER` 规则，并在切流后
 通过 Mihomo Controller 关闭该入站用户的旧连接，不复制或转发业务流量。
 
-公网只通过雷池 HTTPS `443` 的路径访问控制面；`19090` 和 Listener 内部端口不应暴露到公网。
-配置了 `public_endpoint.host` 的 WS 渠道会提供以下无端口链接：
+公网只通过雷池 HTTPS `443` 的路径访问控制面和 WebSocket 数据面；`19090` 和 Listener 内部端口不应暴露到公网。
+配置了 `public_endpoint.host` 的渠道会提供以下无端口链接：
 
 ```text
 https://proxy.example.com/sub/<token>?format=clash
 https://proxy.example.com/rot/<token>/sessions/<session_id>
 ```
 
-`/sub/` 只返回 Clash/Mihomo 配置，不能直接作为 HTTP/SOCKS5 代理地址填入 Playwright。
-同机的 OutlookRegister 等客户端应使用 `127.0.0.1:<listener-port>` 连接业务流量，使用
-`https://proxy.example.com` 或本机控制面地址作为会话 API 根地址。
+`/sub/` 只返回静态 Clash/Mihomo 配置，不能直接作为 HTTP/SOCKS5 代理地址填入 Playwright。
+sticky 渠道应先创建 session，再读取 session 配置：
+
+```text
+GET /rot/<token>/sessions/<session_id>/config?format=clash
+```
+
+WS 渠道返回 VLESS/VMess/Trojan over WebSocket 的单会话 Clash 配置；HTTP/SOCKS/Mixed
+只有配置了真正可远程访问的四层或协议级反向代理时，才会返回可供远程业务客户端使用的数据端点。
+普通 Cloudflare/雷池七层路径不能承载 HTTP CONNECT 或 SOCKS5。
 
 ## 前置条件
 
@@ -75,6 +82,14 @@ PUT /rot/<token>/sessions/<session_id>
   "session_id": "window-01",
   "proxy_username": "hx-session-0123456789abcdef01234567",
   "proxy_password": "generated-secret",
+  "proxy_endpoint": {
+    "type": "vless-ws",
+    "server": "proxy.example.com",
+    "port": 443,
+    "tls": true,
+    "sni": "proxy.example.com",
+    "path": "/__hx-proxy__/residential"
+  },
   "country_code": "US",
   "route_mode": "residential",
   "session_index": -1,
@@ -188,6 +203,18 @@ POST /rot/<token>/next
 ```
 
 新客户端必须使用 `/sessions/<session_id>` 接口。
+
+### Session Clash 配置
+
+创建 session 后，客户端可读取：
+
+```http
+GET /rot/<token>/sessions/<session_id>/config?format=clash
+```
+
+响应为 `application/yaml`，包含单个 session 的代理节点、认证凭据和 WebSocket 路径；
+响应带 `Cache-Control: no-store`，不得缓存或公开分享。查询状态的 `GET /sessions/<id>`
+仍不会返回 `proxy_password`。
 
 ## 安全边界
 

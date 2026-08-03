@@ -406,6 +406,11 @@ func TestResidentialWebSocketSessionGetsUUIDCredential(t *testing.T) {
 	if len(session.ProxyPassword) != 36 || session.ProxyPassword[8] != '-' || session.ProxyPassword[13] != '-' || session.ProxyPassword[18] != '-' || session.ProxyPassword[23] != '-' {
 		t.Fatalf("session credential = %q, want UUID", session.ProxyPassword)
 	}
+	if session.ProxyEndpoint == nil || session.ProxyEndpoint.Type != "vless-ws" ||
+		session.ProxyEndpoint.Server != "proxy.example.com" ||
+		session.ProxyEndpoint.Path != "/__hx-proxy__/residential-session" {
+		t.Fatalf("session endpoint = %+v", session.ProxyEndpoint)
+	}
 }
 
 func TestClientSessionRejectsConflictingCountryPin(t *testing.T) {

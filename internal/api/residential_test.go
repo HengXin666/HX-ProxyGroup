@@ -149,6 +149,11 @@ func (s *stubResidentialService) GetClientSessionByToken(_ context.Context, toke
 	return s.clientSession, s.clientSessionErr
 }
 
+func (s *stubResidentialService) ClientSessionConfigByToken(_ context.Context, token, sessionID string) (residential.ClientSession, error) {
+	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"config", token, sessionID})
+	return s.clientSession, s.clientSessionErr
+}
+
 func (s *stubResidentialService) RotateClientSessionByToken(_ context.Context, token, sessionID string) (residential.ClientSession, error) {
 	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"next", token, sessionID})
 	return s.clientSession, s.clientSessionErr
@@ -438,6 +443,43 @@ func TestPublicResidentialClientSessionLifecycleRoutesByTokenAndSessionID(t *tes
 		if service.clientSessionCalls[index] != wantCalls[index] {
 			t.Fatalf("client session call %d = %v, want %v", index, service.clientSessionCalls[index], wantCalls[index])
 		}
+	}
+}
+
+func TestPublicResidentialClientSessionConfigReturnsClashYAML(t *testing.T) {
+	service := &stubResidentialService{clientSession: residential.ClientSession{
+		SessionID: "window-01", ProxyUsername: "hx-session-user",
+		ProxyPassword: "550e8400-e29b-41d4-a716-446655440000",
+		ProxyEndpoint: &residential.ClientProxyEndpoint{
+			Type: "vless-ws", Server: "proxy.example.com", Port: 443,
+			TLS: true, SNI: "proxy.example.com", Path: "/__hx-proxy__/residential",
+		},
+	}}
+	testServer := newResidentialTestServer(t, service)
+	response, err := http.Get(testServer.URL + "/rot/shared-token/sessions/window-01/config?format=clash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("config status = %d, body = %s", response.StatusCode, body)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "type: vless") || !strings.Contains(string(body), "proxy.example.com") {
+		t.Fatalf("unexpected Clash config: %s", body)
+	}
+	if response.Header.Get("X-HX-Subscription-Format") != "clash" {
+		t.Fatalf("subscription format = %q", response.Header.Get("X-HX-Subscription-Format"))
+	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache-control = %q", response.Header.Get("Cache-Control"))
+	}
+	if len(service.clientSessionCalls) != 1 || service.clientSessionCalls[0][0] != "config" {
+		t.Fatalf("config calls = %v", service.clientSessionCalls)
 	}
 }
 

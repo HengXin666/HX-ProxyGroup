@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
@@ -23,17 +25,30 @@ const (
 // ProxyPassword is returned only by EnsureClientSessionByToken so a caller can
 // configure its browser; status and route operations omit it.
 type ClientSession struct {
-	SessionID     string     `json:"session_id"`
-	ProxyUsername string     `json:"proxy_username"`
-	ProxyPassword string     `json:"proxy_password,omitempty"`
-	CountryCode   string     `json:"country_code,omitempty"`
-	RouteMode     string     `json:"route_mode"`
-	SessionIndex  int        `json:"session_index"`
-	PoolSize      int        `json:"pool_size,omitempty"` // pre-v19 response compatibility
-	AllocatedAt   *time.Time `json:"allocated_at,omitempty"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	RotateCount   int        `json:"rotate_count"`
-	LastRotatedAt *time.Time `json:"last_rotated_at,omitempty"`
+	SessionID     string               `json:"session_id"`
+	ProxyUsername string               `json:"proxy_username"`
+	ProxyPassword string               `json:"proxy_password,omitempty"`
+	ProxyEndpoint *ClientProxyEndpoint `json:"proxy_endpoint,omitempty"`
+	CountryCode   string               `json:"country_code,omitempty"`
+	RouteMode     string               `json:"route_mode"`
+	SessionIndex  int                  `json:"session_index"`
+	PoolSize      int                  `json:"pool_size,omitempty"` // pre-v19 response compatibility
+	AllocatedAt   *time.Time           `json:"allocated_at,omitempty"`
+	ExpiresAt     *time.Time           `json:"expires_at,omitempty"`
+	RotateCount   int                  `json:"rotate_count"`
+	LastRotatedAt *time.Time           `json:"last_rotated_at,omitempty"`
+}
+
+// ClientProxyEndpoint describes the public data-plane endpoint for one
+// session. It contains no session secret; ProxyPassword remains a separate
+// response field and is omitted from status responses.
+type ClientProxyEndpoint struct {
+	Type   string `json:"type"`
+	Server string `json:"server"`
+	Port   int    `json:"port"`
+	TLS    bool   `json:"tls,omitempty"`
+	SNI    string `json:"sni,omitempty"`
+	Path   string `json:"path,omitempty"`
 }
 
 // ClientSessionOptions are accepted only when a new logical session is
@@ -193,6 +208,24 @@ func (s *Service) GetClientSessionByToken(
 		return ClientSession{}, mapStoreError(err)
 	}
 	return s.clientSessionView(ctx, session, false)
+}
+
+// ClientSessionConfigByToken returns the one-time client configuration for a
+// session. It is intentionally separate from the status view so a status
+// query can never disclose the session secret.
+func (s *Service) ClientSessionConfigByToken(
+	ctx context.Context,
+	token, sessionID string,
+) (ClientSession, error) {
+	record, err := s.clientSessionChannel(ctx, token, sessionID)
+	if err != nil {
+		return ClientSession{}, err
+	}
+	session, err := s.repository.GetResidentialClientSession(ctx, record.ID, sessionID)
+	if err != nil {
+		return ClientSession{}, mapStoreError(err)
+	}
+	return s.clientSessionView(ctx, session, true)
 }
 
 func (s *Service) RotateClientSessionByToken(
@@ -384,6 +417,11 @@ func (s *Service) clientSessionView(
 		RotateCount: record.RotateCount, LastRotatedAt: record.LastRotatedAt,
 		AllocatedAt: record.AllocatedAt, ExpiresAt: record.ExpiresAt,
 	}
+	endpoint, err := s.clientSessionEndpoint(ctx, record.ChannelID)
+	if err != nil {
+		return ClientSession{}, err
+	}
+	view.ProxyEndpoint = endpoint
 	if includePassword {
 		plaintext, err := s.cipher.Open(
 			record.AuthPasswordEncrypted,
@@ -395,6 +433,68 @@ func (s *Service) clientSessionView(
 		view.ProxyPassword = string(plaintext)
 	}
 	return view, nil
+}
+
+func (s *Service) clientSessionEndpoint(
+	ctx context.Context,
+	channelID string,
+) (*ClientProxyEndpoint, error) {
+	channel, err := s.repository.GetResidentialChannel(ctx, channelID)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	listenerRecord, err := s.repository.GetListener(ctx, channel.ListenerID)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+
+	var transport listener.Transport
+	if err := json.Unmarshal([]byte(listenerRecord.TransportJSON), &transport); err != nil {
+		return nil, fmt.Errorf("decode residential listener transport: %w", err)
+	}
+	var publicEndpoint listener.PublicEndpoint
+	if err := json.Unmarshal([]byte(listenerRecord.PublicEndpointJSON), &publicEndpoint); err != nil {
+		return nil, fmt.Errorf("decode residential listener public endpoint: %w", err)
+	}
+	if strings.TrimSpace(publicEndpoint.Host) == "" {
+		return nil, nil
+	}
+
+	host := strings.TrimSpace(publicEndpoint.Host)
+	port := publicEndpoint.Port
+	if port == 0 {
+		port = 443
+	}
+	switch strings.ToLower(strings.TrimSpace(listenerRecord.Kind)) {
+	case "vless", "vmess", "trojan":
+		if strings.ToLower(strings.TrimSpace(transport.Type)) != "ws" || strings.TrimSpace(transport.WSPath) == "" {
+			return nil, fmt.Errorf("residential WebSocket listener has no valid public transport")
+		}
+		return &ClientProxyEndpoint{
+			Type:   strings.ToLower(strings.TrimSpace(listenerRecord.Kind)) + "-ws",
+			Server: host,
+			Port:   port,
+			TLS:    publicEndpoint.TLS,
+			SNI:    host,
+			Path:   transport.WSPath,
+		}, nil
+	case "http", "mixed":
+		return &ClientProxyEndpoint{
+			Type:   "http-connect",
+			Server: host,
+			Port:   port,
+			TLS:    publicEndpoint.TLS,
+		}, nil
+	case "socks":
+		return &ClientProxyEndpoint{
+			Type:   "socks5",
+			Server: host,
+			Port:   port,
+			TLS:    publicEndpoint.TLS,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported residential listener kind %q", listenerRecord.Kind)
+	}
 }
 
 func clientSessionCountry(channel store.ResidentialChannelRecord, requested string) (string, error) {

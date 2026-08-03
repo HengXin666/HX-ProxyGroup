@@ -337,6 +337,43 @@ func (s *Server) handleResidentialClientSessionPublic(
 	if len(parts) == 2 {
 		action = parts[1]
 	}
+	if action == "config" {
+		if request.Method != http.MethodGet {
+			methodNotAllowed(writer, request, http.MethodGet)
+			return
+		}
+		service, ok := s.residential.(residentialClientSessionConfigService)
+		if !ok {
+			s.writeAPIError(writer, request, http.StatusNotImplemented, "client_config_unsupported", "residential client config is unavailable")
+			return
+		}
+		session, err := service.ClientSessionConfigByToken(request.Context(), token, sessionID)
+		if err != nil {
+			s.handleResidentialClientSessionError(writer, request, err)
+			return
+		}
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.Header().Set("Pragma", "no-cache")
+		format := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("format")))
+		if format == "json" {
+			writeJSON(writer, http.StatusOK, session)
+			return
+		}
+		if format != "" && format != "clash" && format != "yaml" && format != "yml" {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "unsupported_format", "format must be clash or json")
+			return
+		}
+		config, err := residential.ClashConfig(session)
+		if err != nil {
+			s.handleResidentialClientSessionError(writer, request, err)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+		writer.Header().Set("X-HX-Subscription-Format", "clash")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write(config)
+		return
+	}
 	if action == "" {
 		switch request.Method {
 		case http.MethodPut:
@@ -411,6 +448,10 @@ type residentialClientSessionOptionsService interface {
 		string,
 		residential.ClientSessionOptions,
 	) (residential.ClientSession, error)
+}
+
+type residentialClientSessionConfigService interface {
+	ClientSessionConfigByToken(context.Context, string, string) (residential.ClientSession, error)
 }
 
 func (s *Server) ensureResidentialClientSession(

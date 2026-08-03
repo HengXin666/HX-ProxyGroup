@@ -132,10 +132,16 @@ VLESS/VMess UUID 或 Trojan 密码。sticky 渠道通过 `/rot/<token>/sessions/
 VLESS/VMess 会话密码是合法 UUID，`proxy_username` 只用于控制面编译 `IN-USER` 路由，不拼入
 VLESS URI。`/rot/` 仍是普通 HTTP API 路径，必须由 HTTP 反向代理单独转发，不能让 Edge Relay 处理。
 
-住宅 HTTP/SOCKS/Mixed 只允许同机使用环回 Listener，或由明确配置的四层/协议反向代理承载；它们
-不能通过 Cloudflare/雷池七层路径变成 HTTP CONNECT/SOCKS5。WS 入口使用路径化订阅/会话 URL，
+创建 session 后也可以请求
+`/rot/<token>/sessions/<session_id>/config?format=clash`，由 HX 返回只属于该 session 的
+单节点 Clash 配置。不同 `session_id` 使用不同的 VLESS/VMess UUID 或 Trojan 密码，并由
+Mihomo `IN-USER` 规则路由到不同的住宅节点；控制面不承载业务字节流。
+
+住宅 HTTP/SOCKS/Mixed 只有在明确配置的远程四层/协议反向代理承载时，才能供远程业务客户端使用；它们
+不能通过 Cloudflare/雷池七层路径变成 HTTP CONNECT/SOCKS5。WS 入口使用路径化 session 配置，
 不会把 `127.0.0.1:<listener-port>` 复制给远程客户端。`/sub/` 是配置下载地址，不是
-OutlookRegister Playwright 的 `proxy` 字段；同机运行时 Playwright 仍使用环回 HTTP/SOCKS URL。
+OutlookRegister Playwright 的 `proxy` 字段；Playwright 需要远程 HTTP CONNECT/SOCKS5 数据端点，
+不能直接使用 VLESS/VMess/Trojan WS。
 
 ### Clash Verge 导入诊断
 

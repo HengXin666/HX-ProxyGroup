@@ -25,10 +25,22 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: go test ./...
-      - run: go vet ./...
       - run: npm ci
         working-directory: web
+      - name: Download pinned test data plane
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${MIHOMO_VERSION}" \
+            --repo MetaCubeX/mihomo \
+            --pattern "mihomo-linux-amd64-${MIHOMO_VERSION}.gz" \
+            --dir "${RUNNER_TEMP}"
+          gzip -dc "${RUNNER_TEMP}/mihomo-linux-amd64-${MIHOMO_VERSION}.gz" \
+            > "${RUNNER_TEMP}/mihomo"
+          chmod 0755 "${RUNNER_TEMP}/mihomo"
+          printf '%s\n' "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+      - run: go test ./...
+      - run: go vet ./...
       - run: npm run check
         working-directory: web
       - run: npm run build

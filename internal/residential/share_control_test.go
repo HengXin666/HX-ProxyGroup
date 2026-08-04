@@ -2,7 +2,6 @@ package residential
 
 import (
 	"context"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -14,23 +13,10 @@ func TestDeclaredSessionsExportAndControlUseStableCredentials(t *testing.T) {
 	ctx := context.Background()
 	provider := harness.createProvider(t)
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
-		Name:         "residential-us",
-		ProviderID:   provider.ID,
-		Mode:         ModeSticky,
-		SessionCount: 2,
-		Listener: ChannelListenerRequest{
-			Kind:        "vless",
-			BindAddress: "127.0.0.1",
-			Port:        29501,
-			Auth:        &listener.Auth{Username: "bootstrap", Password: "00000000-0000-4000-8000-000000000000"},
-			Transport:   listener.Transport{Type: "ws", WSPath: "/residential-us"},
-		},
-		DirectListener: &ChannelListenerRequest{
-			Kind:        "mixed",
-			BindAddress: "203.0.113.10",
-			Port:        29502,
-			Auth:        &listener.Auth{Username: "bootstrap", Password: "bootstrap-secret"},
-		},
+		Name:           "residential-us",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		SessionCount:   2,
 		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
 	})
 	if err != nil {
@@ -41,11 +27,11 @@ func TestDeclaredSessionsExportAndControlUseStableCredentials(t *testing.T) {
 	if err != nil || !matched {
 		t.Fatalf("ExportByShareToken() = (%+v, %t, %v)", bundle, matched, err)
 	}
-	if bundle.NodeCount() != 4 || len(bundle.Exports) != 2 {
+	if bundle.NodeCount() != 2 || len(bundle.Exports) != 1 {
 		t.Fatalf("bundle = %+v", bundle)
 	}
-	if bundle.Exports[0].Nodes[0].Name != "residential-us-01-ws" ||
-		bundle.Exports[1].Nodes[1].Name != "residential-us-02-direct" {
+	if bundle.Exports[0].Nodes[0].Name != "residential-us-01" ||
+		bundle.Exports[0].Nodes[1].Name != "residential-us-02" {
 		t.Fatalf("exported node names = %+v", bundle.Exports)
 	}
 	firstPassword := bundle.Exports[0].Nodes[0].Auth.Password
@@ -59,16 +45,15 @@ func TestDeclaredSessionsExportAndControlUseStableCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(control.Nodes) != 2 || control.Nodes[0].ProxyURL == nil {
+	if len(control.Nodes) != 2 || control.Nodes[0].ProxyURL != nil {
 		t.Fatalf("control nodes = %+v", control.Nodes)
 	}
-	parsed, err := url.Parse(*control.Nodes[0].ProxyURL)
-	if err != nil {
-		t.Fatal(err)
+	if got := control.Nodes[0].Endpoints; len(got) != 1 ||
+		got[0].Protocol != "vless" || got[0].Transport != "ws" || got[0].BrowserCompatible {
+		t.Fatalf("control endpoints = %+v", got)
 	}
-	password, _ := parsed.User.Password()
-	if parsed.Scheme != "http" || parsed.Host != "203.0.113.10:29502" || password != firstPassword {
-		t.Fatalf("control proxy URL = %s", parsed.Redacted())
+	if !strings.Contains(control.Nodes[0].Endpoints[0].URI, firstPassword) {
+		t.Fatalf("control endpoint does not use stable declared credential")
 	}
 
 	before, err := harness.store.GetResidentialClientSession(ctx, channel.ID, "s01")
@@ -83,7 +68,42 @@ func TestDeclaredSessionsExportAndControlUseStableCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.NodeFingerprint == after.NodeFingerprint || rotated.ProxyURL == nil || *rotated.ProxyURL != *control.Nodes[0].ProxyURL {
+	if before.NodeFingerprint == after.NodeFingerprint || rotated.ProxyURL != nil ||
+		len(rotated.Endpoints) != 1 || rotated.Endpoints[0].URI != control.Nodes[0].Endpoints[0].URI {
 		t.Fatalf("rotation changed client identity or kept allocation: before=%+v after=%+v node=%+v", before, after, rotated)
+	}
+}
+
+func TestDeclaredControlExposesManagedWebSocketEndpoint(t *testing.T) {
+	harness := newHarness(t)
+	ctx := context.Background()
+	provider := harness.createProvider(t)
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name:           "residential-ws",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		SessionCount:   1,
+		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	controlToken := strings.TrimPrefix(channel.ControlPath, "/ctl/")
+	control, err := harness.service.ControlNodesByToken(ctx, controlToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(control.Nodes) != 1 {
+		t.Fatalf("control nodes = %+v", control.Nodes)
+	}
+	node := control.Nodes[0]
+	if node.ProxyURL != nil || len(node.Endpoints) != 1 {
+		t.Fatalf("control node = %+v", node)
+	}
+	endpoint := node.Endpoints[0]
+	if endpoint.Protocol != "vless" || endpoint.Transport != "ws" || endpoint.BrowserCompatible ||
+		!strings.HasPrefix(endpoint.URI, "vless://") || !strings.Contains(endpoint.URI, "proxy.example.com:443") {
+		t.Fatalf("control endpoint = %+v", endpoint)
 	}
 }

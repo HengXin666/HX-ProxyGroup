@@ -55,12 +55,28 @@ Content-Type: application/json
 
 ## 数据面入口
 
-- VLESS/VMess/Trojan over WebSocket 可经过 CF 橙云、雷池 443 和 HX Edge Relay。
-- HTTP CONNECT、SOCKS5、Mixed 不能经过这条七层链路，必须使用显式直连 TCP Listener，
-  或由客户端本机 Mihomo 消费 WS 订阅后落地。
+- 新住宅渠道固定使用 VLESS over WebSocket，经过 CF 橙云、雷池 443 和 HX Edge Relay。
+- HTTP CONNECT、SOCKS5 仅作为客户端本机 Mihomo 的环回落地，不再由住宅渠道公开监听。
 - `/sub/` 和 `/ctl/` 是 HTTPS 控制/配置地址，不是 Playwright 的代理地址。
-- `/ctl/` 的 `proxy_url` 只在启用 HTTP/SOCKS/Mixed 直连入口时返回；纯 WS 渠道返回 `null`
-  和配置提示。
+- `/ctl/` 的每个节点都返回协议中立的 `endpoints[]`；旧 `proxy_url` 继续表示第一个浏览器兼容端点。
+  托管渠道的 `proxy_url` 为 `null`，但 `endpoints[]` 包含标准 VLESS URI。
+
+```json
+{
+  "index": 1,
+  "node_name": "residential-us-01",
+  "endpoints": [
+    {
+      "protocol": "vless",
+      "transport": "ws",
+      "uri": "vless://<uuid>@proxy.example.com:443?...",
+      "browser_compatible": false
+    }
+  ],
+  "proxy_url": null,
+  "route_mode": "residential"
+}
+```
 
 代理流量始终由 Mihomo 转发。Go 控制面只维护映射、编译 `IN-USER` 规则、应用候选配置并调用
 Mihomo Controller，不实现 HTTP CONNECT、SOCKS5、VLESS、VMess 或 Trojan 协议。
@@ -71,8 +87,9 @@ Mihomo Controller，不实现 HTTP CONNECT、SOCKS5、VLESS、VMess 或 Trojan �
 1. GET /ctl/<token>/nodes，读取固定节点池
 2. 在 OutlookRegister 进程内互斥租用一个空闲 index
 3. POST /nodes/<index>/next，刷新住宅出口
-4. 使用返回的 proxy_url 探测出口身份并运行完整 flow
-5. flow 结束后只归还本地 index，不删除服务端节点
+4. 选择 endpoints[] 中的 VLESS WS 端点，通过受管本地 Mihomo 落地
+5. 从选定端点探测出口身份并运行完整 flow
+6. flow 结束后只归还本地 index，不删除服务端节点
 ```
 
 渠道 `session_count` 和供应商 `max_concurrent_sessions` 都应不小于业务并发数。控制 token 可执行

@@ -1,12 +1,67 @@
 package residential
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 )
+
+const (
+	residentialInternalPortStart = 32000
+	residentialInternalPortEnd   = 41999
+)
+
+// managedChannelListener creates the private VLESS entry point used by new
+// clients. Its port, bootstrap credential and Edge Relay path are internal
+// implementation details and are never accepted from the UI.
+func (s *Service) managedChannelListener(
+	ctx context.Context,
+	channelID string,
+) (ChannelListenerRequest, error) {
+	records, err := s.repository.ListListeners(ctx)
+	if err != nil {
+		return ChannelListenerRequest{}, err
+	}
+	used := make(map[int]struct{}, len(records))
+	for _, record := range records {
+		used[record.Port] = struct{}{}
+	}
+	port := 0
+	for candidate := residentialInternalPortStart; candidate <= residentialInternalPortEnd; candidate++ {
+		if _, exists := used[candidate]; !exists {
+			port = candidate
+			break
+		}
+	}
+	if port == 0 {
+		return ChannelListenerRequest{}, fmt.Errorf("%w: no internal residential listener ports are available", ErrConflict)
+	}
+	uuid, err := newUUIDCredential()
+	if err != nil {
+		return ChannelListenerRequest{}, err
+	}
+	return ChannelListenerRequest{
+		Kind:        "vless",
+		BindAddress: "127.0.0.1",
+		Port:        port,
+		Auth:        &listener.Auth{Username: "hx-bootstrap", Password: uuid},
+		Transport: listener.Transport{
+			Type:   "ws",
+			WSPath: listener.WebSocketPathPrefix + "residential/" + channelID,
+		},
+	}, nil
+}
+
+func newUUIDCredential() (string, error) {
+	raw, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	return raw[:8] + "-" + raw[8:12] + "-4" + raw[13:16] + "-a" + raw[17:20] + "-" + raw[20:], nil
+}
 
 // residentialBindAddress constrains the reverse-proxied WebSocket entry point
 // to loopback. That listener is an internal implementation detail reached only
@@ -21,61 +76,6 @@ func residentialBindAddress(value string) (string, error) {
 		return "", fmt.Errorf("%w: residential listeners must bind to a loopback address", ErrInvalid)
 	}
 	return ip.String(), nil
-}
-
-// directEntryKinds are the protocols a directly reachable residential entry
-// point may use. HTTP CONNECT and SOCKS5 cannot be carried by a layer-7 HTTPS
-// reverse proxy, so they are only usable on a real TCP port.
-func isDirectEntryKind(kind string) bool {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "http", "socks", "mixed":
-		return true
-	default:
-		return false
-	}
-}
-
-// validateDirectListenerRequest checks the optional public TCP entry point.
-// This listener deliberately bypasses Cloudflare and the WAF, so it must bind
-// a routable address and must always authenticate its callers.
-func validateDirectListenerRequest(request *ChannelListenerRequest) error {
-	if request == nil {
-		return nil
-	}
-	if !isDirectEntryKind(request.Kind) {
-		return fmt.Errorf(
-			"%w: direct_listener.kind must be http, socks, or mixed; WebSocket protocols use the reverse-proxied entry point",
-			ErrInvalid,
-		)
-	}
-	address := strings.TrimSpace(request.BindAddress)
-	if address == "" {
-		return fmt.Errorf("%w: direct_listener.bind_address is required", ErrInvalid)
-	}
-	ip := net.ParseIP(address)
-	if ip == nil {
-		return fmt.Errorf("%w: direct_listener.bind_address must be an explicit IP", ErrInvalid)
-	}
-	if ip.IsLoopback() {
-		return fmt.Errorf(
-			"%w: direct_listener.bind_address must be reachable; use the WebSocket entry point for loopback-only setups",
-			ErrInvalid,
-		)
-	}
-	if request.Port < 1 || request.Port > 65535 {
-		return fmt.Errorf("%w: direct_listener.port must be between 1 and 65535", ErrInvalid)
-	}
-	// A public port without authentication would be an open proxy the moment it
-	// is published, so this is rejected rather than defaulted.
-	if request.Auth == nil ||
-		strings.TrimSpace(request.Auth.Username) == "" ||
-		request.Auth.Password == "" {
-		return fmt.Errorf(
-			"%w: direct_listener requires a username and password because it bypasses the reverse proxy",
-			ErrInvalid,
-		)
-	}
-	return nil
 }
 
 func isResidentialWebSocketKind(kind string) bool {

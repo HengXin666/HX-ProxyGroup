@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { ChevronDown, ChevronRight, CircleDot, FileText, Gauge, Globe2, LoaderCircle, Pencil, Plus, Radio, RefreshCw, Trash2 } from "lucide-react"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
-import { ClientSubscriptionPanel } from "@/components/client-subscription-panel"
 import { CreateSubscriptionForm } from "@/components/create-subscription-form"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -173,8 +172,6 @@ export function SubscriptionsPage({ onNotice, embedded = false }: SubscriptionsP
         <Metric label="连续失败" value={metrics.failing} helper={metrics.failing ? "按指数退避等待重试" : "当前没有失败订阅"} border warning={metrics.failing > 0} />
         <Metric label="节点累计流量" value={formatBytes(metrics.totalTraffic)} helper="所有去重节点的上传与下载总和" border />
       </div>
-
-      <ClientSubscriptionPanel onNotice={onNotice} />
 
       <section className="overflow-hidden rounded-lg border bg-card">
         <div className="flex items-center justify-between border-b bg-muted/60 px-3 py-2.5">

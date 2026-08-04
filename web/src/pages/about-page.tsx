@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react"
-import { Check, Copy, Download, ExternalLink, GitFork, LoaderCircle, PackageCheck, RefreshCw, ServerCog } from "lucide-react"
+import { Check, Copy, Download, ExternalLink, GitFork, LoaderCircle, PackageCheck, RefreshCw, ServerCog, ShieldCheck } from "lucide-react"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
-import { api } from "@/lib/api"
+import { Input } from "@/components/ui/input"
+import { api, type TwoFactorStatus } from "@/lib/api"
 import type { SystemInfo } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -14,11 +15,16 @@ export function AboutPage({ onNotice }: { onNotice: (message: string, tone?: "su
   const [copied, setCopied] = useState(false)
   const [confirmingUpdate, setConfirmingUpdate] = useState(false)
   const [updating, setUpdating] = useState(false)
+  const [twoFactor, setTwoFactor] = useState<TwoFactorStatus | null>(null)
+  const [twoFactorCode, setTwoFactorCode] = useState("")
+  const [verifying, setVerifying] = useState(false)
 
   async function load() {
     setLoading(true)
     try {
-      setInfo(await api.systemInfo())
+      const [systemInfo, twoFactorStatus] = await Promise.all([api.systemInfo(), api.twoFactorStatus()])
+      setInfo(systemInfo)
+      setTwoFactor(twoFactorStatus)
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "加载版本信息失败", "error")
     } finally {
@@ -41,6 +47,10 @@ export function AboutPage({ onNotice }: { onNotice: (message: string, tone?: "su
   }
 
   async function updateToLatest() {
+    if (!twoFactor?.verified) {
+      onNotice("请先在本页完成 2FA 验证", "error")
+      return
+    }
     setUpdating(true)
     try {
       await api.triggerSystemUpdate()
@@ -61,6 +71,25 @@ export function AboutPage({ onNotice }: { onNotice: (message: string, tone?: "su
       onNotice(error instanceof Error ? error.message : "自动更新启动失败", "error")
     } finally {
       setUpdating(false)
+    }
+  }
+
+  async function verifyTwoFactor() {
+    const code = twoFactorCode.trim()
+    if (!/^\d{6}$/.test(code)) {
+      onNotice("请输入 6 位 2FA 验证码", "error")
+      return
+    }
+    setVerifying(true)
+    try {
+      await api.verifyTwoFactor(code)
+      setTwoFactorCode("")
+      setTwoFactor(await api.twoFactorStatus())
+      onNotice("2FA 验证完成，可以执行升级")
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "2FA 验证失败", "error")
+    } finally {
+      setVerifying(false)
     }
   }
 
@@ -90,13 +119,44 @@ export function AboutPage({ onNotice }: { onNotice: (message: string, tone?: "su
           <h2 className="text-sm font-semibold">更新</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">安装器解析固定 Release 版本、校验 SHA-256，并在双服务 readiness 失败时恢复上一版。</p>
         </div>
+        <div className="border-b px-4 py-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <ShieldCheck className="size-4" />升级授权
+                {twoFactor && <Badge variant={twoFactor.verified ? "default" : "outline"}>{twoFactor.verified ? "2FA 已验证" : twoFactor.enabled ? "等待 2FA" : "2FA 未启用"}</Badge>}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {twoFactor?.enabled ? "输入认证器当前的 6 位验证码；验证仅对当前登录 Session 临时有效。" : "请先到“全局配置 → 账号安全”启用 TOTP 2FA。"}
+              </p>
+            </div>
+            {twoFactor?.enabled && !twoFactor.verified && (
+              <div className="flex w-full gap-2 sm:w-auto">
+                <Input
+                  value={twoFactorCode}
+                  onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                  onKeyDown={(event) => { if (event.key === "Enter") void verifyTwoFactor() }}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="6 位验证码"
+                  className="w-full font-mono sm:w-36"
+                  aria-label="2FA 验证码"
+                />
+                <Button variant="outline" onClick={() => void verifyTwoFactor()} disabled={verifying || twoFactorCode.length !== 6}>
+                  {verifying ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}
+                  验证
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
         <div className="flex min-w-0 flex-col gap-3 p-4 sm:flex-row sm:items-center">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-md border bg-muted px-3 py-2 font-mono text-xs" title={info.update_command}>{info.update_command}</code>
             <Button variant="outline" size="icon" onClick={() => void copyUpdateCommand()} title="复制更新命令" aria-label="复制更新命令">{copied ? <Check className="text-success" /> : <Copy />}</Button>
           </div>
           {info.automatic_update && (
-            <Button onClick={() => setConfirmingUpdate(true)} disabled={updating}>
+            <Button onClick={() => setConfirmingUpdate(true)} disabled={updating || !twoFactor?.verified} title={twoFactor?.verified ? "更新至最新版" : "请先完成 2FA 验证"}>
               {updating ? <LoaderCircle className="animate-spin" /> : <Download />}
               {updating ? "更新中" : "更新至最新版"}
             </Button>

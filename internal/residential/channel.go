@@ -26,6 +26,9 @@ const (
 // The fail-closed empty group compiles to REJECT until a client creates its
 // first logical session. Passthrough still needs one vendor gateway node.
 func (s *Service) CreateChannel(ctx context.Context, request CreateChannelRequest) (Channel, error) {
+	s.channelCreateMutex.Lock()
+	defer s.channelCreateMutex.Unlock()
+
 	providerRecord, err := s.repository.GetResidentialProvider(ctx, strings.TrimSpace(request.ProviderID))
 	if errors.Is(err, store.ErrNotFound) {
 		return Channel{}, fmt.Errorf("%w: provider does not exist", ErrInvalid)
@@ -76,22 +79,44 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 	if err != nil {
 		return Channel{}, err
 	}
-	bindAddress, err := residentialBindAddress(request.Listener.BindAddress)
-	if err != nil {
-		return Channel{}, err
+	if request.DirectListener != nil {
+		return Channel{}, fmt.Errorf(
+			"%w: direct HTTP/SOCKS residential listeners are no longer accepted; use the managed VLESS WebSocket entry point",
+			ErrInvalid,
+		)
 	}
-	if err := validateDirectListenerRequest(request.DirectListener); err != nil {
-		return Channel{}, err
+	if strings.TrimSpace(request.Listener.Kind) != "" ||
+		strings.TrimSpace(request.Listener.BindAddress) != "" ||
+		request.Listener.Port != 0 || request.Listener.Auth != nil ||
+		strings.TrimSpace(request.Listener.Transport.Type) != "" ||
+		strings.TrimSpace(request.Listener.Transport.WSPath) != "" {
+		return Channel{}, fmt.Errorf(
+			"%w: listener is managed by the server; omit protocol, port, path, and bootstrap credentials",
+			ErrInvalid,
+		)
 	}
-	if isResidentialWebSocketKind(request.Listener.Kind) && request.PublicEndpoint.Host != "" {
-		if err := validateResidentialWebSocketEndpoint(request.PublicEndpoint); err != nil {
-			return Channel{}, err
-		}
+	if strings.TrimSpace(request.PublicEndpoint.Host) == "" {
+		return Channel{}, fmt.Errorf("%w: public_endpoint.host is required for managed VLESS channels", ErrInvalid)
 	}
 
 	channelID, err := newID("residential-channel")
 	if err != nil {
 		return Channel{}, err
+	}
+	managedListener, err := s.managedChannelListener(ctx, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	bindAddress, err := residentialBindAddress(managedListener.BindAddress)
+	if err != nil {
+		return Channel{}, err
+	}
+	request.PublicEndpoint.Port = 443
+	request.PublicEndpoint.TLS = true
+	if isResidentialWebSocketKind(managedListener.Kind) && request.PublicEndpoint.Host != "" {
+		if err := validateResidentialWebSocketEndpoint(request.PublicEndpoint); err != nil {
+			return Channel{}, err
+		}
 	}
 	rotateToken, err := newToken()
 	if err != nil {
@@ -140,12 +165,12 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 
 	createdListener, err := s.listeners.Create(ctx, listener.CreateRequest{
 		Name:           channelListenerName(name),
-		Kind:           request.Listener.Kind,
+		Kind:           managedListener.Kind,
 		BindAddress:    bindAddress,
-		Port:           request.Listener.Port,
+		Port:           managedListener.Port,
 		ProxyGroupID:   group.ID,
-		Auth:           request.Listener.Auth,
-		Transport:      request.Listener.Transport,
+		Auth:           managedListener.Auth,
+		Transport:      managedListener.Transport,
 		PublicEndpoint: request.PublicEndpoint,
 		Enabled:        &enabled,
 	})
@@ -155,28 +180,7 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		return Channel{}, fmt.Errorf("%w: create listener: %v", ErrInvalid, err)
 	}
 
-	// The optional direct entry point shares this channel's proxy group and
-	// session credentials. It exists because a layer-7 HTTPS reverse proxy
-	// cannot carry HTTP CONNECT or SOCKS5.
 	directListenerID := ""
-	if request.DirectListener != nil {
-		directListener, directErr := s.listeners.Create(ctx, listener.CreateRequest{
-			Name:         channelDirectListenerName(name),
-			Kind:         request.DirectListener.Kind,
-			BindAddress:  request.DirectListener.BindAddress,
-			Port:         request.DirectListener.Port,
-			ProxyGroupID: group.ID,
-			Auth:         request.DirectListener.Auth,
-			Enabled:      &enabled,
-		})
-		if directErr != nil {
-			_ = s.listeners.Delete(ctx, createdListener.ID, createdListener.Version)
-			_ = s.groups.Delete(ctx, group.ID, group.Version)
-			cleanupPool()
-			return Channel{}, fmt.Errorf("%w: create direct listener: %v", ErrInvalid, directErr)
-		}
-		directListenerID = directListener.ID
-	}
 
 	rollbackListeners := func() {
 		if directListenerID != "" {
@@ -286,15 +290,11 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 		}
 		existing.IdleReleaseSeconds = idleRelease
 	}
-	if request.DirectListener != nil && request.ClearDirect {
-		return Channel{}, fmt.Errorf(
-			"%w: direct_listener and clear_direct_listener are mutually exclusive", ErrInvalid,
-		)
-	}
 	if request.DirectListener != nil {
-		if err := validateDirectListenerRequest(request.DirectListener); err != nil {
-			return Channel{}, err
-		}
+		return Channel{}, fmt.Errorf(
+			"%w: direct HTTP/SOCKS residential listeners are no longer accepted; clear_direct_listener may remove a historical entry",
+			ErrInvalid,
+		)
 	}
 	// A channel created before 0.2.0 has no control token. Mint one lazily on
 	// the next edit so an upgrade does not require recreating the channel.
@@ -328,51 +328,12 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 			return Channel{}, err
 		}
 	}
-	// Provision or tear down the direct entry point before persisting so a
-	// failed listener change does not leave a dangling reference.
-	switch {
-	case request.DirectListener != nil && previousDirectListenerID == "":
-		directListener, err := s.listeners.Create(ctx, listener.CreateRequest{
-			Name:         channelDirectListenerName(name),
-			Kind:         request.DirectListener.Kind,
-			BindAddress:  request.DirectListener.BindAddress,
-			Port:         request.DirectListener.Port,
-			ProxyGroupID: existing.ProxyGroupID,
-			Auth:         request.DirectListener.Auth,
-			Enabled:      &request.Enabled,
-		})
-		if err != nil {
-			return Channel{}, fmt.Errorf("%w: create direct listener: %v", ErrInvalid, err)
-		}
-		existing.DirectListenerID = directListener.ID
-	case request.DirectListener != nil:
-		current, err := s.listeners.Get(ctx, previousDirectListenerID)
-		if err != nil {
-			return Channel{}, err
-		}
-		if _, err := s.listeners.Update(ctx, current.ID, listener.UpdateRequest{
-			Version:      current.Version,
-			Name:         current.Name,
-			Kind:         request.DirectListener.Kind,
-			BindAddress:  request.DirectListener.BindAddress,
-			Port:         request.DirectListener.Port,
-			ProxyGroupID: current.ProxyGroupID,
-			Auth:         request.DirectListener.Auth,
-			Enabled:      request.Enabled,
-		}); err != nil {
-			return Channel{}, fmt.Errorf("update direct listener: %w", err)
-		}
-	case request.ClearDirect:
+	if request.ClearDirect {
 		existing.DirectListenerID = ""
 	}
 
 	updated, err := s.repository.UpdateResidentialChannel(ctx, existing, request.Version)
 	if err != nil {
-		if existing.DirectListenerID != "" && previousDirectListenerID == "" {
-			if created, getErr := s.listeners.Get(ctx, existing.DirectListenerID); getErr == nil {
-				_ = s.listeners.Delete(ctx, created.ID, created.Version)
-			}
-		}
 		return Channel{}, mapStoreError(err)
 	}
 	if request.ClearDirect && previousDirectListenerID != "" {
@@ -457,10 +418,6 @@ func (s *Service) DeleteChannel(ctx context.Context, id string, version int) err
 
 func channelGroupName(channelName string) string {
 	return "residential-" + channelName
-}
-
-func channelDirectListenerName(channelName string) string {
-	return "residential-" + channelName + "-direct"
 }
 
 func channelListenerName(channelName string) string {

@@ -9,7 +9,7 @@ HX-ProxyGroup 从 Mihomo External Controller 的连接快照采集统计。普�
 - `listener`：自定义代理服务入口。
 - `proxy_group`：入口绑定的代理组及连接链中出现的嵌套组。
 - `node`：订阅节点；节点退出活动快照后仍保留历史总计和 30 天趋势。
-- `residential_channel`：住宅渠道；主 WS 入口和可选直连入口合并归因到稳定渠道 ID。
+- `residential_channel`：住宅渠道；托管 WS 入口和历史兼容入口归因到稳定渠道 ID。
 
 每条连接按 Mihomo 的稳定入站名和代理链同时归属到上述维度。累计上传、下载和连接数保存在
 `traffic_totals`，直到对应 Listener、Proxy Group 或 Node 在本地被真正删除。订阅中消失的节点只会进入

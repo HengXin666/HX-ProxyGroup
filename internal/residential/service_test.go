@@ -129,6 +129,10 @@ func newHarness(t *testing.T, options ...Option) *testHarness {
 	}
 }
 
+func managedPublicEndpoint() listener.PublicEndpoint {
+	return listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true}
+}
+
 func (harness *testHarness) createProvider(t *testing.T) Provider {
 	t.Helper()
 	provider, err := harness.service.CreateProvider(context.Background(), CreateProviderRequest{
@@ -189,7 +193,7 @@ func TestClientSessionsShareOneChannelButKeepIndependentRoutes(t *testing.T) {
 	provider := harness.createProvider(t)
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "multi-window", ProviderID: provider.ID, Mode: ModeSticky, PoolSize: 4,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29301},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +266,6 @@ func TestResidentialChannelPersistsPublicEndpointAndRejectsLoopback(t *testing.T
 	ctx := context.Background()
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "public-residential", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener:       ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29306},
 		PublicEndpoint: listener.PublicEndpoint{Host: "residential.example.com", Port: 443, TLS: true},
 	})
 	if err != nil {
@@ -293,20 +296,12 @@ func TestResidentialChannelSupportsCloudflareWebSocketEntry(t *testing.T) {
 	ctx := context.Background()
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "residential-cloudflare-ws", ProviderID: provider.ID, Mode: ModePassthrough,
-		Listener: ChannelListenerRequest{
-			Kind: "vless", BindAddress: "127.0.0.1", Port: 29307,
-			Auth: &listener.Auth{
-				Username: "residential-entry",
-				Password: "550e8400-e29b-41d4-a716-446655440000",
-			},
-			Transport: listener.Transport{Type: "ws", WSPath: "/residential"},
-		},
 		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if channel.Endpoint.Kind != "vless" || channel.Endpoint.Transport.WSPath != listener.WebSocketPathPrefix+"residential" {
+	if channel.Endpoint.Kind != "vless" || !strings.HasPrefix(channel.Endpoint.Transport.WSPath, listener.WebSocketPathPrefix+"residential/") {
 		t.Fatalf("channel endpoint = %+v", channel.Endpoint)
 	}
 	if channel.Endpoint.SharePath == "" {
@@ -322,7 +317,7 @@ func TestResidentialChannelSupportsCloudflareWebSocketEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if listenerRecord.Kind != "vless" || !strings.Contains(listenerRecord.TransportJSON, listener.WebSocketPathPrefix+"residential") {
+	if listenerRecord.Kind != "vless" || !strings.Contains(listenerRecord.TransportJSON, listener.WebSocketPathPrefix+"residential/") {
 		t.Fatalf("stored listener = %+v", listenerRecord)
 	}
 
@@ -337,25 +332,106 @@ func TestResidentialChannelSupportsCloudflareWebSocketEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateChannel() error = %v", err)
 	}
-	if updated.Endpoint.Transport.WSPath != listener.WebSocketPathPrefix+"residential" {
-		t.Fatalf("updated WebSocket path = %q, want %q", updated.Endpoint.Transport.WSPath, listener.WebSocketPathPrefix+"residential")
+	if updated.Endpoint.Transport.WSPath != channel.Endpoint.Transport.WSPath {
+		t.Fatalf("updated WebSocket path = %q, want stable %q", updated.Endpoint.Transport.WSPath, channel.Endpoint.Transport.WSPath)
 	}
 	if !strings.HasPrefix(updated.SubscriptionURL, "https://proxy-updated.example.com/sub/") {
 		t.Fatalf("updated subscription URL = %q", updated.SubscriptionURL)
 	}
 }
 
-func TestResidentialChannelRejectsPublicBindAndNon443WebSocketEndpoint(t *testing.T) {
+func TestManagedResidentialChannelsAllocatePrivateVLESSListeners(t *testing.T) {
+	harness := newHarness(t)
+	provider := harness.createProvider(t)
+	ctx := context.Background()
+
+	create := func(name string) Channel {
+		channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+			Name: name, ProviderID: provider.ID, Mode: ModeSticky, SessionCount: 2,
+			PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 80},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return channel
+	}
+	first := create("managed-vless-one")
+	second := create("managed-vless-two")
+	if first.Endpoint.Kind != "vless" || first.Endpoint.BindAddress != "127.0.0.1" ||
+		first.Endpoint.Port != residentialInternalPortStart || second.Endpoint.Port != residentialInternalPortStart+1 {
+		t.Fatalf("managed endpoints = first:%+v second:%+v", first.Endpoint, second.Endpoint)
+	}
+	if first.Endpoint.Transport.Type != "ws" ||
+		!strings.HasPrefix(first.Endpoint.Transport.WSPath, listener.WebSocketPathPrefix+"residential/") ||
+		first.Endpoint.Transport.WSPath == second.Endpoint.Transport.WSPath {
+		t.Fatalf("managed WebSocket paths = %q, %q", first.Endpoint.Transport.WSPath, second.Endpoint.Transport.WSPath)
+	}
+	if first.PublicEndpoint.Port != 443 || !first.PublicEndpoint.TLS || first.SubscriptionURL == "" {
+		t.Fatalf("managed public endpoint = %+v, subscription = %q", first.PublicEndpoint, first.SubscriptionURL)
+	}
+	stored, err := harness.store.GetListener(ctx, first.ListenerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AuthMode != "userpass" || len(stored.AuthConfigEncrypted) == 0 {
+		t.Fatalf("managed listener bootstrap credential was not encrypted: %+v", stored)
+	}
+}
+
+func TestManagedResidentialChannelRequiresPublicHostAndRejectsDirectListener(t *testing.T) {
+	harness := newHarness(t)
+	provider := harness.createProvider(t)
+	ctx := context.Background()
+
+	_, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "missing-public-host", ProviderID: provider.ID, Mode: ModeSticky, SessionCount: 1,
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing public host error = %v, want ErrInvalid", err)
+	}
+	_, err = harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "direct-rejected", ProviderID: provider.ID, Mode: ModeSticky, SessionCount: 1,
+		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+		DirectListener: &ChannelListenerRequest{
+			Kind: "http", BindAddress: "203.0.113.10", Port: 18080,
+			Auth: &listener.Auth{Username: "user", Password: "password"},
+		},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("direct listener error = %v, want ErrInvalid", err)
+	}
+
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name: "managed-update", ProviderID: provider.ID, Mode: ModeSticky, SessionCount: 1,
+		PublicEndpoint: managedPublicEndpoint(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = harness.service.UpdateChannel(ctx, channel.ID, UpdateChannelRequest{
+		Version: channel.Version, Name: channel.Name, Enabled: channel.Enabled,
+		DirectListener: &ChannelListenerRequest{
+			Kind: "socks", BindAddress: "203.0.113.10", Port: 18081,
+			Auth: &listener.Auth{Username: "user", Password: "password"},
+		},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("updated direct listener error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestResidentialChannelRejectsClientManagedListener(t *testing.T) {
 	t.Parallel()
 	harness := newHarness(t)
 	provider := harness.createProvider(t)
 
 	_, err := harness.service.CreateChannel(context.Background(), CreateChannelRequest{
 		Name: "public-bind-rejected", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "0.0.0.0", Port: 29309},
+		Listener:       ChannelListenerRequest{Kind: "mixed", BindAddress: "0.0.0.0", Port: 29309},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("public bind error = %v, want ErrInvalid", err)
+		t.Fatalf("client-managed listener error = %v, want ErrInvalid", err)
 	}
 
 	_, err = harness.service.CreateChannel(context.Background(), CreateChannelRequest{
@@ -368,7 +444,7 @@ func TestResidentialChannelRejectsPublicBindAndNon443WebSocketEndpoint(t *testin
 		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 32825, TLS: true},
 	})
 	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("non-443 WebSocket endpoint error = %v, want ErrInvalid", err)
+		t.Fatalf("client-managed WebSocket error = %v, want ErrInvalid", err)
 	}
 }
 
@@ -379,14 +455,6 @@ func TestResidentialWebSocketSessionGetsUUIDCredential(t *testing.T) {
 	ctx := context.Background()
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "residential-vless-session", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{
-			Kind: "vless", BindAddress: "127.0.0.1", Port: 29308,
-			Auth: &listener.Auth{
-				Username: "residential-entry",
-				Password: "550e8400-e29b-41d4-a716-446655440000",
-			},
-			Transport: listener.Transport{Type: "ws", WSPath: "/residential-session"},
-		},
 		PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
 	})
 	if err != nil {
@@ -408,7 +476,7 @@ func TestResidentialWebSocketSessionGetsUUIDCredential(t *testing.T) {
 	}
 	if session.ProxyEndpoint == nil || session.ProxyEndpoint.Type != "vless-ws" ||
 		session.ProxyEndpoint.Server != "proxy.example.com" ||
-		session.ProxyEndpoint.Path != "/__hx-proxy__/residential-session" {
+		session.ProxyEndpoint.Path != channel.Endpoint.Transport.WSPath {
 		t.Fatalf("session endpoint = %+v", session.ProxyEndpoint)
 	}
 }
@@ -431,7 +499,7 @@ func TestClientSessionRejectsConflictingCountryPin(t *testing.T) {
 	}
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "country-pinned-channel", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29305},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)
@@ -464,7 +532,7 @@ func TestClientSessionApplyFailureRollsBackCreation(t *testing.T) {
 	provider := harness.createProvider(t)
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "multi-window-rollback", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29302},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -498,7 +566,7 @@ func TestExpiredClientSessionRotatesAllocationAndKeepsCredentials(t *testing.T) 
 	}
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "ttl-rotate-channel", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29303},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -540,7 +608,7 @@ func TestExpiredClientSessionCanBeConfiguredToExpire(t *testing.T) {
 	}
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "ttl-expire-channel", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29304},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -644,11 +712,11 @@ func TestCreateStickyChannelDefersIPAllocationUntilClientSession(t *testing.T) {
 	provider := harness.createProvider(t)
 
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
-		Name:       "sticky-us",
-		ProviderID: provider.ID,
-		Mode:       ModeSticky,
-		Region:     "us",
-		Listener:   ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29102},
+		Name:           "sticky-us",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		Region:         "us",
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)
@@ -662,7 +730,8 @@ func TestCreateStickyChannelDefersIPAllocationUntilClientSession(t *testing.T) {
 	if !strings.HasPrefix(channel.RotatePath, "/rot/") {
 		t.Fatalf("RotatePath = %q, want a /rot/ path", channel.RotatePath)
 	}
-	if channel.Endpoint.Port != 29102 || channel.Endpoint.Kind != "mixed" {
+	if channel.Endpoint.Port != residentialInternalPortStart || channel.Endpoint.Kind != "vless" ||
+		channel.Endpoint.BindAddress != "127.0.0.1" || channel.Endpoint.Transport.Type != "ws" {
 		t.Fatalf("unexpected endpoint %+v", channel.Endpoint)
 	}
 
@@ -692,16 +761,11 @@ func TestPassthroughChannelHasSingleUpstreamAndCannotRotate(t *testing.T) {
 	provider := harness.createProvider(t)
 
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
-		Name:       "passthrough-us",
-		ProviderID: provider.ID,
-		Mode:       ModePassthrough,
-		PoolSize:   8,
-		Listener: ChannelListenerRequest{
-			Kind:        "mixed",
-			BindAddress: "127.0.0.1",
-			Port:        29103,
-			Auth:        &listener.Auth{Username: "consumer", Password: "consumer-pass"},
-		},
+		Name:           "passthrough-us",
+		ProviderID:     provider.ID,
+		Mode:           ModePassthrough,
+		PoolSize:       8,
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)
@@ -712,8 +776,8 @@ func TestPassthroughChannelHasSingleUpstreamAndCannotRotate(t *testing.T) {
 	if channel.CanRotate || channel.RotatePath != "" {
 		t.Fatalf("passthrough channel must not expose rotation: %+v", channel)
 	}
-	if !channel.Endpoint.AuthEnabled {
-		t.Fatal("configured passthrough listener credentials were not preserved")
+	if !channel.Endpoint.AuthEnabled || channel.Endpoint.Kind != "vless" {
+		t.Fatal("managed passthrough listener must use authenticated VLESS")
 	}
 	if _, err := harness.service.RotateChannel(ctx, channel.ID); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("RotateChannel(passthrough) error = %v, want ErrInvalid", err)
@@ -765,11 +829,11 @@ func TestDeleteChannelRemovesEverythingItProvisioned(t *testing.T) {
 	provider := harness.createProvider(t)
 
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
-		Name:       "sticky-delete",
-		ProviderID: provider.ID,
-		Mode:       ModeSticky,
-		PoolSize:   2,
-		Listener:   ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29105},
+		Name:           "sticky-delete",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		PoolSize:       2,
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)

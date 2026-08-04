@@ -183,7 +183,7 @@ next_refresh_at = now + refresh_interval
 ## 8. 统一客户端订阅
 
 来源订阅负责把机场节点导入库存；客户端订阅负责发布本机可以提供的入口，两者方向相反。
-管理员可在「订阅」页读取和轮换全局统一订阅：
+管理员可在「住宅代理 → 渠道」读取和轮换全局统一订阅：
 
 ```text
 GET  /api/v1/client-subscription

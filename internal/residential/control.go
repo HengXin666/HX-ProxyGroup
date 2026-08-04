@@ -2,9 +2,8 @@ package residential
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"strings"
 
@@ -13,13 +12,24 @@ import (
 )
 
 type ControlNode struct {
-	Index       int     `json:"index"`
-	NodeName    string  `json:"node_name"`
-	ProxyURL    *string `json:"proxy_url"`
-	Hint        string  `json:"hint,omitempty"`
-	ExitIP      string  `json:"exit_ip,omitempty"`
-	CountryCode string  `json:"country_code,omitempty"`
-	RouteMode   string  `json:"route_mode"`
+	Index       int               `json:"index"`
+	NodeName    string            `json:"node_name"`
+	Endpoints   []ControlEndpoint `json:"endpoints"`
+	ProxyURL    *string           `json:"proxy_url"`
+	Hint        string            `json:"hint,omitempty"`
+	ExitIP      string            `json:"exit_ip,omitempty"`
+	CountryCode string            `json:"country_code,omitempty"`
+	RouteMode   string            `json:"route_mode"`
+}
+
+// ControlEndpoint describes one standard client-facing entry point for a
+// declared node. Consumers can either use a browser-compatible URI directly or
+// hand an advanced URI to a local data plane such as Mihomo or sing-box.
+type ControlEndpoint struct {
+	Protocol          string `json:"protocol"`
+	Transport         string `json:"transport"`
+	URI               string `json:"uri"`
+	BrowserCompatible bool   `json:"browser_compatible"`
 }
 
 type ControlNodeList struct {
@@ -178,20 +188,9 @@ func (s *Service) controlNodeView(
 	node := ControlNode{
 		Index:       index,
 		NodeName:    DeclaredNodeName(channel.Name, index),
+		Endpoints:   []ControlEndpoint{},
 		CountryCode: session.CountryCode,
 		RouteMode:   session.RouteMode,
-	}
-	if channel.DirectListenerID == "" {
-		node.Hint = "no direct HTTP/SOCKS listener is configured; import the subscription into a local Mihomo client"
-		return node, nil
-	}
-	direct, err := s.repository.GetListener(ctx, channel.DirectListenerID)
-	if err != nil {
-		return ControlNode{}, mapStoreError(err)
-	}
-	if !direct.Enabled {
-		node.Hint = "the direct HTTP/SOCKS listener is disabled"
-		return node, nil
 	}
 	password, err := s.cipher.Open(
 		session.AuthPasswordEncrypted,
@@ -200,34 +199,88 @@ func (s *Service) controlNodeView(
 	if err != nil {
 		return ControlNode{}, fmt.Errorf("decrypt residential control node credential: %w", err)
 	}
-	scheme := "http"
-	switch direct.Kind {
-	case "socks":
-		scheme = "socks5"
-	case "http", "mixed":
-	default:
-		node.Hint = "the direct listener protocol is not supported by browser automation"
-		return node, nil
+	node.Endpoints, err = s.controlNodeEndpoints(ctx, channel, index, session.AuthUsername, string(password))
+	if err != nil {
+		return ControlNode{}, err
 	}
-	host := direct.BindAddress
-	port := direct.Port
-	var endpoint listener.PublicEndpoint
-	if err := json.Unmarshal([]byte(direct.PublicEndpointJSON), &endpoint); err == nil && endpoint.Host != "" {
-		host = endpoint.Host
-		if endpoint.Port > 0 {
-			port = endpoint.Port
-		}
-		if endpoint.TLS && scheme == "http" {
-			scheme = "https"
+	for _, endpoint := range node.Endpoints {
+		if endpoint.BrowserCompatible {
+			proxyURL := browserProxyURL(endpoint.URI)
+			node.ProxyURL = &proxyURL
+			break
 		}
 	}
-	proxyURL := (&url.URL{
-		Scheme: scheme,
-		Host:   net.JoinHostPort(host, fmt.Sprintf("%d", port)),
-		User:   url.UserPassword(session.AuthUsername, string(password)),
-	}).String()
-	node.ProxyURL = &proxyURL
+	if node.ProxyURL == nil {
+		node.Hint = "no browser-compatible endpoint is configured; use an advanced endpoint through a local data plane"
+	}
 	return node, nil
+}
+
+func browserProxyURL(uri string) string {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return uri
+	}
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func (s *Service) controlNodeEndpoints(
+	ctx context.Context,
+	channel store.ResidentialChannelRecord,
+	index int,
+	username string,
+	password string,
+) ([]ControlEndpoint, error) {
+	baseName := DeclaredNodeName(channel.Name, index)
+	hasDirect := channel.DirectListenerID != ""
+	type source struct {
+		listenerID string
+		name       string
+	}
+	sources := []source{{listenerID: channel.ListenerID, name: baseName}}
+	if hasDirect {
+		sources[0].name += "-ws"
+		sources = append(sources, source{listenerID: channel.DirectListenerID, name: baseName + "-direct"})
+	}
+
+	endpoints := make([]ControlEndpoint, 0, len(sources)+1)
+	for _, source := range sources {
+		export, err := s.listeners.ExportWithNodes(ctx, source.listenerID, "", channel.Name, []listener.ShareNode{{
+			Name: source.name,
+			Auth: &listener.Auth{Username: username, Password: password},
+		}})
+		if errors.Is(err, listener.ErrShareDisabled) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("export control endpoint: %w", err)
+		}
+		transport := strings.TrimSpace(export.Transport.Type)
+		if transport == "" {
+			transport = "tcp"
+		}
+		for _, uri := range strings.Fields(export.Body) {
+			protocol, _, _ := strings.Cut(uri, ":")
+			protocol = strings.ToLower(protocol)
+			endpoints = append(endpoints, ControlEndpoint{
+				Protocol:          protocol,
+				Transport:         transport,
+				URI:               uri,
+				BrowserCompatible: isBrowserProxyProtocol(protocol),
+			})
+		}
+	}
+	return endpoints, nil
+}
+
+func isBrowserProxyProtocol(protocol string) bool {
+	switch protocol {
+	case "http", "https", "socks5":
+		return true
+	default:
+		return false
+	}
 }
 
 func declaredSessionView(

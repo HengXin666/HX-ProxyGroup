@@ -100,14 +100,10 @@ func TestApplicationRandomRegionFlowsIntoAPIListAllocation(t *testing.T) {
 		t.Fatalf("provider region policy = %+v, want application-random JP", provider)
 	}
 	channel, err := harness.service.CreateChannel(context.Background(), CreateChannelRequest{
-		Name:       "api-random-channel",
-		ProviderID: provider.ID,
-		Mode:       ModeSticky,
-		Listener: ChannelListenerRequest{
-			Kind:        "mixed",
-			BindAddress: "127.0.0.1",
-			Port:        29501,
-		},
+		Name:           "api-random-channel",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)

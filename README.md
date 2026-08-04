@@ -198,17 +198,14 @@ Proxy Group。实际数据面链路为：
     `cc`、`country`、`region` 或 `area` 参数；不会依赖供应商自称的随机地区。
   - 控制面 API 上游代理：可选填写 `http://`、`https://` 或 `socks5://` 代理，
     仅用于 BestProxy API 提取和服务端测试连接；它不转发客户端业务流量，地址和代理认证信息均加密保存。
-- **渠道**：sticky 渠道设置 `session_count` 后发布 N 个名称和认证稳定的逻辑节点。渠道拥有
-  一个主入口和可选直连入口；WS 主入口强制环回，直连 HTTP/SOCKS/Mixed 入口只有管理员显式
-  配置后才监听指定地址，并强制认证。
+- **渠道**：sticky 渠道设置 `session_count` 后发布 N 个名称和认证稳定的逻辑节点。新渠道固定使用
+  VLESS over WebSocket；内部环回端口、WS 路径和引导 UUID 由控制面分配，不进入管理表单或订阅。
 - **客户端**：从统一 `/sub/<token>` 导入普通代理服务与住宅声明节点。住宅供应商会话、网关
   节点和出口 IP 对普通用户不可见；TTL、空闲释放或 `next` 只改变服务端内部映射，不改变订阅。
 - **自动化**：`/ctl/<control-token>/nodes` 提供声明节点池，`/nodes/<index>/next` 指定节点换 IP。
   OutlookRegister 在本地互斥租用节点，结束时只归还本地租约，不删除服务端节点。
 
-住宅渠道默认是 Mihomo 的 HTTP / SOCKS5 / Mixed 原生入口；需要走
-`Cloudflare -> 雷池 -> HX-ProxyGroup` 时，可把入口协议选择为 VLESS、VMess 或 Trojan over WebSocket。
-此时实际链路为：
+住宅渠道统一使用 `Cloudflare -> 雷池 -> HX-ProxyGroup` 下的 VLESS over WebSocket，实际链路为：
 
 ```text
 客户端 -> Cloudflare -> 雷池 -> HX Edge Relay -> Mihomo WS Listener
@@ -216,13 +213,12 @@ Proxy Group。实际数据面链路为：
 ```
 
 Edge Relay 只转发固定 `/__hx-proxy__/` WebSocket 连接，协议认证、住宅节点选择和业务流量仍由
-Mihomo 负责。每个声明节点使用独立 VLESS/VMess UUID 或 Trojan 密码，并通过 Mihomo
-`IN-USER` 规则映射到当前住宅出口。HTTP CONNECT、SOCKS5 和 Mixed 仍不能
-经过 Cloudflare 橙云或仅支持 WebSocket 的 Edge Relay；这些入口必须使用可转发原生字节流的
-VPS 直连端口或客户端本机 Mihomo 落地。对外使用雷池 HTTPS 443 下的统一订阅
+Mihomo 负责。每个声明节点使用独立 VLESS UUID，并通过 Mihomo `IN-USER` 规则映射到当前住宅出口。
+浏览器自动化由客户端本机 Mihomo 把 VLESS WS 落地为环回代理，不再为住宅渠道开放公网明文
+HTTP/SOCKS 入口。对外使用雷池 HTTPS 443 下的统一订阅
 `https://proxy.example.com/sub/<token>?format=clash`；链接省略默认 `:443`。
-`/sub/` 和 `/ctl/` 都不是 HTTP/SOCKS 代理端点。OutlookRegister 必须从 `/ctl/` 得到直连入口
-生成的 `proxy_url`，纯 WS 渠道需要在 OutlookRegister 所在机器另设本地 Mihomo 落地。
+`/sub/` 和 `/ctl/` 都不是 HTTP/SOCKS 代理端点。`/ctl/` 为每个声明节点返回通用 `endpoints[]`；
+OutlookRegister 托管本机 Mihomo，把 VLESS WS 端点落地为线程独享的环回代理。
 
 定制会话 API、并发容量、切流语义和安全边界见
 [住宅代理客户端会话 API](docs/RESIDENTIAL_SESSION_API.md)。
@@ -243,9 +239,8 @@ Proxy Group，最后在住宅供应商编辑框的「上游海外 Proxy Group」
 `runtime/active.yaml` 中每个住宅节点是否出现 `dialer-proxy: <上游组名>`；没有该字段时，
 住宅网关仍然是直连，无法满足需要通过订阅访问住宅网关的网络环境。
 
-同机程序可以使用住宅渠道的环回 HTTP/SOCKS Listener；远程浏览器自动化则需要显式公网直连
-Listener。两者都不使用控制面 `19090`，也不能把 `/sub/` 或 `/ctl/` URL 填入 Playwright 的
-`proxy` 字段。公网直连入口绕过 CF/WAF，必须用防火墙和强认证限制暴露范围。
+浏览器自动化使用客户端受管 Mihomo 提供的环回 HTTP/SOCKS 落地。它不使用控制面 `19090`，
+也不能把 `/sub/` 或 `/ctl/` URL 直接填入 Playwright 的 `proxy` 字段。
 
 首次启动会生成：
 
@@ -281,8 +276,8 @@ curl -fsSLO https://raw.githubusercontent.com/HengXin666/HX-ProxyGroup/main/inst
 sudo hx-proxygroup-install upgrade
 ```
 
-生产 systemd 安装也可在「关于」页执行一键更新。该操作要求已登录管理员和最近完成的 TOTP
-2FA 验证；root helper 只接受固定的无参数升级请求，不接受浏览器提交命令或版本字符串。
+生产 systemd 安装也可在「关于」页执行一键更新。页面内可输入认证器的 6 位 TOTP 完成当前
+Session 的 2FA 验证；root helper 只接受固定的无参数升级请求，不接受浏览器提交命令或版本字符串。
 
 安装器在切换版本前校验新 Mihomo 与当前配置；三个服务 readiness 失败时原子恢复上一版 `current` 链接并重启旧版本。升级成功后安装器自身也会更新。
 

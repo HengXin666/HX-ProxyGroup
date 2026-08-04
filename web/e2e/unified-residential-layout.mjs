@@ -34,19 +34,17 @@ if (await setupField.isVisible()) {
 }
 await page.getByRole("heading", { name: "总览" }).waitFor()
 
-await page.goto(`${baseURL}/#/subscriptions`, { waitUntil: "networkidle" })
-await page.getByRole("heading", { name: "统一客户端订阅" }).waitFor()
-await page.getByText(/个入口节点/).waitFor()
-await assertNoPageOverflow("unified subscription desktop")
-await page.screenshot({ path: "../docs/screenshots/unified-subscription-desktop.png", fullPage: true })
-
 await page.goto(`${baseURL}/#/residential`, { waitUntil: "networkidle" })
 await page.getByRole("heading", { name: "住宅代理" }).waitFor()
+await page.getByRole("heading", { name: "统一客户端订阅" }).waitFor()
+await page.getByText(/个入口节点/).waitFor()
+await assertNoPageOverflow("unified residential desktop")
+await page.screenshot({ path: "../docs/screenshots/unified-subscription-desktop.png", fullPage: true })
 await page.getByRole("button", { name: "新建渠道" }).click()
 await page.getByRole("heading", { name: "新建渠道" }).waitFor()
 await page.getByLabel("节点数量").waitFor()
-await page.getByLabel("同时开放 OutlookRegister 可用的直连 HTTP/SOCKS 入口").click()
-await page.getByText("该端口不能走 Cloudflare 橙云或雷池七层转发；请用防火墙限制来源。", { exact: true }).waitFor()
+await page.getByText("VLESS over WebSocket · TLS", { exact: true }).waitFor()
+await page.getByLabel("Cloudflare / 雷池域名").waitFor()
 await assertNoPageOverflow("residential channel desktop")
 await page.screenshot({ path: "../docs/screenshots/residential-unified-channel-desktop.png", fullPage: true })
 
@@ -56,14 +54,22 @@ await page.route("**/api/v1/system/info", async (route) => {
   const body = await response.json()
   await route.fulfill({ response, json: { ...body, automatic_update: true } })
 })
+await page.route("**/api/v1/auth/2fa/status", (route) => route.fulfill({
+  status: 200,
+  contentType: "application/json",
+  body: JSON.stringify({ configured: true, enabled: true, verified: false, verification_ttl_seconds: 900 }),
+}))
 await page.goto(`${baseURL}/#/about`, { waitUntil: "networkidle" })
 await page.getByRole("button", { name: "更新至最新版" }).waitFor()
+await page.getByLabel("2FA 验证码").waitFor()
+if (await page.getByRole("button", { name: "更新至最新版" }).isEnabled()) throw new Error("update must stay disabled before 2FA step-up")
 await assertNoPageOverflow("about automatic update desktop")
 await page.screenshot({ path: "../docs/screenshots/about-automatic-update-desktop.png", fullPage: true })
 
 await page.setViewportSize({ width: 390, height: 844 })
-await page.goto(`${baseURL}/#/subscriptions`, { waitUntil: "networkidle" })
+await page.goto(`${baseURL}/#/residential`, { waitUntil: "networkidle" })
 await page.getByRole("heading", { name: "统一客户端订阅" }).waitFor()
+await page.getByText(/个入口节点/).waitFor()
 await assertNoPageOverflow("unified subscription mobile")
 await page.screenshot({ path: "../docs/screenshots/unified-subscription-mobile.png", fullPage: true })
 

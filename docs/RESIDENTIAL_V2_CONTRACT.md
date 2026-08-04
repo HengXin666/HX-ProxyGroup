@@ -1,6 +1,6 @@
-# 住宅代理与统一订阅契约（0.2.0）
+# 住宅代理与统一订阅契约（0.2.1）
 
-本文定义 0.2.0 的客户端、自动化程序和管理面契约。协议处理和代理流量转发属于 Mihomo；
+本文定义 0.2.1 的客户端、自动化程序和管理面契约。协议处理和代理流量转发属于 Mihomo；
 HX-ProxyGroup 控制面只维护 Desired State、生成配置、调用数据面并提供管理 API。
 
 ## 1. 客户端模型
@@ -36,16 +36,15 @@ GET /sub/<token>?format=clash|v2rayn|sing-box|uri
 
 ## 2. 网络入口
 
-一个住宅渠道最多同时拥有两个 Mihomo Listener，共用同一组逻辑节点和住宅出口映射：
+新建住宅渠道拥有一个由控制面托管的 Mihomo Listener：
 
-| 入口 | 支持协议 | 默认绑定 | 可用链路 |
+| 入口 | 支持协议 | 绑定 | 可用链路 |
 | --- | --- | --- | --- |
-| WS 入口 | VLESS/VMess/Trojan over WebSocket | loopback | CF -> 雷池:443 -> Edge Relay -> Mihomo |
-| 直连入口 | HTTP/SOCKS5/Mixed | 显式地址和端口 | 客户端直接连接 VPS TCP 端口 |
+| VLESS WS | VLESS over WebSocket | 自动分配的 loopback 端口 | CF -> 雷池:443 -> Edge Relay -> Mihomo |
 
-七层 HTTPS 反向代理不能承载普通 HTTP CONNECT 或 SOCKS5。需要这些协议时，必须显式配置
-带用户名密码的直连入口，或在客户端本机运行 Mihomo 消费 WS 订阅并落地为本机端口。
-`direct_listener` 绕过 CF/WAF 并暴露源站，前端必须显示此风险；服务端不会默认创建公网入口。
+控制面自动生成内部端口、WebSocket 路径和引导 UUID；客户端凭据来自声明节点，不暴露内部状态。
+浏览器需要 HTTP/SOCKS 时，由本机 Mihomo 消费 VLESS WS 端点并落地到环回地址。新建 API 拒绝
+`direct_listener`；历史直连入口仅为升级兼容保留，不会被静默删除。
 
 ## 3. 渠道与节点字段
 
@@ -58,13 +57,7 @@ GET /sub/<token>?format=clash|v2rayn|sing-box|uri
   "sessions": [],
   "subscription_url": "https://proxy.example.com/sub/<share-token>?format=clash",
   "share_path": "/sub/<share-token>",
-  "control_path": "/ctl/<control-token>",
-  "direct_endpoint": {
-    "kind": "mixed",
-    "bind_address": "203.0.113.10",
-    "port": 18443,
-    "auth_enabled": true
-  }
+  "control_path": "/ctl/<control-token>"
 }
 ```
 
@@ -107,6 +100,20 @@ Content-Type: application/json
     {
       "index": 1,
       "node_name": "住宅美国-01",
+      "endpoints": [
+        {
+          "protocol": "vless",
+          "transport": "ws",
+          "uri": "vless://<uuid>@proxy.example.com:443?...",
+          "browser_compatible": false
+        },
+        {
+          "protocol": "http",
+          "transport": "tcp",
+          "uri": "http://user:password@203.0.113.10:18443",
+          "browser_compatible": true
+        }
+      ],
       "proxy_url": "http://user:password@203.0.113.10:18443",
       "country_code": "US",
       "route_mode": "residential"
@@ -115,8 +122,9 @@ Content-Type: application/json
 }
 ```
 
-只有启用的 HTTP/SOCKS/Mixed 直连入口才返回 `proxy_url`。纯 WS 渠道返回 `null` 和 `hint`；
-浏览器自动化不能直接消费 VLESS/VMess/Trojan WS。`GET nodes` 会更新声明节点最后使用时间。
+`endpoints[]` 是协议中立的入口事实来源；`proxy_url` 只是向后兼容的首个浏览器兼容端点。
+托管渠道的 `proxy_url` 为 `null`，但仍返回 VLESS WS URI。浏览器自动化不能直接消费该 URI，
+应由客户端受管的本地 Mihomo 或 sing-box 落地。`GET nodes` 会更新声明节点最后使用时间。
 未知、禁用、不属于 sticky 声明渠道的 token 和越界 index 统一返回 404。
 
 OutlookRegister 的推荐配置是：
@@ -141,13 +149,13 @@ OutlookRegister 的推荐配置是：
 - sing-box：outbound JSON。
 - `uri`：明文 URI 列表。
 
-WS 与直连入口同时存在时，节点名分别追加 `-ws`、`-direct`。Mixed 入口会产生 HTTP 和
-SOCKS5 两个 URI。最终协议集合以打包的 Mihomo 版本和候选配置校验结果为准。
+新建住宅渠道只渲染 VLESS WS 节点。历史渠道仍按已保存的 Listener 类型渲染，以保证升级后
+旧客户端不会被控制面静默切断；新 API 和前端不再提供创建明文直连入口的能力。
 
 ## 6. 流量统计
 
-住宅流量使用稳定的 `residential_channel` 资源维度。Mihomo 的主 WS Listener 和可选直连
-Listener 都映射到同一渠道 ID；替换供应商节点、轮换出口 IP 或重建内部节点记录不会清零累计值。
+住宅流量使用稳定的 `residential_channel` 资源维度。托管 VLESS WS Listener 映射到渠道 ID；
+替换供应商节点、轮换出口 IP 或重建内部节点记录不会清零累计值。历史直连 Listener 继续归因到原渠道。
 采集器每秒读取连接快照，在内存计算增量，每分钟批量写 SQLite。该数据适合趋势和使用量观察，
 不作为精确计费账单。
 

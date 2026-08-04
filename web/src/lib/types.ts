@@ -665,19 +665,6 @@ export interface CreateResidentialChannelRequest {
   random_regions?: string[]
   session_count?: number
   idle_release_seconds?: number
-  listener: {
-    kind: string
-    bind_address: string
-    port: number
-    auth?: { username: string; password: string }
-    transport?: ListenerTransport
-  }
-  direct_listener?: {
-    kind: string
-    bind_address: string
-    port: number
-    auth: { username: string; password: string }
-  }
   public_endpoint?: ListenerPublicEndpoint
   enabled?: boolean
 }
@@ -690,12 +677,6 @@ export interface UpdateResidentialChannelRequest {
   random_regions?: string[]
   session_count?: number
   idle_release_seconds?: number
-  direct_listener?: {
-    kind: string
-    bind_address: string
-    port: number
-    auth: { username: string; password: string }
-  }
   clear_direct_listener?: boolean
   public_endpoint?: ListenerPublicEndpoint
   enabled: boolean

@@ -24,7 +24,7 @@ flowchart LR
 ```
 
 关键约束：**协议处理和目标连接建立始终属于 Mihomo 数据面。** WS Listener 和 Mihomo 的内部
-端口只绑定环回；HTTP/SOCKS/Mixed 仅在管理员显式配置直连入口时监听指定 TCP 地址。公网雷池
+端口只绑定环回；新住宅渠道不创建 HTTP/SOCKS/Mixed 公网直连入口。公网雷池
 只暴露 HTTPS 443，并按 `/sub/`、`/ctl/`、兼容 `/rot/` 和固定
 `/__hx-proxy__/` 路径回源控制面。控制面只在 `__hx-proxy__` 命名空间内提供受限 WebSocket
 Edge Relay，转发已经升级的连接，不解析 VLESS、VMess 或 Trojan，不接受任意目标地址。控制面退出
@@ -301,8 +301,7 @@ Listener
 ```text
 ResidentialChannel
 ├── 1 ProxyGroup（fail-closed）
-├── 1 主 Listener（通常为环回 VLESS/VMess/Trojan WS）
-├── 0..1 直连 Listener（HTTP/SOCKS/Mixed，显式配置）
+├── 1 托管 Listener（环回 VLESS WS，端口和路径自动分配）
 └── N residential_client_sessions（声明节点 s01..sNN）
 ```
 
@@ -311,8 +310,8 @@ ResidentialChannel
 入口和认证；供应商会话与真实出口 IP 轮换是服务端内部状态。`next` 替换节点映射但保留客户端
 身份，因此客户端无需重拉订阅。
 
-编译器把同一逻辑节点的账号同时加入渠道拥有的 WS 和直连 Listener，并在普通路由规则之前
-生成 `IN-USER` 规则。切流或换节点属于 Desired State 变更，必须经过完整候选配置校验和应用；
+编译器把逻辑节点的 UUID 加入渠道的 VLESS WS Listener，并在普通路由规则之前生成 `IN-USER`
+规则。切流或换节点属于 Desired State 变更，必须经过完整候选配置校验和应用；
 成功后控制面通过 Mihomo Controller 删除该 `inboundUser` 的旧连接。流量字节始终留在 Mihomo。
 
 `internal/clientsubscription` 从普通 Listener 和住宅渠道收集 `ShareExport`，排除住宅 provisioning
@@ -320,7 +319,8 @@ ResidentialChannel
 share token 与自动化 control token 权限分离。`/ctl/<token>/nodes/<index>/next` 供 OutlookRegister
 等程序指定节点换出口；旧 `/rot/` 会话接口只保留兼容。
 
-Schema v24 引入声明节点、空闲释放、控制 token 和可选直连 Listener。Schema v25 引入稳定
+Schema v24 引入声明节点、空闲释放、控制 token 和历史可选直连 Listener。新建渠道不再允许
+创建直连 Listener；旧记录仅保留升级兼容。Schema v25 引入稳定
 `residential_channel` 流量资源；渠道的所有入口映射到同一渠道 ID，出口 IP 和内部节点轮换不会
 重置累计统计。完整外部协议见 [住宅代理客户端与自动化 API](RESIDENTIAL_SESSION_API.md)。
 

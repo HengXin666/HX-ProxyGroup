@@ -51,6 +51,7 @@ type Repository interface {
 	GetProxyGroup(context.Context, string) (store.ProxyGroupRecord, error)
 	GetListener(context.Context, string) (store.ListenerRecord, error)
 	GetListenerByShareToken(context.Context, string) (store.ListenerRecord, error)
+	ListListeners(context.Context) ([]store.ListenerRecord, error)
 	GetResidentialChannelByListenerID(context.Context, string) (store.ResidentialChannelRecord, error)
 }
 
@@ -120,6 +121,9 @@ type Service struct {
 	// refreshMutex serializes pool refreshes so two concurrent top-ups cannot
 	// interleave their node replacements for the same channel.
 	refreshMutex sync.Mutex
+	// channelCreateMutex makes internal listener port allocation and creation one
+	// bounded operation in the single control-plane process.
+	channelCreateMutex sync.Mutex
 	// clientSessionMutex serializes slot allocation and route changes. The
 	// critical section is bounded by one database update and one data-plane
 	// apply; no goroutine or queue is created per client session.

@@ -15,7 +15,7 @@ func TestRotateClientSessionAllocatesFreshNodeAndKeepsClientCredentials(t *testi
 	provider := harness.createProvider(t)
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "client-rotate", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29401},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestRotateClientSessionIsRateLimitedPerLogicalSession(t *testing.T) {
 	provider := harness.createProvider(t)
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "client-rate-limit", ProviderID: provider.ID, Mode: ModeSticky,
-		Listener: ChannelListenerRequest{Kind: "mixed", BindAddress: "127.0.0.1", Port: 29402},
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)

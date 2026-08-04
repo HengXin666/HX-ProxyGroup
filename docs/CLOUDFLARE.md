@@ -98,7 +98,7 @@ location ^~ /__hx-proxy__/ {
 
 ## 订阅与住宅控制
 
-管理员在「订阅」页复制全局统一订阅：
+管理员在「住宅代理 → 渠道」复制全局统一订阅：
 
 ```text
 https://proxy.example.com/sub/<share-token>?format=clash
@@ -115,9 +115,8 @@ OutlookRegister 使用独立控制地址：
 https://proxy.example.com/ctl/<control-token>
 ```
 
-`/ctl/` 只控制住宅逻辑节点的出口映射，不承载代理流量。它返回的 `proxy_url` 只有在渠道配置
-公网 HTTP/SOCKS/Mixed 直连入口时才可供浏览器自动化使用；纯 WS 渠道必须在 OutlookRegister
-所在机器另设本地 Mihomo 落地。
+`/ctl/` 只控制住宅逻辑节点的出口映射，不承载代理流量。OutlookRegister 读取返回的 VLESS WS
+端点并托管本机 Mihomo，将其落地为浏览器使用的环回代理。
 
 ## 导入诊断
 

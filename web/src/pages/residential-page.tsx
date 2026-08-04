@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react"
 import {
-  Copy,
   FlaskConical,
-  KeyRound,
   ListRestart,
   Pencil,
   Plus,
@@ -12,6 +10,7 @@ import {
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { ClientSubscriptionPanel } from "@/components/client-subscription-panel"
 import { ResidentialSessionsDialog } from "@/components/residential-sessions-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -101,23 +100,9 @@ type ChannelForm = {
   regionMode: ResidentialRegionMode
   region: string
   randomRegions: string
-  listenerKind: string
-  wsPath: string
-  bindAddress: string
-  port: string
-  authUsername: string
-  authPassword: string
   publicHost: string
-  publicPort: string
-  publicTLS: boolean
   sessionCount: string
   idleReleaseSeconds: string
-  directEnabled: boolean
-  directKind: "mixed" | "http" | "socks"
-  directBindAddress: string
-  directPort: string
-  directAuthUsername: string
-  directAuthPassword: string
   enabled: boolean
 }
 
@@ -128,23 +113,9 @@ const emptyChannelForm: ChannelForm = {
   regionMode: "fixed",
   region: "",
   randomRegions: "",
-  listenerKind: "mixed",
-  wsPath: "/residential",
-  bindAddress: "127.0.0.1",
-  port: "18088",
-  authUsername: "",
-  authPassword: "",
   publicHost: "",
-  publicPort: "443",
-  publicTLS: false,
   sessionCount: "3",
   idleReleaseSeconds: "0",
-  directEnabled: false,
-  directKind: "mixed",
-  directBindAddress: "",
-  directPort: "18089",
-  directAuthUsername: "",
-  directAuthPassword: "",
   enabled: true,
 }
 
@@ -195,16 +166,6 @@ export function ResidentialPage({
     void reload()
   }, [reload])
 
-  async function copyText(value: string | undefined, label: string) {
-    if (!value) return
-    try {
-      await navigator.clipboard.writeText(value)
-      onNotice(`${label}已复制`)
-    } catch {
-      onNotice("复制失败，请手动复制", "error")
-    }
-  }
-
   async function runAction(action: () => Promise<unknown>, success: string) {
     try {
       await action()
@@ -242,6 +203,7 @@ export function ResidentialPage({
         </TabsList>
 
         <TabsContent value="channels" className="space-y-4">
+          <ClientSubscriptionPanel onNotice={onNotice} />
           <div className="flex items-center justify-end">
             <Button size="sm" onClick={() => setChannelDialogOpen(true)}>
               <Plus className="mr-1 size-3.5" />
@@ -284,26 +246,21 @@ export function ResidentialPage({
                         </td>
                         <td className="px-3 py-2">
                           <div className="space-y-1.5">
-                            <div className="flex items-center gap-1.5">
-                              <code className="rounded bg-muted px-1.5 py-0.5">
-                                本机 {channel.endpoint.bind_address}:{channel.endpoint.port}
-                              </code>
-                            </div>
+                            <Badge variant="outline">
+                              {isResidentialWebSocketKind(channel.endpoint.kind)
+                                ? `${channel.endpoint.kind.toUpperCase()} · WebSocket · TLS`
+                                : `${channel.endpoint.kind.toUpperCase()} · 旧版直连`}
+                            </Badge>
                             <div className="flex items-center gap-1.5">
                               <code className={cn("rounded px-1.5 py-0.5", hasPublicEndpoint(channel) ? "bg-success-muted" : "bg-warning-muted text-warning")}>
                                 {formatPublicEndpoint(channel)}
                               </code>
-                              <button type="button" title="配置公网端点" onClick={() => setEndpointChannel(channel)} className="text-muted-foreground hover:text-foreground"><Pencil className="size-3" /></button>
+                              {isResidentialWebSocketKind(channel.endpoint.kind) && (
+                                <button type="button" title="配置公网域名" onClick={() => setEndpointChannel(channel)} className="text-muted-foreground hover:text-foreground"><Pencil className="size-3" /></button>
+                              )}
                             </div>
-                            {channel.endpoint.auth_enabled && <KeyRound className="size-3 text-muted-foreground" aria-label="需要登录凭证" />}
-                            {channel.subscription_url && (
-                              <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                                <code className="max-w-[240px] truncate rounded bg-success-muted px-1.5 py-0.5" title="Clash / Mihomo 客户端订阅">{channel.subscription_url}</code>
-                                <button type="button" title="复制 Clash / Mihomo 订阅地址" onClick={() => void copyText(channel.subscription_url, "Clash / Mihomo 订阅地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
-                              </div>
-                            )}
                             {!isResidentialWebSocketKind(channel.endpoint.kind) && (
-                              <span className="text-[11px] text-warning">HTTP / SOCKS5 / Mixed 仅供本机或四层转发使用，不能通过雷池路径承载。</span>
+                              <span className="text-[11px] text-warning">旧版明文入口，仅为兼容保留；请迁移到托管 VLESS 渠道。</span>
                             )}
                             {isResidentialWebSocketKind(channel.endpoint.kind) && channel.mode === "sticky" && (
                               <span className="text-[11px] text-muted-foreground">节点名称和凭据稳定，住宅出口由服务端内部轮换。</span>
@@ -320,8 +277,8 @@ export function ResidentialPage({
                             <span className="text-muted-foreground">{channel.active_session_count} 个按需分配</span>
                           )}
                           {channel.direct_endpoint && (
-                            <div className="mt-1 text-[11px] text-muted-foreground">
-                              直连 {channel.direct_endpoint.kind} · {channel.direct_endpoint.bind_address}:{channel.direct_endpoint.port}
+                            <div className="mt-1 text-[11px] text-warning">
+                              存在旧版直连入口，请尽快停用
                             </div>
                           )}
                         </td>
@@ -337,9 +294,10 @@ export function ResidentialPage({
                           <div className="flex items-center justify-end gap-1">
                             <button
                               type="button"
-                              title="配置公网端点"
+                              title={isResidentialWebSocketKind(channel.endpoint.kind) ? "配置公网域名" : "旧版入口只读"}
+                              disabled={!isResidentialWebSocketKind(channel.endpoint.kind)}
                               onClick={() => setEndpointChannel(channel)}
-                              className="inline-flex size-7 items-center justify-center rounded-md border hover:bg-muted"
+                              className="inline-flex size-7 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Pencil className="size-3.5" />
                             </button>
@@ -947,38 +905,11 @@ function ChannelDialog({
         random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
         session_count: form.mode === "sticky" ? Number(form.sessionCount) : 0,
         idle_release_seconds: form.mode === "sticky" ? Number(form.idleReleaseSeconds) : 0,
-        listener: {
-          kind: form.listenerKind,
-          bind_address: form.bindAddress.trim(),
-          port: Number(form.port),
-          transport: isResidentialWebSocketKind(form.listenerKind)
-            ? { type: "ws", ws_path: form.wsPath.trim() }
-            : undefined,
-        },
-        public_endpoint: form.publicHost.trim()
-          ? { host: form.publicHost.trim(), port: isResidentialWebSocketKind(form.listenerKind) ? 443 : Number(form.publicPort) || Number(form.port), tls: form.publicTLS }
-          : undefined,
+        public_endpoint: { host: form.publicHost.trim(), port: 443, tls: true },
         enabled: form.enabled,
       }
       if (form.mode === "sticky" && Number(form.sessionCount) < 1) {
         throw new Error("粘滞渠道至少需要 1 个客户端节点")
-      }
-      if (form.directEnabled) {
-        if (!form.directBindAddress.trim() || !form.directAuthUsername.trim() || !form.directAuthPassword) {
-          throw new Error("直连入口必须填写可达绑定 IP、账号和密码")
-        }
-        payload.direct_listener = {
-          kind: form.directKind,
-          bind_address: form.directBindAddress.trim(),
-          port: Number(form.directPort),
-          auth: {
-            username: form.directAuthUsername.trim(),
-            password: form.directAuthPassword,
-          },
-        }
-      }
-      if (form.authUsername || form.authPassword) {
-        payload.listener.auth = { username: form.authUsername, password: form.authPassword }
       }
       await api.createResidentialChannel(payload)
       await onSaved()
@@ -1060,107 +991,15 @@ function ChannelDialog({
                 <Input value={form.randomRegions} onChange={(event) => update("randomRegions", event.target.value)} placeholder="如 US, JP, GB" />
               </label>
             )}
-            <label className="grid gap-1 text-xs">
-              入口协议
-              <Select value={form.listenerKind} onValueChange={(value) => {
-                setForm((current) => ({
-                  ...current,
-                  listenerKind: value,
-                  publicTLS: isResidentialWebSocketKind(value) ? true : current.publicTLS,
-                  publicPort: isResidentialWebSocketKind(value) ? "443" : current.publicPort,
-                }))
-              }}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="mixed">mixed（HTTP + SOCKS5）</SelectItem>
-                  <SelectItem value="http">HTTP</SelectItem>
-                  <SelectItem value="socks">SOCKS5</SelectItem>
-                  <SelectItem value="vless">VLESS over WebSocket</SelectItem>
-                  <SelectItem value="vmess">VMess over WebSocket</SelectItem>
-                  <SelectItem value="trojan">Trojan over WebSocket</SelectItem>
-                </SelectContent>
-              </Select>
-            </label>
-            {isResidentialWebSocketKind(form.listenerKind) && (
-              <label className="grid gap-1 text-xs">
-                WebSocket 路径
-                <Input value={form.wsPath} onChange={(event) => update("wsPath", event.target.value)} placeholder="/residential" required />
-              </label>
-            )}
-            <label className="grid gap-1 text-xs">
-              监听地址
-              <Input value={form.bindAddress} onChange={(event) => update("bindAddress", event.target.value)} placeholder="127.0.0.1" />
-            </label>
-            <label className="grid gap-1 text-xs">
-              端口
-              <Input value={form.port} onChange={(event) => update("port", event.target.value)} inputMode="numeric" required />
-            </label>
-            <label className="grid gap-1 text-xs sm:col-span-2">
-              公网主机名 / IP
-              <Input value={form.publicHost} onChange={(event) => update("publicHost", event.target.value)} placeholder="例如 proxy.example.com 或 VPS 公网 IP" />
-              <span className="text-[11px] text-muted-foreground">只填写客户端实际连接的地址；本机监听仍可保持 127.0.0.1。</span>
-            </label>
-            <label className="grid gap-1 text-xs">
-              公网端口
-              <Input value={isResidentialWebSocketKind(form.listenerKind) ? "443" : form.publicPort} onChange={(event) => update("publicPort", event.target.value)} inputMode="numeric" placeholder={form.port} disabled={isResidentialWebSocketKind(form.listenerKind)} />
-            </label>
-            <label className="flex items-center gap-2 self-end rounded-md border px-3 py-2 text-xs">
-              <Checkbox checked={form.publicTLS} onCheckedChange={(value) => update("publicTLS", value === true)} />
-              {isResidentialWebSocketKind(form.listenerKind) ? "公网 HTTPS / WebSocket 使用 TLS" : "公网 HTTP 端点使用 TLS"}
-            </label>
-            <div className="sm:col-span-2 rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning">
-              {isResidentialWebSocketKind(form.listenerKind)
-                ? "WebSocket 入口可走 Cloudflare -> 雷池 -> HX Edge Relay；公网端点必须填写雷池域名并使用 443，客户端通过 /sub/<token>?format=clash 路径订阅。VLESS/VMess 的入口密码必须是 UUID。"
-                : "住宅 HTTP / SOCKS5 / Mixed 仍不能经过 Cloudflare 橙云或仅支持 WebSocket 的 Edge Relay；公网端点必须指向可转发原生字节流的 VPS 四层代理或 HTTP/SOCKS5 反向代理。"}
+            <div className="rounded-md border bg-muted/50 px-3 py-2 text-xs sm:col-span-2">
+              <div className="font-medium">VLESS over WebSocket · TLS</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">内部环回端口、WebSocket 路径和节点 UUID 由服务端自动生成，不对客户端暴露。</div>
             </div>
-            <label className="grid gap-1 text-xs">
-              入口账号{isResidentialWebSocketKind(form.listenerKind) ? "（必填）" : "（可选）"}
-              <Input value={form.authUsername} onChange={(event) => update("authUsername", event.target.value)} autoComplete="off" />
+            <label className="grid gap-1 text-xs sm:col-span-2">
+              Cloudflare / 雷池域名
+              <Input value={form.publicHost} onChange={(event) => update("publicHost", event.target.value)} placeholder="proxy.example.com" required />
+              <span className="text-[11px] text-muted-foreground">统一订阅只发布该 HTTPS 443 域名；源站内部端口不会进入 API 或客户端配置。</span>
             </label>
-            <label className="grid gap-1 text-xs">
-              入口密码{isResidentialWebSocketKind(form.listenerKind) ? "（必填）" : "（可选）"}
-              <Input value={form.authPassword} onChange={(event) => update("authPassword", event.target.value)} type="password" autoComplete="new-password" />
-            </label>
-            {form.mode === "sticky" && (
-              <div className="grid gap-3 rounded-md border p-3 sm:col-span-2 sm:grid-cols-2">
-                <label className="flex items-center gap-2 text-xs sm:col-span-2">
-                  <Checkbox checked={form.directEnabled} onCheckedChange={(value) => update("directEnabled", value === true)} />
-                  同时开放 OutlookRegister 可用的直连 HTTP/SOCKS 入口
-                </label>
-                {form.directEnabled && (
-                  <>
-                    <label className="grid gap-1 text-xs">
-                      直连协议
-                      <Select value={form.directKind} onValueChange={(value) => update("directKind", value as ChannelForm["directKind"])}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="mixed">Mixed</SelectItem>
-                          <SelectItem value="http">HTTP CONNECT</SelectItem>
-                          <SelectItem value="socks">SOCKS5</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </label>
-                    <label className="grid gap-1 text-xs">
-                      直连端口
-                      <Input value={form.directPort} onChange={(event) => update("directPort", event.target.value)} inputMode="numeric" required />
-                    </label>
-                    <label className="grid gap-1 text-xs sm:col-span-2">
-                      可达绑定 IP
-                      <Input value={form.directBindAddress} onChange={(event) => update("directBindAddress", event.target.value)} placeholder="VPS 网卡上的公网或内网 IP" required />
-                      <span className="text-[11px] text-warning">该端口不能走 Cloudflare 橙云或雷池七层转发；请用防火墙限制来源。</span>
-                    </label>
-                    <label className="grid gap-1 text-xs">
-                      初始化账号
-                      <Input value={form.directAuthUsername} onChange={(event) => update("directAuthUsername", event.target.value)} autoComplete="off" required />
-                    </label>
-                    <label className="grid gap-1 text-xs">
-                      初始化密码
-                      <Input value={form.directAuthPassword} onChange={(event) => update("directAuthPassword", event.target.value)} type="password" autoComplete="new-password" required />
-                    </label>
-                  </>
-                )}
-              </div>
-            )}
           </div>
 
           <DialogFooter>
@@ -1205,12 +1044,6 @@ function ChannelEndpointDialog({
   onNotice: (message: string, tone?: "success" | "error") => void
 }) {
   const [host, setHost] = useState(channel.public_endpoint?.host ?? "")
-  const [port, setPort] = useState(
-    isResidentialWebSocketKind(channel.endpoint.kind)
-      ? "443"
-      : String(channel.public_endpoint?.port || channel.endpoint.port),
-  )
-  const [tls, setTLS] = useState(channel.public_endpoint?.tls ?? false)
   const [saving, setSaving] = useState(false)
 
   async function submit(event: FormEvent) {
@@ -1225,8 +1058,8 @@ function ChannelEndpointDialog({
         random_regions: channel.random_regions,
         public_endpoint: {
           host: host.trim(),
-          port: isResidentialWebSocketKind(channel.endpoint.kind) ? 443 : Number(port),
-          tls: isResidentialWebSocketKind(channel.endpoint.kind) || tls,
+          port: 443,
+          tls: true,
         },
         enabled: channel.enabled,
       })
@@ -1252,18 +1085,8 @@ function ChannelEndpointDialog({
               公网主机名 / IP
               <Input value={host} onChange={(event) => setHost(event.target.value)} placeholder="proxy.example.com 或 VPS 公网 IP" autoComplete="off" required />
             </label>
-            <label className="grid gap-1 text-xs">
-              公网端口
-              <Input value={isResidentialWebSocketKind(channel.endpoint.kind) ? "443" : port} onChange={(event) => setPort(event.target.value)} inputMode="numeric" required disabled={isResidentialWebSocketKind(channel.endpoint.kind)} />
-            </label>
-            <label className="flex items-center gap-2 self-end rounded-md border px-3 py-2 text-xs">
-              <Checkbox checked={tls} onCheckedChange={(value) => setTLS(value === true)} />
-              公网 HTTP 端点使用 TLS
-            </label>
-            <div className="rounded-md border bg-warning-muted px-3 py-2 text-[11px] text-warning sm:col-span-2">
-              {isResidentialWebSocketKind(channel.endpoint.kind)
-                ? "仅填写 Cloudflare / 雷池实际使用的域名；公网路径固定走 HTTPS 443，订阅和会话 API 不会暴露 Mihomo 内部端口。"
-                : "仅填写已配置反向代理或四层转发的地址。住宅 Mixed 的两种复制地址分别是 HTTP 和 SOCKS5，不能导入为 Clash / v2rayN 节点。"}
+            <div className="rounded-md border bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground sm:col-span-2">
+              公网路径固定走 VLESS over WebSocket、HTTPS 443 和 Edge Relay；统一订阅不会暴露 Mihomo 内部端口。
             </div>
           </div>
           <DialogFooter>

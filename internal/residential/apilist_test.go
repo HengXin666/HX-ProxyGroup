@@ -158,14 +158,10 @@ func TestAPILISTProviderChannelRotateAndRefresh(t *testing.T) {
 	}
 
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
-		Name:       "api-list-1",
-		ProviderID: provider.ID,
-		Mode:       ModeSticky,
-		Listener: ChannelListenerRequest{
-			Kind:        "mixed",
-			BindAddress: "127.0.0.1",
-			Port:        29102,
-		},
+		Name:           "api-list-1",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel() error = %v", err)

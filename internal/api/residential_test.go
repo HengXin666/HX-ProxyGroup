@@ -50,7 +50,12 @@ type declaredControlStubResidentialService struct {
 
 func (s *declaredControlStubResidentialService) ControlNodesByToken(_ context.Context, token string) (residential.ControlNodeList, error) {
 	s.controlCalls = append(s.controlCalls, "list:"+token)
-	return residential.ControlNodeList{Channel: "residential-us", Nodes: []residential.ControlNode{{Index: 1, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential}}}, s.clientSessionErr
+	return residential.ControlNodeList{Channel: "residential-us", Nodes: []residential.ControlNode{{
+		Index: 1, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential,
+		Endpoints: []residential.ControlEndpoint{{
+			Protocol: "vless", Transport: "ws", URI: "vless://credential@proxy.example.com:443", BrowserCompatible: false,
+		}},
+	}}}, s.clientSessionErr
 }
 
 func (s *declaredControlStubResidentialService) RotateDeclaredSession(_ context.Context, channelID string, index int) (residential.ChannelSession, error) {
@@ -670,7 +675,7 @@ func TestResidentialChannelCreateAndActions(t *testing.T) {
 	response, err := client.Post(
 		testServer.URL+"/api/v1/residential/channels",
 		"application/json",
-		strings.NewReader(`{"name":"sticky-us","provider_id":"p1","mode":"sticky","listener":{"kind":"mixed","bind_address":"127.0.0.1","port":29301}}`),
+		strings.NewReader(`{"name":"sticky-us","provider_id":"p1","mode":"sticky","public_endpoint":{"host":"proxy.example.com"}}`),
 	)
 	if err != nil {
 		t.Fatalf("POST channels: %v", err)
@@ -680,7 +685,8 @@ func TestResidentialChannelCreateAndActions(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("status = %d, want 201, body = %s", response.StatusCode, body)
 	}
-	if service.createdChannel.Name != "sticky-us" || service.createdChannel.Listener.Port != 29301 {
+	if service.createdChannel.Name != "sticky-us" || service.createdChannel.PublicEndpoint.Host != "proxy.example.com" ||
+		service.createdChannel.Listener.Port != 0 {
 		t.Fatalf("decoded create request = %+v", service.createdChannel)
 	}
 
@@ -730,9 +736,17 @@ func TestDeclaredResidentialControlRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("GET control nodes status = %d", response.StatusCode)
+	}
+	var payload residential.ControlNodeList
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Nodes) != 1 || len(payload.Nodes[0].Endpoints) != 1 ||
+		payload.Nodes[0].Endpoints[0].Protocol != "vless" || payload.Nodes[0].Endpoints[0].Transport != "ws" {
+		t.Fatalf("GET control nodes payload = %+v", payload)
 	}
 
 	for _, test := range []struct {

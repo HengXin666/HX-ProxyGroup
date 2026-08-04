@@ -27,9 +27,8 @@ Clash 等客户端
   -> 机场节点或住宅节点
 ```
 
-Cloudflare/雷池是七层链路，只能承载 VLESS/VMess/Trojan over WebSocket。Mixed、HTTP
-CONNECT 和 SOCKS5 需要客户端直连真实 TCP 端口，或由客户端本机 Mihomo 消费统一订阅后落地为
-本机 HTTP/SOCKS 端口。Go 控制面不实现协议转发，所有协议解析和流量转发仍由 Mihomo 完成。
+新建住宅渠道固定通过 Cloudflare/雷池承载 VLESS over WebSocket。浏览器需要 HTTP/SOCKS 时，
+由客户端本机 Mihomo 消费统一订阅后落地为环回端口。Go 控制面不实现协议转发。
 
 ## 2. 已完成
 
@@ -40,7 +39,7 @@ CONNECT 和 SOCKS5 需要客户端直连真实 TCP 端口，或由客户端本�
 - sticky 渠道可声明 1..N 个稳定节点；缩扩容保留仍存在节点的名称和凭据。
 - 空闲释放只释放供应商分配，节点身份仍保留；下一次使用或 `next` 时重新分配。
 - 每个节点可在管理面执行 `next`，并可单独切换 `residential`、`upstream` 或 `direct` 路由。
-- 住宅 WS 入口保持环回绑定；可选直连入口强制配置认证，默认不会公开新端口。
+- 住宅 WS 入口保持环回绑定；内部端口、WS 路径和引导 UUID 自动分配，新建 API 拒绝直连入口。
 
 ### 2.2 统一客户端订阅
 
@@ -49,9 +48,9 @@ CONNECT 和 SOCKS5 需要客户端直连真实 TCP 端口，或由客户端本�
 - `GET /sub/<token>?format=clash|v2rayn|sing-box|uri` 使用同一渲染器聚合普通 Listener
   和住宅声明节点。
 - 住宅渠道的内部 provisioning 凭据不会进入统一订阅；每个声明节点使用自己的稳定凭据。
-- WS 与直连入口同时存在时使用 `-ws`、`-direct` 后缀；重复名称会稳定消歧。
+- 新住宅渠道只发布 VLESS WS 节点；历史入口继续兼容渲染。
 - 发布新 token 前先构建完整候选订阅；构建失败不会让旧 token 失效。
-- 前端在「订阅」页提供统一链接、按客户端格式复制和二次确认的 token 轮换。
+- 前端在「住宅代理 → 渠道」提供统一链接、按客户端格式复制和二次确认的 token 轮换。
 
 ### 2.3 自动化控制与 OutlookRegister
 
@@ -62,12 +61,12 @@ CONNECT 和 SOCKS5 需要客户端直连真实 TCP 端口，或由客户端本�
 - OutlookRegister 优先使用 `proxy_rotation.control_url`，在进程内互斥租用声明节点，获取时执行
   `next` 并校验出口身份，释放时只归还本地租约。
 - OutlookRegister 仍兼容旧 `/rot/` 配置，但新配置不再创建或删除服务端临时会话。
-- OutlookRegister 必须得到 HTTP/SOCKS `proxy_url`；纯 WS 节点不能直接交给浏览器自动化。
+- OutlookRegister 托管本机 Mihomo，将 VLESS WS 节点落地为线程独享的环回浏览器代理。
 
 ### 2.4 住宅流量统计
 
 - Schema v25 增加稳定资源类型 `residential_channel`。
-- 同一渠道的 WS 和直连入口都归因到渠道 ID；出口 IP 轮换或节点记录替换不会重置累计值。
+- 托管 WS Listener 和历史兼容入口都归因到渠道 ID；出口 IP 轮换不会重置累计值。
 - 上传、下载、连接数和趋势继续由 Mihomo 连接快照采样、内存聚合并批量写 SQLite。
 - 住宅页显示渠道累计流量；删除渠道时由数据库触发器清理对应统计。
 - 统计是采样观测值，不作为精确计费账单。
@@ -95,7 +94,7 @@ CONNECT 和 SOCKS5 需要客户端直连真实 TCP 端口，或由客户端本�
 
 - 使用真实住宅供应商和 Mihomo 完成：建渠道 -> 拉统一订阅 -> 真实代理请求 -> `next` ->
   再次请求 -> 核对渠道流量。
-- 分别验证 CF 橙云 + 雷池 443 的 VLESS/VMess/Trojan WS 链路，以及公网直连
+- 验证 CF 橙云 + 雷池 443 的托管 VLESS WS 链路，以及客户端本机 Mihomo 落地
   HTTP/SOCKS/Mixed 端口；不得把前者的成功外推到 CONNECT/SOCKS。
 - 在干净 amd64/arm64 主机上验证 GitHub Release 安装、前端一键升级、失败保留旧 Release 和回滚。
 - 保存统一订阅、住宅节点和关于页更新入口的桌面/移动端浏览器截图。

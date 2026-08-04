@@ -47,17 +47,6 @@ func (s *Server) handleListenerShare(writer http.ResponseWriter, request *http.R
 		http.NotFound(writer, request)
 		return
 	}
-	if s.clientSubscriptions != nil {
-		bundle, matched, err := s.clientSubscriptions.ExportByToken(request.Context(), token, request.Host)
-		if err != nil {
-			s.handleError(writer, request, err)
-			return
-		}
-		if matched {
-			s.writeShareExport(writer, request, bundle)
-			return
-		}
-	}
 	if residentialShares, ok := s.residential.(residentialShareService); ok {
 		bundle, matched, err := residentialShares.ExportByShareToken(request.Context(), token, request.Host)
 		if err != nil {

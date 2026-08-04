@@ -22,7 +22,6 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
-	"github.com/HengXin666/HX-ProxyGroup/internal/clientsubscription"
 	"github.com/HengXin666/HX-ProxyGroup/internal/config"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/instance"
@@ -212,14 +211,6 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	clientSubscriptionService, err := clientsubscription.NewService(
-		database,
-		listenerService,
-		residentialService,
-	)
-	if err != nil {
-		return err
-	}
 	trafficService, err := metrics.NewService(database, mihomoManager, logger, metrics.Config{})
 	if err != nil {
 		return err
@@ -360,7 +351,6 @@ func run(logger *slog.Logger) error {
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
 		api.WithResidential(residentialService),
-		api.WithClientSubscriptions(clientSubscriptionService),
 		api.WithTraffic(trafficService),
 		api.WithSettings(settingsService),
 		api.WithRoutingRules(routingRulesService),

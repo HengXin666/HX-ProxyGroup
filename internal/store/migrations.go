@@ -672,6 +672,13 @@ CREATE TRIGGER traffic_delete_residential_channel AFTER DELETE ON residential_ch
     DELETE FROM traffic_totals WHERE resource_type = 'residential_channel' AND resource_id = OLD.id;
     DELETE FROM traffic_buckets WHERE resource_type = 'residential_channel' AND resource_id = OLD.id;
 END;
+		`,
+	},
+	{
+		version: 26,
+		name:    "remove_unified_client_subscription",
+		sql: `
+DELETE FROM system_metadata WHERE key = 'client_subscription_token';
 `,
 	},
 }

@@ -30,7 +30,7 @@ Cloudflare 和雷池不会把 HTTP CONNECT、SOCKS5 或 Mixed 自动转换成 We
 
 1. 显式创建带用户名密码的公网直连 Listener，并在防火墙中只开放所需 TCP 端口。该方式绕过
    Cloudflare/WAF 并暴露源站地址。
-2. 客户端导入 VLESS/VMess/Trojan WS 统一订阅，由客户端本机 Mihomo 提供
+2. 客户端导入对应代理服务或住宅渠道的 VLESS/VMess/Trojan WS 订阅，由客户端本机 Mihomo 提供
    `127.0.0.1:7890` 等 HTTP/SOCKS/Mixed 落地端口。
 
 ## HX-ProxyGroup 入口配置
@@ -98,7 +98,7 @@ location ^~ /__hx-proxy__/ {
 
 ## 订阅与住宅控制
 
-管理员在「住宅代理 → 渠道」复制全局统一订阅：
+管理员在「代理服务」页面找到对应住宅渠道服务，并复制该渠道的 Clash/Mihomo 订阅：
 
 ```text
 https://proxy.example.com/sub/<share-token>?format=clash
@@ -106,8 +106,9 @@ https://proxy.example.com/sub/<share-token>?format=v2rayn
 https://proxy.example.com/sub/<share-token>?format=sing-box
 ```
 
-该订阅聚合普通 Listener、机场反代入口和住宅声明节点。默认格式为 v2rayN Base64 URI；
-`format=uri` 用于诊断。share token 可以读取客户端代理凭据，不得进入日志、截图或工单。
+每个订阅只发布所属普通 Listener 或住宅渠道的节点，不跨渠道聚合。住宅页面不承担订阅复制职责。
+默认格式为 v2rayN Base64 URI；`format=uri` 用于诊断。share token 可以读取客户端代理凭据，
+不得进入日志、截图或工单。
 
 OutlookRegister 使用独立控制地址：
 
@@ -115,8 +116,9 @@ OutlookRegister 使用独立控制地址：
 https://proxy.example.com/ctl/<control-token>
 ```
 
-`/ctl/` 只控制住宅逻辑节点的出口映射，不承载代理流量。OutlookRegister 读取返回的 VLESS WS
-端点并托管本机 Mihomo，将其落地为浏览器使用的环回代理。
+该地址同样从「代理服务」页面的“复制自动化控制 URL”动作获取。`/ctl/` 只控制住宅逻辑节点的
+出口映射，不承载代理流量。OutlookRegister 读取返回的 VLESS/VMess/Trojan WS 端点并托管本机
+Mihomo，将其落地为浏览器使用的环回代理。
 
 ## 导入诊断
 

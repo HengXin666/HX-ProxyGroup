@@ -14,12 +14,12 @@ const (
 	residentialInternalPortEnd   = 41999
 )
 
-// managedChannelListener creates the private VLESS entry point used by new
-// clients. Its port, bootstrap credential and Edge Relay path are internal
-// implementation details and are never accepted from the UI.
+// managedChannelListener creates the private WebSocket entry point used by new
+// clients. Its port, bootstrap credential and Edge Relay path are internal.
 func (s *Service) managedChannelListener(
 	ctx context.Context,
 	channelID string,
+	protocol string,
 ) (ChannelListenerRequest, error) {
 	records, err := s.repository.ListListeners(ctx)
 	if err != nil {
@@ -44,7 +44,7 @@ func (s *Service) managedChannelListener(
 		return ChannelListenerRequest{}, err
 	}
 	return ChannelListenerRequest{
-		Kind:        "vless",
+		Kind:        protocol,
 		BindAddress: "127.0.0.1",
 		Port:        port,
 		Auth:        &listener.Auth{Username: "hx-bootstrap", Password: uuid},
@@ -53,6 +53,17 @@ func (s *Service) managedChannelListener(
 			WSPath: listener.WebSocketPathPrefix + "residential/" + channelID,
 		},
 	}, nil
+}
+
+func normalizeManagedChannelProtocol(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "vless", nil
+	}
+	if !isResidentialWebSocketKind(value) {
+		return "", fmt.Errorf("%w: protocol must be vless, vmess, or trojan", ErrInvalid)
+	}
+	return value, nil
 }
 
 func newUUIDCredential() (string, error) {

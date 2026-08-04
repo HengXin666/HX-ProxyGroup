@@ -87,7 +87,7 @@
 - HTTP CONNECT、SOCKS5 和 Mixed Listener 可直接绑定 Proxy Group。
 - VLESS、VMess、Trojan over WebSocket 服务端入口由 Mihomo 提供。
 - Cloudflare / 雷池可将 `/__hx-proxy__/` WebSocket 路由统一转发到控制面，由受限 Edge Relay 精确转给本机 Mihomo Listener；控制面不解析 VLESS、VMess 或 Trojan。
-- 一份统一订阅聚合普通代理服务、机场反代入口和住宅声明节点，可导出 Clash/Mihomo、v2rayN、sing-box 和 URI 格式。
+- 每个代理服务独立发布自己的订阅；住宅渠道也只发布本渠道的声明节点，不存在跨渠道的全局统一订阅。
 - 路由规则可将站点集合指向 `DIRECT`、`REJECT` 或指定 Proxy Group。
 
 ### 可观测性与运维
@@ -174,7 +174,8 @@ http://127.0.0.1:<49152-65535 之间的随机端口>
 侧栏「住宅代理」页管理动态住宅 IP 渠道，整体模型是：
 
 ```text
-供应商(厂商账号/API + TTL) -> 渠道(1~2 个 Listener + N 个声明节点) -> 统一订阅
+供应商(厂商账号/API + TTL) -> 渠道(1 个托管 WS Listener + N 个声明节点)
+                                 -> 渠道订阅 / 自动化控制 URL
 ```
 
 需要通过海外网络访问住宅网关时，可在供应商中选择一个已启用的海外
@@ -198,14 +199,19 @@ Proxy Group。实际数据面链路为：
     `cc`、`country`、`region` 或 `area` 参数；不会依赖供应商自称的随机地区。
   - 控制面 API 上游代理：可选填写 `http://`、`https://` 或 `socks5://` 代理，
     仅用于 BestProxy API 提取和服务端测试连接；它不转发客户端业务流量，地址和代理认证信息均加密保存。
-- **渠道**：sticky 渠道设置 `session_count` 后发布 N 个名称和认证稳定的逻辑节点。新渠道固定使用
-  VLESS over WebSocket；内部环回端口、WS 路径和引导 UUID 由控制面分配，不进入管理表单或订阅。
-- **客户端**：从统一 `/sub/<token>` 导入普通代理服务与住宅声明节点。住宅供应商会话、网关
-  节点和出口 IP 对普通用户不可见；TTL、空闲释放或 `next` 只改变服务端内部映射，不改变订阅。
+- **渠道**：sticky 渠道设置 `session_count` 后发布 N 个名称和认证稳定的逻辑节点。创建时选择
+  VLESS、VMess 或 Trojan over WebSocket；内部环回端口、WS 路径和引导凭据由控制面分配，
+  不进入管理表单或订阅。
+- **客户端**：每个渠道拥有独立 `/sub/<share-token>`，只导出本渠道的住宅声明节点。住宅供应商
+  会话、网关节点和出口 IP 对普通用户不可见；TTL、空闲释放或 `next` 只改变服务端内部映射，
+  不改变订阅。
 - **自动化**：`/ctl/<control-token>/nodes` 提供声明节点池，`/nodes/<index>/next` 指定节点换 IP。
   OutlookRegister 在本地互斥租用节点，结束时只归还本地租约，不删除服务端节点。
+- **复制入口**：在「代理服务」页面的住宅渠道服务行分别选择“复制 Clash / Mihomo 订阅”或
+  “复制自动化控制 URL”；「住宅代理」页面只负责供应商、渠道和声明节点管理。
 
-住宅渠道统一使用 `Cloudflare -> 雷池 -> HX-ProxyGroup` 下的 VLESS over WebSocket，实际链路为：
+住宅渠道使用 `Cloudflare -> 雷池 -> HX-ProxyGroup` 下选定的 VLESS、VMess 或 Trojan over
+WebSocket，实际链路为：
 
 ```text
 客户端 -> Cloudflare -> 雷池 -> HX Edge Relay -> Mihomo WS Listener
@@ -213,12 +219,12 @@ Proxy Group。实际数据面链路为：
 ```
 
 Edge Relay 只转发固定 `/__hx-proxy__/` WebSocket 连接，协议认证、住宅节点选择和业务流量仍由
-Mihomo 负责。每个声明节点使用独立 VLESS UUID，并通过 Mihomo `IN-USER` 规则映射到当前住宅出口。
-浏览器自动化由客户端本机 Mihomo 把 VLESS WS 落地为环回代理，不再为住宅渠道开放公网明文
-HTTP/SOCKS 入口。对外使用雷池 HTTPS 443 下的统一订阅
+Mihomo 负责。每个声明节点使用独立协议凭据，并通过 Mihomo `IN-USER` 规则映射到当前住宅出口。
+浏览器自动化由客户端本机 Mihomo 把 WS 端点落地为环回代理，不再为住宅渠道开放公网明文
+HTTP/SOCKS 入口。每个渠道对外使用雷池 HTTPS 443 下自己的订阅
 `https://proxy.example.com/sub/<token>?format=clash`；链接省略默认 `:443`。
 `/sub/` 和 `/ctl/` 都不是 HTTP/SOCKS 代理端点。`/ctl/` 为每个声明节点返回通用 `endpoints[]`；
-OutlookRegister 托管本机 Mihomo，把 VLESS WS 端点落地为线程独享的环回代理。
+OutlookRegister 托管本机 Mihomo，把 VLESS/VMess/Trojan WS 端点落地为线程独享的环回代理。
 
 定制会话 API、并发容量、切流语义和安全边界见
 [住宅代理客户端会话 API](docs/RESIDENTIAL_SESSION_API.md)。

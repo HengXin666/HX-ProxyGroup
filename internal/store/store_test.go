@@ -96,7 +96,9 @@ CREATE TABLE schema_migrations (
 	}
 	if _, err := transaction.ExecContext(ctx, `
 INSERT INTO schema_migrations(version, name, applied_at)
-VALUES (1, 'initial_control_plane_schema', '2026-07-25T00:00:00Z')
+VALUES (1, 'initial_control_plane_schema', '2026-07-25T00:00:00Z');
+INSERT INTO system_metadata(key, value, updated_at)
+VALUES ('client_subscription_token', 'legacy-global-token', '2026-07-25T00:00:00Z')
 `); err != nil {
 		transaction.Rollback()
 		legacy.Close()
@@ -121,6 +123,9 @@ VALUES (1, 'initial_control_plane_schema', '2026-07-25T00:00:00Z')
 	}
 	if version != migrations[len(migrations)-1].version {
 		t.Fatalf("schema version = %d, want %d", version, migrations[len(migrations)-1].version)
+	}
+	if _, err := upgraded.GetMetadata(ctx, "client_subscription_token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("legacy unified subscription token still exists: %v", err)
 	}
 	if _, err := upgraded.db.ExecContext(ctx, `
 INSERT INTO subscriptions(

@@ -24,6 +24,7 @@ type Channel struct {
 	// only for clients using the pre-0.2.0 on-demand session API.
 	SubscriptionURL string `json:"subscription_url,omitempty"`
 	RotationURL     string `json:"rotation_url,omitempty"`
+	ControlURL      string `json:"control_url,omitempty"`
 	// SessionCount is the number of stable logical nodes in the subscription.
 	// Zero preserves the legacy on-demand session model.
 	SessionCount int `json:"session_count"`
@@ -83,6 +84,7 @@ type CreateChannelRequest struct {
 	Name           string                  `json:"name"`
 	ProviderID     string                  `json:"provider_id"`
 	Mode           string                  `json:"mode"`
+	Protocol       string                  `json:"protocol,omitempty"`
 	Region         string                  `json:"region,omitempty"`
 	RegionMode     RegionMode              `json:"region_mode,omitempty"`
 	RandomRegions  []string                `json:"random_regions,omitempty"`

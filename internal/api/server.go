@@ -20,7 +20,6 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
-	"github.com/HengXin666/HX-ProxyGroup/internal/clientsubscription"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
@@ -161,12 +160,6 @@ type ResidentialService interface {
 	DeleteClientSessionByToken(context.Context, string, string) error
 	RotateChannelToken(context.Context, string) (residential.Channel, error)
 	RefreshChannelPool(context.Context, string) error
-}
-
-type ClientSubscriptionService interface {
-	Info(context.Context, string) (clientsubscription.Info, error)
-	Rotate(context.Context, string) (clientsubscription.Info, error)
-	ExportByToken(context.Context, string, string) (listener.ShareBundle, bool, error)
 }
 
 type Option func(*Server) error
@@ -312,41 +305,30 @@ func WithResidential(service ResidentialService) Option {
 	}
 }
 
-func WithClientSubscriptions(service ClientSubscriptionService) Option {
-	return func(server *Server) error {
-		if service == nil {
-			return errors.New("client subscription service is required")
-		}
-		server.clientSubscriptions = service
-		return nil
-	}
-}
-
 type Server struct {
-	bundles             BundleService
-	subscriptions       SubscriptionService
-	nodes               NodeService
-	proxyGroups         ProxyGroupService
-	listeners           ListenerService
-	proxyServices       ProxyServiceService
-	traffic             TrafficService
-	settings            SettingsService
-	routingRules        RoutingRulesService
-	overview            OverviewService
-	residential         ResidentialService
-	clientSubscriptions ClientSubscriptionService
-	logs                http.Handler
-	dataplane           DataPlaneService
-	systemInfo          *SystemInfo
-	auth                AuthService
-	alerts              AlertService
-	terminal            TerminalService
-	updater             UpdaterService
-	webRoot             string
-	logger              *slog.Logger
-	ready               atomic.Bool
-	overviewInterval    time.Duration
-	edgeSlots           chan struct{}
+	bundles          BundleService
+	subscriptions    SubscriptionService
+	nodes            NodeService
+	proxyGroups      ProxyGroupService
+	listeners        ListenerService
+	proxyServices    ProxyServiceService
+	traffic          TrafficService
+	settings         SettingsService
+	routingRules     RoutingRulesService
+	overview         OverviewService
+	residential      ResidentialService
+	logs             http.Handler
+	dataplane        DataPlaneService
+	systemInfo       *SystemInfo
+	auth             AuthService
+	alerts           AlertService
+	terminal         TerminalService
+	updater          UpdaterService
+	webRoot          string
+	logger           *slog.Logger
+	ready            atomic.Bool
+	overviewInterval time.Duration
+	edgeSlots        chan struct{}
 }
 
 type errorResponse struct {
@@ -435,13 +417,10 @@ func (s *Server) Handler() http.Handler {
 		// resolved to loopback Mihomo listeners by the edge relay.
 		mux.HandleFunc(listener.WebSocketPathPrefix, s.handleEdgeRelay)
 	}
-	if s.listeners != nil || s.clientSubscriptions != nil || s.residential != nil {
+	if s.listeners != nil || s.residential != nil {
 		// Public token-addressed subscription export; the token itself is
 		// the credential, so the route stays outside /api/v1 auth.
 		mux.HandleFunc("/sub/", s.handleListenerShare)
-	}
-	if s.clientSubscriptions != nil {
-		mux.HandleFunc("/api/v1/client-subscription", s.handleClientSubscription)
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)

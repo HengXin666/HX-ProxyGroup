@@ -178,14 +178,15 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
     onNotice(ok ? "入口地址已复制" : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
-  async function copyResidentialSubscription() {
-    const pathURL = residential?.subscription_url
-    if (!pathURL) {
-      onNotice("请先为住宅渠道配置声明节点和可用公网端点", "error")
+  async function copyResidentialURL(kind: "clash" | "control") {
+    const value = kind === "clash" ? residential?.subscription_url : residential?.control_url
+    if (!value) {
+      onNotice(kind === "clash" ? "请先为住宅渠道配置声明节点和可用公网端点" : "该住宅渠道没有可用的自动化控制 URL", "error")
       return
     }
-    const ok = await copyText(pathURL)
-    onNotice(ok ? "住宅订阅链接已复制" : "复制失败，请手动复制", ok ? "success" : "error")
+    const ok = await copyText(value)
+    const label = kind === "clash" ? "Clash / Mihomo 订阅" : "自动化控制 URL"
+    onNotice(ok ? `${label}已复制` : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
   async function copyConnectionURI() {
@@ -204,7 +205,9 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
   const publicEndpoint = residential?.public_endpoint ?? listener.public_endpoint
   function runAction(value: string) {
     setAction(value)
-    if (value === "address") void (residential ? copyResidentialSubscription() : copyEndpoint())
+    if (value === "residential-clash") void copyResidentialURL("clash")
+    else if (value === "residential-control") void copyResidentialURL("control")
+    else if (value === "address") void copyEndpoint()
     else if (value === "auth-uri") void copyConnectionURI()
     else if (value === "edit") { setDetailTab("edit"); onEdit() }
     else if (value === "delete") onDelete()
@@ -217,11 +220,11 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
       <div className="flex min-w-0 items-start gap-2.5">
         <Button variant="ghost" size="icon" className="size-7" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={expanded ? "收起节点" : "展开节点"}>{expanded ? <ChevronDown /> : <ChevronRight />}</Button>
         <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground"><Cable className="size-4" /></div>
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge>{residential && <Badge variant="outline">住宅会话</Badge>}<Badge variant={healthyCount === memberCount && memberCount > 0 ? "success" : "warning"}>{healthyCount}/{memberCount} 可用</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">本机 {listener.bind_address}:{listener.port}{endpointAddress(listener, publicEndpoint) ? ` · 公网 ${endpointAddress(listener, publicEndpoint)}` : " · 未配置公网端点"}</div></div>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{residential?.name || group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge>{residential && <Badge variant="outline">住宅会话</Badge>}<Badge variant={healthyCount === memberCount && memberCount > 0 ? "success" : "warning"}>{healthyCount}/{memberCount} 可用</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">本机 {listener.bind_address}:{listener.port}{endpointAddress(listener, publicEndpoint) ? ` · 公网 ${endpointAddress(listener, publicEndpoint)}` : " · 未配置公网端点"}</div></div>
       </div>
       <div className="min-w-0"><div className="flex items-center gap-1.5 text-xs font-medium"><Network className="size-3.5" />{group ? strategyLabel(group.strategy) : "组已缺失"}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={sourceText}>{sourceText}</div></div>
       <div className="w-full lg:w-[200px]">
-        <Select value={action} onValueChange={runAction}><SelectTrigger onClick={(event) => event.stopPropagation()} className="h-8"><Link2 className="mr-1 size-3.5" /><SelectValue placeholder="服务操作" /></SelectTrigger><SelectContent><SelectItem value="edit">编辑服务</SelectItem>{!residential && listener.share_path && <><SelectItem value="clash:Clash / Mihomo">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="v2rayn:v2rayN / v2rayNG">复制 v2rayN / v2rayNG 订阅</SelectItem><SelectItem value="v2rayn:Shadowrocket">复制 Shadowrocket 订阅</SelectItem><SelectItem value="sing-box:sing-box / NekoBox">复制 sing-box / NekoBox 订阅</SelectItem><SelectItem value="auth-uri">复制认证连接 URI</SelectItem></>}{residential ? <SelectItem value="address">复制住宅订阅</SelectItem> : <SelectItem value="address">复制入口地址</SelectItem>}<SelectItem value="delete" className="text-destructive">删除服务</SelectItem></SelectContent></Select>
+        <Select value={action} onValueChange={runAction}><SelectTrigger onClick={(event) => event.stopPropagation()} className="h-8"><Link2 className="mr-1 size-3.5" /><SelectValue placeholder="服务操作" /></SelectTrigger><SelectContent><SelectItem value="edit">编辑服务</SelectItem>{!residential && listener.share_path && <><SelectItem value="clash:Clash / Mihomo">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="v2rayn:v2rayN / v2rayNG">复制 v2rayN / v2rayNG 订阅</SelectItem><SelectItem value="v2rayn:Shadowrocket">复制 Shadowrocket 订阅</SelectItem><SelectItem value="sing-box:sing-box / NekoBox">复制 sing-box / NekoBox 订阅</SelectItem><SelectItem value="auth-uri">复制认证连接 URI</SelectItem></>}{residential ? <><SelectItem value="residential-clash">复制 Clash / Mihomo 订阅</SelectItem><SelectItem value="residential-control">复制自动化控制 URL</SelectItem></> : <SelectItem value="address">复制入口地址</SelectItem>}<SelectItem value="delete" className="text-destructive">删除服务</SelectItem></SelectContent></Select>
       </div>
     </div>
     {expanded && <div className="border-t bg-muted/70 px-3 py-3 sm:px-4">

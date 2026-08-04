@@ -294,35 +294,37 @@ Listener
 
 当前 `source_spec` 可同时保存固定 `node_ids` 与动态选择条件：`subscription_ids`、名称地区标签、协议、生命周期、最大延迟、排序字段和数量上限。数据库只保存用户意图；Mihomo 编译器每次从活动订阅快照与最新节点质量记录重新解析成员，并稳定排序输出。地区当前来自节点展示名称标签，后续结构化 Geo Enricher 上线后应替换为带采样时间的地区字段。
 
-### 6.8 住宅声明节点与统一订阅
+### 6.8 住宅声明节点、渠道订阅与控制 URL
 
 一个住宅渠道由以下资源组成：
 
 ```text
 ResidentialChannel
 ├── 1 ProxyGroup（fail-closed）
-├── 1 托管 Listener（环回 VLESS WS，端口和路径自动分配）
+├── 1 托管 Listener（环回 VLESS/VMess/Trojan WS，端口和路径自动分配）
 └── N residential_client_sessions（声明节点 s01..sNN）
 ```
 
 `residential_client_sessions` 保存稳定逻辑 ID、声明序号、加密代理密码、当前供应商节点指纹、
-分配/过期时间和 `residential | upstream | direct` 路由状态。客户端订阅只看到稳定节点名称、
+分配/过期时间和 `residential | upstream | direct` 路由状态。渠道订阅只看到稳定节点名称、
 入口和认证；供应商会话与真实出口 IP 轮换是服务端内部状态。`next` 替换节点映射但保留客户端
 身份，因此客户端无需重拉订阅。
 
-编译器把逻辑节点的 UUID 加入渠道的 VLESS WS Listener，并在普通路由规则之前生成 `IN-USER`
+编译器把逻辑节点的协议凭据加入渠道选择的 WS Listener，并在普通路由规则之前生成 `IN-USER`
 规则。切流或换节点属于 Desired State 变更，必须经过完整候选配置校验和应用；
 成功后控制面通过 Mihomo Controller 删除该 `inboundUser` 的旧连接。流量字节始终留在 Mihomo。
 
-`internal/clientsubscription` 从普通 Listener 和住宅渠道收集 `ShareExport`，排除住宅 provisioning
-凭据并使用 `internal/listener` 的统一渲染器输出 `/sub/<token>`。全局 share token、住宅渠道
-share token 与自动化 control token 权限分离。`/ctl/<token>/nodes/<index>/next` 供 OutlookRegister
-等程序指定节点换出口；旧 `/rot/` 会话接口只保留兼容。
+每个普通 Listener 和住宅渠道都由自己的 share token 发布 `/sub/<token>`。住宅渠道只收集本渠道
+的声明节点，排除 provisioning 凭据，并使用 `internal/listener` 的渲染器输出订阅；不再存在跨
+Listener 或跨渠道的全局聚合 token。渠道 share token 与自动化 control token 权限分离。
+`/ctl/<token>/nodes/<index>/next` 供 OutlookRegister 等程序指定节点换出口；旧 `/rot/` 会话接口
+只保留兼容。管理前端在「代理服务」聚合视图中提供两类 URL 的独立复制动作。
 
 Schema v24 引入声明节点、空闲释放、控制 token 和历史可选直连 Listener。新建渠道不再允许
 创建直连 Listener；旧记录仅保留升级兼容。Schema v25 引入稳定
 `residential_channel` 流量资源；渠道的所有入口映射到同一渠道 ID，出口 IP 和内部节点轮换不会
-重置累计统计。完整外部协议见 [住宅代理客户端与自动化 API](RESIDENTIAL_SESSION_API.md)。
+重置累计统计。Schema v26 删除旧全局统一订阅 token 元数据；已有普通 Listener 和住宅渠道的
+独立 share token 不受影响。完整外部协议见 [住宅代理客户端与自动化 API](RESIDENTIAL_SESSION_API.md)。
 
 ### 6.9 住宅地区选择
 

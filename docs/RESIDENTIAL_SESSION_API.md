@@ -1,30 +1,29 @@
 # 住宅代理客户端与自动化 API
 
-新客户端使用稳定节点模型：客户端通过 `/sub/` 获取节点，自动化程序通过 `/ctl/` 指定节点
+每个住宅渠道使用稳定节点模型：客户端通过该渠道的 `/sub/` 获取节点，自动化程序通过该渠道的 `/ctl/` 指定节点
 轮换出口。供应商会话和住宅 IP 是 HX-ProxyGroup 内部实现，不是客户端生命周期。
 
 完整字段契约见 [`RESIDENTIAL_V2_CONTRACT.md`](RESIDENTIAL_V2_CONTRACT.md)。
 
-## 统一订阅
+## 渠道订阅
 
-管理员读取或轮换全局统一订阅：
+渠道管理 API（管理员认证）返回该渠道自己的 `subscription_url`，并可独立轮换 share token：
 
 ```http
-GET  /api/v1/client-subscription
-POST /api/v1/client-subscription
-Content-Type: application/json
-
-{"action":"rotate"}
+GET  /api/v1/residential/channels/<channel-id>
+POST /api/v1/residential/channels/<channel-id>/rotate-share
 ```
 
-客户端导入：
+客户端导入单个渠道：
 
 ```http
 GET /sub/<share-token>?format=clash|v2rayn|sing-box|uri
 ```
 
-统一订阅聚合普通 Listener 和住宅声明节点。住宅节点名称与凭据稳定，调用 `next` 后不需要
-重新拉取订阅。响应带 `Cache-Control: no-store`；share token 可以读取代理凭据，必须按密码管理。
+每个渠道订阅只包含本渠道的住宅声明节点，不聚合普通 Listener 或其他渠道。住宅节点名称与凭据
+稳定，调用 `next` 后不需要重新拉取订阅。响应带 `Cache-Control: no-store`；share token 可以读取
+代理凭据，必须按密码管理。管理员在「代理服务」页面复制 Clash/Mihomo 订阅；「住宅代理」页面
+不再提供全局订阅入口。
 
 ## 声明节点控制
 
@@ -55,11 +54,11 @@ Content-Type: application/json
 
 ## 数据面入口
 
-- 新住宅渠道固定使用 VLESS over WebSocket，经过 CF 橙云、雷池 443 和 HX Edge Relay。
+- 新住宅渠道创建时选择 VLESS、VMess 或 Trojan over WebSocket，经过 CF 橙云、雷池 443 和 HX Edge Relay。
 - HTTP CONNECT、SOCKS5 仅作为客户端本机 Mihomo 的环回落地，不再由住宅渠道公开监听。
 - `/sub/` 和 `/ctl/` 是 HTTPS 控制/配置地址，不是 Playwright 的代理地址。
 - `/ctl/` 的每个节点都返回协议中立的 `endpoints[]`；旧 `proxy_url` 继续表示第一个浏览器兼容端点。
-  托管渠道的 `proxy_url` 为 `null`，但 `endpoints[]` 包含标准 VLESS URI。
+  托管渠道的 `proxy_url` 为 `null`，但 `endpoints[]` 包含该渠道协议的标准 URI。
 
 ```json
 {
@@ -87,7 +86,7 @@ Mihomo Controller，不实现 HTTP CONNECT、SOCKS5、VLESS、VMess 或 Trojan �
 1. GET /ctl/<token>/nodes，读取固定节点池
 2. 在 OutlookRegister 进程内互斥租用一个空闲 index
 3. POST /nodes/<index>/next，刷新住宅出口
-4. 选择 endpoints[] 中的 VLESS WS 端点，通过受管本地 Mihomo 落地
+4. 选择 endpoints[] 中支持的 VLESS/VMess/Trojan WS 端点，通过受管本地 Mihomo 落地
 5. 从选定端点探测出口身份并运行完整 flow
 6. flow 结束后只归还本地 index，不删除服务端节点
 ```

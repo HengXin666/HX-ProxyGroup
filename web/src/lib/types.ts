@@ -591,11 +591,6 @@ export interface ResidentialChannelEndpoint {
   share_path?: string
 }
 
-export interface ClientSubscriptionInfo {
-  share_path: string
-  node_count: number
-}
-
 export interface ResidentialChannelSession {
   index: number
   session_id: string
@@ -626,6 +621,7 @@ export interface ResidentialChannel {
   public_endpoint: ListenerPublicEndpoint
   subscription_url?: string
   rotation_url?: string
+  control_url?: string
   session_count: number
   idle_release_seconds: number
   sessions?: ResidentialChannelSession[]
@@ -660,6 +656,7 @@ export interface CreateResidentialChannelRequest {
   name: string
   provider_id: string
   mode: ResidentialChannelMode
+  protocol: "vless" | "vmess" | "trojan"
   region?: string
   region_mode?: ResidentialRegionMode
   random_regions?: string[]

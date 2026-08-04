@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Copy, KeyRound, LoaderCircle, RefreshCw } from "lucide-react"
+import { KeyRound, LoaderCircle, RefreshCw } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -39,16 +39,6 @@ export function ResidentialSessionsDialog({
     }
   }
 
-  async function copyControlPath() {
-    if (!channel.control_path) return
-    try {
-      await navigator.clipboard.writeText(api.listenerShareURL(channel.control_path))
-      onNotice("住宅节点控制 URL 已复制")
-    } catch {
-      onNotice("复制失败，请手动复制", "error")
-    }
-  }
-
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-3xl">
@@ -62,15 +52,10 @@ export function ResidentialSessionsDialog({
         <div className="space-y-4 px-5 py-4">
           <div className="flex flex-col gap-2 rounded-md border bg-muted/40 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <div className="text-xs font-medium">自动化控制 URL</div>
-              <code className="mt-1 block truncate text-[11px] text-muted-foreground">
-                {channel.control_path ? api.listenerShareURL(channel.control_path) : "未启用"}
-              </code>
+              <div className="text-xs font-medium">自动化控制 Token</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">完整控制 URL 在“代理服务”页面复制。</div>
             </div>
             <div className="flex shrink-0 gap-2">
-              <Button size="sm" variant="outline" disabled={!channel.control_path} onClick={() => void copyControlPath()}>
-                <Copy />复制
-              </Button>
               <Button
                 size="sm"
                 variant="outline"

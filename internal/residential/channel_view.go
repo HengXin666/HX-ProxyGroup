@@ -132,6 +132,9 @@ func (s *Service) channelFromRecord(ctx context.Context, record store.Residentia
 		if channel.RotatePath != "" && channel.PublicEndpoint.TLS {
 			channel.RotationURL = listener.PublicPathURL(channel.PublicEndpoint, channel.RotatePath)
 		}
+		if channel.ControlPath != "" {
+			channel.ControlURL = listener.PublicPathURL(channel.PublicEndpoint, channel.ControlPath)
+		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return Channel{}, err
 	}

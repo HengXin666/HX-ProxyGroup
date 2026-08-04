@@ -4,7 +4,6 @@ import type {
   ArtifactList,
   ArtifactRecord,
   BatchRefreshList,
-  ClientSubscriptionInfo,
   CreateListenerRequest,
   CreateProxyGroupRequest,
   CreateProxyServiceRequest,
@@ -317,17 +316,6 @@ export const api = {
 
   triggerSystemUpdate(): Promise<{ accepted: boolean }> {
     return request("/api/v1/system/update", { method: "POST" })
-  },
-
-  clientSubscription(): Promise<ClientSubscriptionInfo> {
-    return request("/api/v1/client-subscription")
-  },
-
-  rotateClientSubscription(): Promise<ClientSubscriptionInfo> {
-    return request("/api/v1/client-subscription", {
-      method: "POST",
-      body: JSON.stringify({ action: "rotate" }),
-    })
   },
 
   listSubscriptions(): Promise<SubscriptionList> {

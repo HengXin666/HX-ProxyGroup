@@ -107,3 +107,52 @@ func TestDeclaredControlExposesManagedWebSocketEndpoint(t *testing.T) {
 		t.Fatalf("control endpoint = %+v", endpoint)
 	}
 }
+
+func TestDeclaredChannelsSupportCloudflareWebSocketProtocols(t *testing.T) {
+	for _, protocol := range []string{"vless", "vmess", "trojan"} {
+		t.Run(protocol, func(t *testing.T) {
+			harness := newHarness(t)
+			ctx := context.Background()
+			provider := harness.createProvider(t)
+			channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+				Name:           "residential-" + protocol,
+				ProviderID:     provider.ID,
+				Mode:           ModeSticky,
+				Protocol:       protocol,
+				SessionCount:   1,
+				PublicEndpoint: listener.PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if channel.Endpoint.Kind != protocol || channel.Endpoint.Transport.Type != "ws" {
+				t.Fatalf("endpoint = %+v", channel.Endpoint)
+			}
+			if !strings.HasPrefix(channel.ControlURL, "https://proxy.example.com/ctl/") {
+				t.Fatalf("control URL = %q", channel.ControlURL)
+			}
+
+			shareToken := strings.TrimPrefix(channel.Endpoint.SharePath, "/sub/")
+			bundle, matched, err := harness.service.ExportByShareToken(ctx, shareToken, "proxy.example.com")
+			if err != nil || !matched || bundle.NodeCount() != 1 {
+				t.Fatalf("ExportByShareToken() = (%+v, %t, %v)", bundle, matched, err)
+			}
+			if len(bundle.Exports) != 1 || bundle.Exports[0].Kind != protocol {
+				t.Fatalf("exports = %+v", bundle.Exports)
+			}
+
+			controlToken := strings.TrimPrefix(channel.ControlPath, "/ctl/")
+			control, err := harness.service.ControlNodesByToken(ctx, controlToken)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(control.Nodes) != 1 || len(control.Nodes[0].Endpoints) != 1 {
+				t.Fatalf("control nodes = %+v", control.Nodes)
+			}
+			endpoint := control.Nodes[0].Endpoints[0]
+			if endpoint.Protocol != protocol || endpoint.Transport != "ws" || endpoint.BrowserCompatible {
+				t.Fatalf("control endpoint = %+v", endpoint)
+			}
+		})
+	}
+}

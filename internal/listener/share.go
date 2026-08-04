@@ -80,7 +80,7 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 	return s.exportRecord(record, requestHost, nil)
 }
 
-// ExportByID renders an enabled listener for the unified client catalog.
+// ExportByID renders an enabled listener for its token-scoped client subscription.
 func (s *Service) ExportByID(ctx context.Context, id, requestHost string) (ShareExport, error) {
 	record, err := s.repository.GetListener(ctx, strings.TrimSpace(id))
 	if err != nil {

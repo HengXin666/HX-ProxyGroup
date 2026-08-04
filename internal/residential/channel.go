@@ -79,14 +79,23 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 	if err != nil {
 		return Channel{}, err
 	}
+	requestedProtocol := request.Protocol
+	if requestedProtocol == "" {
+		requestedProtocol = request.Listener.Kind
+	} else if request.Listener.Kind != "" && !strings.EqualFold(requestedProtocol, request.Listener.Kind) {
+		return Channel{}, fmt.Errorf("%w: protocol and listener.kind must match", ErrInvalid)
+	}
+	protocol, err := normalizeManagedChannelProtocol(requestedProtocol)
+	if err != nil {
+		return Channel{}, err
+	}
 	if request.DirectListener != nil {
 		return Channel{}, fmt.Errorf(
-			"%w: direct HTTP/SOCKS residential listeners are no longer accepted; use the managed VLESS WebSocket entry point",
+			"%w: direct HTTP/SOCKS residential listeners are no longer accepted; use a managed WebSocket entry point",
 			ErrInvalid,
 		)
 	}
-	if strings.TrimSpace(request.Listener.Kind) != "" ||
-		strings.TrimSpace(request.Listener.BindAddress) != "" ||
+	if strings.TrimSpace(request.Listener.BindAddress) != "" ||
 		request.Listener.Port != 0 || request.Listener.Auth != nil ||
 		strings.TrimSpace(request.Listener.Transport.Type) != "" ||
 		strings.TrimSpace(request.Listener.Transport.WSPath) != "" {
@@ -96,14 +105,14 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		)
 	}
 	if strings.TrimSpace(request.PublicEndpoint.Host) == "" {
-		return Channel{}, fmt.Errorf("%w: public_endpoint.host is required for managed VLESS channels", ErrInvalid)
+		return Channel{}, fmt.Errorf("%w: public_endpoint.host is required for managed WebSocket channels", ErrInvalid)
 	}
 
 	channelID, err := newID("residential-channel")
 	if err != nil {
 		return Channel{}, err
 	}
-	managedListener, err := s.managedChannelListener(ctx, channelID)
+	managedListener, err := s.managedChannelListener(ctx, channelID, protocol)
 	if err != nil {
 		return Channel{}, err
 	}

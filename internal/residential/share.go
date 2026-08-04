@@ -9,51 +9,6 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 )
 
-// CatalogEntries publishes declared residential sessions and reports every
-// listener owned by a residential channel. Reporting ownership is important:
-// the plain listener exporter must never publish the channel's provisioning
-// credential, which is replaced by per-session credentials in Mihomo.
-func (s *Service) CatalogEntries(
-	ctx context.Context,
-	requestHost string,
-) ([]listener.ShareExport, []string, error) {
-	channels, err := s.repository.ListResidentialChannels(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	exports := make([]listener.ShareExport, 0, len(channels))
-	owned := make([]string, 0, len(channels)*2)
-	for _, channel := range channels {
-		owned = append(owned, channel.ListenerID)
-		if channel.DirectListenerID != "" {
-			owned = append(owned, channel.DirectListenerID)
-		}
-		if !channel.Enabled {
-			continue
-		}
-		if channel.Mode == ModePassthrough {
-			export, err := s.listeners.ExportByID(ctx, channel.ListenerID, requestHost)
-			if errors.Is(err, listener.ErrShareDisabled) {
-				continue
-			}
-			if err != nil {
-				return nil, nil, fmt.Errorf("export residential channel %q: %w", channel.Name, err)
-			}
-			exports = append(exports, export)
-			continue
-		}
-		if channel.Mode != ModeSticky || channel.SessionCount < 1 {
-			continue
-		}
-		channelExports, err := s.channelShareExports(ctx, channel, requestHost)
-		if err != nil {
-			return nil, nil, fmt.Errorf("export residential channel %q: %w", channel.Name, err)
-		}
-		exports = append(exports, channelExports...)
-	}
-	return exports, owned, nil
-}
-
 // ExportByShareToken resolves a channel's primary listener token. The boolean
 // distinguishes a residential-owned token from an unrelated legacy listener
 // token so the API can avoid an unsafe fallback for direct entry points.

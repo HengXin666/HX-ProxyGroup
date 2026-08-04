@@ -10,7 +10,6 @@ import {
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
-import { ClientSubscriptionPanel } from "@/components/client-subscription-panel"
 import { ResidentialSessionsDialog } from "@/components/residential-sessions-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -97,6 +96,7 @@ type ChannelForm = {
   name: string
   providerID: string
   mode: ResidentialChannelMode
+  protocol: "vless" | "vmess" | "trojan"
   regionMode: ResidentialRegionMode
   region: string
   randomRegions: string
@@ -110,6 +110,7 @@ const emptyChannelForm: ChannelForm = {
   name: "",
   providerID: "",
   mode: "sticky",
+  protocol: "vless",
   regionMode: "fixed",
   region: "",
   randomRegions: "",
@@ -203,7 +204,6 @@ export function ResidentialPage({
         </TabsList>
 
         <TabsContent value="channels" className="space-y-4">
-          <ClientSubscriptionPanel onNotice={onNotice} />
           <div className="flex items-center justify-end">
             <Button size="sm" onClick={() => setChannelDialogOpen(true)}>
               <Plus className="mr-1 size-3.5" />
@@ -260,7 +260,7 @@ export function ResidentialPage({
                               )}
                             </div>
                             {!isResidentialWebSocketKind(channel.endpoint.kind) && (
-                              <span className="text-[11px] text-warning">旧版明文入口，仅为兼容保留；请迁移到托管 VLESS 渠道。</span>
+                              <span className="text-[11px] text-warning">旧版明文入口，仅为兼容保留；请迁移到托管 WebSocket 渠道。</span>
                             )}
                             {isResidentialWebSocketKind(channel.endpoint.kind) && channel.mode === "sticky" && (
                               <span className="text-[11px] text-muted-foreground">节点名称和凭据稳定，住宅出口由服务端内部轮换。</span>
@@ -900,6 +900,7 @@ function ChannelDialog({
         name: form.name.trim(),
         provider_id: form.providerID,
         mode: form.mode,
+        protocol: form.protocol,
         region_mode: form.regionMode,
         region: form.regionMode === "fixed" ? form.region.trim() || undefined : undefined,
         random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
@@ -956,6 +957,17 @@ function ChannelDialog({
                 </SelectContent>
               </Select>
             </label>
+            <label className="grid gap-1 text-xs">
+              客户端协议
+              <Select value={form.protocol} onValueChange={(value) => update("protocol", value as ChannelForm["protocol"])}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="vless">VLESS over WebSocket</SelectItem>
+                  <SelectItem value="vmess">VMess over WebSocket</SelectItem>
+                  <SelectItem value="trojan">Trojan over WebSocket</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
             {form.mode === "sticky" && (
               <>
                 <label className="grid gap-1 text-xs">
@@ -992,13 +1004,13 @@ function ChannelDialog({
               </label>
             )}
             <div className="rounded-md border bg-muted/50 px-3 py-2 text-xs sm:col-span-2">
-              <div className="font-medium">VLESS over WebSocket · TLS</div>
-              <div className="mt-1 text-[11px] text-muted-foreground">内部环回端口、WebSocket 路径和节点 UUID 由服务端自动生成，不对客户端暴露。</div>
+              <div className="font-medium">{form.protocol.toUpperCase()} over WebSocket · TLS</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">内部环回端口、WebSocket 路径和节点凭据由服务端自动生成，不对客户端暴露。</div>
             </div>
             <label className="grid gap-1 text-xs sm:col-span-2">
               Cloudflare / 雷池域名
               <Input value={form.publicHost} onChange={(event) => update("publicHost", event.target.value)} placeholder="proxy.example.com" required />
-              <span className="text-[11px] text-muted-foreground">统一订阅只发布该 HTTPS 443 域名；源站内部端口不会进入 API 或客户端配置。</span>
+              <span className="text-[11px] text-muted-foreground">渠道订阅只发布该 HTTPS 443 域名；源站内部端口不会进入 API 或客户端配置。</span>
             </label>
           </div>
 
@@ -1086,7 +1098,7 @@ function ChannelEndpointDialog({
               <Input value={host} onChange={(event) => setHost(event.target.value)} placeholder="proxy.example.com 或 VPS 公网 IP" autoComplete="off" required />
             </label>
             <div className="rounded-md border bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground sm:col-span-2">
-              公网路径固定走 VLESS over WebSocket、HTTPS 443 和 Edge Relay；统一订阅不会暴露 Mihomo 内部端口。
+              公网路径固定走 {channel.endpoint.kind.toUpperCase()} over WebSocket、HTTPS 443 和 Edge Relay；渠道订阅不会暴露 Mihomo 内部端口。
             </div>
           </div>
           <DialogFooter>

@@ -18,9 +18,13 @@ type ResidentialChannelRecord struct {
 	Mode               string
 	ProxyGroupID       string
 	ListenerID         string
+	DirectListenerID   string
 	Region             string
 	RegionMode         string
 	RandomRegions      string
+	SessionCount       int
+	IdleReleaseSeconds int
+	ControlToken       string
 	ActiveSessionIndex int
 	RotateToken        string
 	RotateCount        int
@@ -39,10 +43,11 @@ func (s *Store) CreateResidentialChannel(
 ) (ResidentialChannelRecord, error) {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO residential_channels(
-    id, name, provider_id, mode, proxy_group_id, listener_id, region, region_mode, random_regions,
+    id, name, provider_id, mode, proxy_group_id, listener_id, direct_listener_id,
+    region, region_mode, random_regions, session_count, idle_release_seconds, control_token,
     active_session_index, rotate_token, rotate_count, last_rotated_at,
     last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -50,9 +55,13 @@ INSERT INTO residential_channels(
 		record.Mode,
 		record.ProxyGroupID,
 		record.ListenerID,
+		nullableString(record.DirectListenerID),
 		record.Region,
 		residentialDefaultString(record.RegionMode, "fixed"),
 		residentialDefaultString(record.RandomRegions, "[]"),
+		record.SessionCount,
+		record.IdleReleaseSeconds,
+		record.ControlToken,
 		record.ActiveSessionIndex,
 		record.RotateToken,
 		record.RotateCount,
@@ -132,6 +141,30 @@ func (s *Store) GetResidentialChannelByRotateToken(
 	return record, nil
 }
 
+// GetResidentialChannelByListenerID resolves either entry point owned by a
+// residential channel. It lets public subscription routing prevent a direct
+// listener's internal provisioning credential from being exported.
+func (s *Store) GetResidentialChannelByListenerID(
+	ctx context.Context,
+	listenerID string,
+) (ResidentialChannelRecord, error) {
+	record, err := scanResidentialChannel(
+		s.db.QueryRowContext(
+			ctx,
+			residentialChannelSelect+" WHERE listener_id = ? OR direct_listener_id = ?",
+			listenerID,
+			listenerID,
+		),
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResidentialChannelRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ResidentialChannelRecord{}, fmt.Errorf("get residential channel by listener: %w", err)
+	}
+	return record, nil
+}
+
 func (s *Store) ListResidentialChannels(ctx context.Context) ([]ResidentialChannelRecord, error) {
 	rows, err := s.db.QueryContext(ctx, residentialChannelSelect+" ORDER BY created_at ASC, id ASC")
 	if err != nil {
@@ -161,7 +194,9 @@ func (s *Store) UpdateResidentialChannel(
 UPDATE residential_channels
 SET
     name = ?, provider_id = ?, mode = ?, proxy_group_id = ?, listener_id = ?,
-    region = ?, region_mode = ?, random_regions = ?, enabled = ?, version = version + 1, updated_at = ?
+    direct_listener_id = ?, region = ?, region_mode = ?, random_regions = ?,
+    session_count = ?, idle_release_seconds = ?, control_token = ?,
+    enabled = ?, version = version + 1, updated_at = ?
 WHERE id = ? AND version = ?
 `,
 		record.Name,
@@ -169,9 +204,13 @@ WHERE id = ? AND version = ?
 		record.Mode,
 		record.ProxyGroupID,
 		record.ListenerID,
+		nullableString(record.DirectListenerID),
 		record.Region,
 		residentialDefaultString(record.RegionMode, "fixed"),
 		residentialDefaultString(record.RandomRegions, "[]"),
+		record.SessionCount,
+		record.IdleReleaseSeconds,
+		record.ControlToken,
 		boolToInteger(record.Enabled),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		record.ID,
@@ -263,6 +302,57 @@ WHERE id = ?
 	return s.GetResidentialChannel(ctx, id)
 }
 
+// GetResidentialChannelByControlToken resolves the automation control token.
+// It is deliberately separate from the share token: a share link is pasted
+// into client configuration and spreads, while this token can spend provider
+// quota through next.
+func (s *Store) GetResidentialChannelByControlToken(
+	ctx context.Context,
+	token string,
+) (ResidentialChannelRecord, error) {
+	if token == "" {
+		return ResidentialChannelRecord{}, ErrNotFound
+	}
+	record, err := scanResidentialChannel(
+		s.db.QueryRowContext(ctx, residentialChannelSelect+" WHERE control_token = ?", token),
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResidentialChannelRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ResidentialChannelRecord{}, fmt.Errorf("get residential channel by control token: %w", err)
+	}
+	return record, nil
+}
+
+// RotateResidentialChannelControlToken replaces the automation token so any
+// previously distributed control URL stops working.
+func (s *Store) RotateResidentialChannelControlToken(
+	ctx context.Context,
+	id string,
+	token string,
+) (ResidentialChannelRecord, error) {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE residential_channels
+SET control_token = ?, version = version + 1, updated_at = ?
+WHERE id = ?
+`, token, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return ResidentialChannelRecord{}, ErrConflict
+		}
+		return ResidentialChannelRecord{}, fmt.Errorf("rotate residential control token: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return ResidentialChannelRecord{}, fmt.Errorf("read residential control token rotate result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return ResidentialChannelRecord{}, ErrNotFound
+	}
+	return s.GetResidentialChannel(ctx, id)
+}
+
 func (s *Store) DeleteResidentialChannel(ctx context.Context, id string, expectedVersion int) error {
 	result, err := s.db.ExecContext(
 		ctx,
@@ -288,7 +378,8 @@ func (s *Store) DeleteResidentialChannel(ctx context.Context, id string, expecte
 
 const residentialChannelSelect = `
 SELECT
-    id, name, provider_id, mode, proxy_group_id, listener_id, region, region_mode, random_regions,
+    id, name, provider_id, mode, proxy_group_id, listener_id, COALESCE(direct_listener_id, ''),
+    region, region_mode, random_regions, session_count, idle_release_seconds, control_token,
     active_session_index, rotate_token, rotate_count, last_rotated_at,
     last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
 FROM residential_channels`
@@ -307,9 +398,13 @@ func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 		&record.Mode,
 		&record.ProxyGroupID,
 		&record.ListenerID,
+		&record.DirectListenerID,
 		&record.Region,
 		&record.RegionMode,
 		&record.RandomRegions,
+		&record.SessionCount,
+		&record.IdleReleaseSeconds,
+		&record.ControlToken,
 		&record.ActiveSessionIndex,
 		&record.RotateToken,
 		&record.RotateCount,

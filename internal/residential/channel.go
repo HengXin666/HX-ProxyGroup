@@ -2,7 +2,6 @@ package residential
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,125 +21,6 @@ const (
 	// and exposes an API to advance to the next residential IP.
 	ModeSticky = "sticky"
 )
-
-// Channel is the administrator-facing view of one residential entry point.
-type Channel struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	ProviderID    string     `json:"provider_id"`
-	ProviderName  string     `json:"provider_name,omitempty"`
-	Mode          string     `json:"mode"`
-	ProxyGroupID  string     `json:"proxy_group_id"`
-	ListenerID    string     `json:"listener_id"`
-	Region        string     `json:"region,omitempty"`
-	RegionMode    RegionMode `json:"region_mode"`
-	RandomRegions []string   `json:"random_regions,omitempty"`
-	// Endpoint describes where consumers connect.
-	Endpoint       ChannelEndpoint         `json:"endpoint"`
-	PublicEndpoint listener.PublicEndpoint `json:"public_endpoint"`
-	// SubscriptionURL is only emitted for passthrough WebSocket channels,
-	// whose static credentials can safely be represented by a client profile.
-	// Sticky channels must first create a session through RotationURL.
-	SubscriptionURL string `json:"subscription_url,omitempty"`
-	RotationURL     string `json:"rotation_url,omitempty"`
-	// ActiveSessionCount is the number of IPs currently allocated because a
-	// client session requested one. Channels do not have a prebuilt IP pool.
-	ActiveSessionCount int        `json:"active_session_count"`
-	PoolSize           int        `json:"pool_size,omitempty"` // pre-v19 response compatibility
-	ActiveSessionIndex int        `json:"active_session_index"`
-	RotateCount        int        `json:"rotate_count"`
-	LastRotatedAt      *time.Time `json:"last_rotated_at,omitempty"`
-	LastExitIP         string     `json:"last_exit_ip,omitempty"`
-	PoolCreatedAt      *time.Time `json:"pool_created_at,omitempty"`
-	// PoolRefreshAfterSeconds is the proactive refresh age derived from the
-	// provider's session lifetime and its safety margin.
-	PoolRefreshAfterSeconds int `json:"pool_refresh_after_seconds,omitempty"`
-	SessionTTLSeconds       int `json:"session_ttl_seconds,omitempty"`
-	// RotatePath is the public, token-addressed rotate endpoint. The token is
-	// the credential, so it is only returned to an authenticated administrator.
-	RotatePath string    `json:"rotate_path,omitempty"`
-	CanRotate  bool      `json:"can_rotate"`
-	Enabled    bool      `json:"enabled"`
-	Version    int       `json:"version"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-}
-
-type ChannelEndpoint struct {
-	Kind        string             `json:"kind"`
-	BindAddress string             `json:"bind_address"`
-	Port        int                `json:"port"`
-	AuthEnabled bool               `json:"auth_enabled"`
-	Transport   listener.Transport `json:"transport"`
-	SharePath   string             `json:"share_path,omitempty"`
-}
-
-type CreateChannelRequest struct {
-	Name           string                  `json:"name"`
-	ProviderID     string                  `json:"provider_id"`
-	Mode           string                  `json:"mode"`
-	Region         string                  `json:"region,omitempty"`
-	RegionMode     RegionMode              `json:"region_mode,omitempty"`
-	RandomRegions  []string                `json:"random_regions,omitempty"`
-	PoolSize       int                     `json:"pool_size,omitempty"` // ignored for sticky channels
-	Listener       ChannelListenerRequest  `json:"listener"`
-	PublicEndpoint listener.PublicEndpoint `json:"public_endpoint,omitempty"`
-	Enabled        *bool                   `json:"enabled,omitempty"`
-}
-
-type ChannelListenerRequest struct {
-	Kind        string             `json:"kind"`
-	BindAddress string             `json:"bind_address"`
-	Port        int                `json:"port"`
-	Auth        *listener.Auth     `json:"auth,omitempty"`
-	Transport   listener.Transport `json:"transport,omitempty"`
-}
-
-type UpdateChannelRequest struct {
-	Version        int                      `json:"version"`
-	Name           string                   `json:"name"`
-	Region         string                   `json:"region,omitempty"`
-	RegionMode     RegionMode               `json:"region_mode,omitempty"`
-	RandomRegions  []string                 `json:"random_regions,omitempty"`
-	PublicEndpoint *listener.PublicEndpoint `json:"public_endpoint,omitempty"`
-	Enabled        bool                     `json:"enabled"`
-}
-
-func (s *Service) ListChannels(ctx context.Context) ([]Channel, error) {
-	records, err := s.repository.ListResidentialChannels(ctx)
-	if err != nil {
-		return nil, err
-	}
-	providers, err := s.repository.ListResidentialProviders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	providerRecords := make(map[string]store.ResidentialProviderRecord, len(providers))
-	for _, provider := range providers {
-		providerRecords[provider.ID] = provider
-	}
-	channels := make([]Channel, 0, len(records))
-	for _, record := range records {
-		channel, err := s.channelFromRecord(ctx, record, s.providerFromRecord(providerRecords[record.ProviderID]))
-		if err != nil {
-			return nil, err
-		}
-		channels = append(channels, channel)
-	}
-	return channels, nil
-}
-
-func (s *Service) GetChannel(ctx context.Context, id string) (Channel, error) {
-	record, err := s.repository.GetResidentialChannel(ctx, id)
-	if err != nil {
-		return Channel{}, mapStoreError(err)
-	}
-	provider, err := s.repository.GetResidentialProvider(ctx, record.ProviderID)
-	if err != nil {
-		return Channel{}, mapStoreError(err)
-	}
-	return s.channelFromRecord(ctx, record, s.providerFromRecord(provider))
-}
 
 // CreateChannel provisions an entry point without preallocating sticky IPs.
 // The fail-closed empty group compiles to REJECT until a client creates its
@@ -185,8 +65,22 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 	}
 	region := regionSelection.Region
 	enabled := request.Enabled == nil || *request.Enabled
+	sessionCount, err := validateSessionCount(request.SessionCount, provider)
+	if err != nil {
+		return Channel{}, err
+	}
+	if sessionCount > 0 && mode != ModeSticky {
+		return Channel{}, fmt.Errorf("%w: session_count requires %q mode", ErrInvalid, ModeSticky)
+	}
+	idleRelease, err := validateIdleReleaseSeconds(request.IdleRelease)
+	if err != nil {
+		return Channel{}, err
+	}
 	bindAddress, err := residentialBindAddress(request.Listener.BindAddress)
 	if err != nil {
+		return Channel{}, err
+	}
+	if err := validateDirectListenerRequest(request.DirectListener); err != nil {
 		return Channel{}, err
 	}
 	if isResidentialWebSocketKind(request.Listener.Kind) && request.PublicEndpoint.Host != "" {
@@ -200,6 +94,10 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		return Channel{}, err
 	}
 	rotateToken, err := newToken()
+	if err != nil {
+		return Channel{}, err
+	}
+	controlToken, err := newToken()
 	if err != nil {
 		return Channel{}, err
 	}
@@ -257,29 +155,79 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		return Channel{}, fmt.Errorf("%w: create listener: %v", ErrInvalid, err)
 	}
 
-	now := s.now().UTC()
-	created, err := s.repository.CreateResidentialChannel(ctx, store.ResidentialChannelRecord{
-		ID:            channelID,
-		Name:          name,
-		ProviderID:    provider.ID,
-		Mode:          mode,
-		ProxyGroupID:  group.ID,
-		ListenerID:    createdListener.ID,
-		Region:        region,
-		RegionMode:    string(regionSelection.Mode),
-		RandomRegions: marshalRegionList(regionSelection.RandomRegions),
-		RotateToken:   rotateToken,
-		PoolCreatedAt: poolCreatedAt,
-		Enabled:       enabled,
-		Version:       1,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	})
-	if err != nil {
+	// The optional direct entry point shares this channel's proxy group and
+	// session credentials. It exists because a layer-7 HTTPS reverse proxy
+	// cannot carry HTTP CONNECT or SOCKS5.
+	directListenerID := ""
+	if request.DirectListener != nil {
+		directListener, directErr := s.listeners.Create(ctx, listener.CreateRequest{
+			Name:         channelDirectListenerName(name),
+			Kind:         request.DirectListener.Kind,
+			BindAddress:  request.DirectListener.BindAddress,
+			Port:         request.DirectListener.Port,
+			ProxyGroupID: group.ID,
+			Auth:         request.DirectListener.Auth,
+			Enabled:      &enabled,
+		})
+		if directErr != nil {
+			_ = s.listeners.Delete(ctx, createdListener.ID, createdListener.Version)
+			_ = s.groups.Delete(ctx, group.ID, group.Version)
+			cleanupPool()
+			return Channel{}, fmt.Errorf("%w: create direct listener: %v", ErrInvalid, directErr)
+		}
+		directListenerID = directListener.ID
+	}
+
+	rollbackListeners := func() {
+		if directListenerID != "" {
+			if current, getErr := s.listeners.Get(ctx, directListenerID); getErr == nil {
+				_ = s.listeners.Delete(ctx, current.ID, current.Version)
+			}
+		}
 		_ = s.listeners.Delete(ctx, createdListener.ID, createdListener.Version)
 		_ = s.groups.Delete(ctx, group.ID, group.Version)
 		cleanupPool()
+	}
+
+	now := s.now().UTC()
+	created, err := s.repository.CreateResidentialChannel(ctx, store.ResidentialChannelRecord{
+		ID:                 channelID,
+		Name:               name,
+		ProviderID:         provider.ID,
+		Mode:               mode,
+		ProxyGroupID:       group.ID,
+		ListenerID:         createdListener.ID,
+		DirectListenerID:   directListenerID,
+		Region:             region,
+		RegionMode:         string(regionSelection.Mode),
+		RandomRegions:      marshalRegionList(regionSelection.RandomRegions),
+		SessionCount:       sessionCount,
+		IdleReleaseSeconds: idleRelease,
+		ControlToken:       controlToken,
+		RotateToken:        rotateToken,
+		PoolCreatedAt:      poolCreatedAt,
+		Enabled:            enabled,
+		Version:            1,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	})
+	if err != nil {
+		rollbackListeners()
 		return Channel{}, mapStoreError(err)
+	}
+	// Declared sessions are what makes this channel publishable as an ordinary
+	// subscription, so provisioning them is part of creating the channel rather
+	// than a later background step.
+	if sessionCount > 0 {
+		if err := s.SyncDeclaredSessions(ctx, created.ID); err != nil {
+			_ = s.repository.DeleteResidentialChannel(ctx, created.ID, created.Version)
+			rollbackListeners()
+			return Channel{}, fmt.Errorf("provision declared sessions: %w", err)
+		}
+		created, err = s.repository.GetResidentialChannel(ctx, created.ID)
+		if err != nil {
+			return Channel{}, mapStoreError(err)
+		}
 	}
 	return s.channelFromRecord(ctx, created, provider)
 }
@@ -315,6 +263,50 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	if err != nil {
 		return Channel{}, err
 	}
+	providerRecord, err := s.repository.GetResidentialProvider(ctx, existing.ProviderID)
+	if err != nil {
+		return Channel{}, mapStoreError(err)
+	}
+	// Omitted session fields preserve the current configuration so an unrelated
+	// edit from an older client cannot silently unpublish a channel's nodes.
+	if request.SessionCount != nil {
+		sessionCount, err := validateSessionCount(*request.SessionCount, s.providerFromRecord(providerRecord))
+		if err != nil {
+			return Channel{}, err
+		}
+		if sessionCount > 0 && existing.Mode != ModeSticky {
+			return Channel{}, fmt.Errorf("%w: session_count requires %q mode", ErrInvalid, ModeSticky)
+		}
+		existing.SessionCount = sessionCount
+	}
+	if request.IdleRelease != nil {
+		idleRelease, err := validateIdleReleaseSeconds(*request.IdleRelease)
+		if err != nil {
+			return Channel{}, err
+		}
+		existing.IdleReleaseSeconds = idleRelease
+	}
+	if request.DirectListener != nil && request.ClearDirect {
+		return Channel{}, fmt.Errorf(
+			"%w: direct_listener and clear_direct_listener are mutually exclusive", ErrInvalid,
+		)
+	}
+	if request.DirectListener != nil {
+		if err := validateDirectListenerRequest(request.DirectListener); err != nil {
+			return Channel{}, err
+		}
+	}
+	// A channel created before 0.2.0 has no control token. Mint one lazily on
+	// the next edit so an upgrade does not require recreating the channel.
+	if existing.Mode == ModeSticky && existing.ControlToken == "" {
+		controlToken, err := newToken()
+		if err != nil {
+			return Channel{}, err
+		}
+		existing.ControlToken = controlToken
+	}
+	previousSessionCount := existing.SessionCount
+	previousDirectListenerID := existing.DirectListenerID
 	existing.Name = name
 	existing.Region = regionSelection.Region
 	existing.RegionMode = string(regionSelection.Mode)
@@ -336,9 +328,59 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 			return Channel{}, err
 		}
 	}
+	// Provision or tear down the direct entry point before persisting so a
+	// failed listener change does not leave a dangling reference.
+	switch {
+	case request.DirectListener != nil && previousDirectListenerID == "":
+		directListener, err := s.listeners.Create(ctx, listener.CreateRequest{
+			Name:         channelDirectListenerName(name),
+			Kind:         request.DirectListener.Kind,
+			BindAddress:  request.DirectListener.BindAddress,
+			Port:         request.DirectListener.Port,
+			ProxyGroupID: existing.ProxyGroupID,
+			Auth:         request.DirectListener.Auth,
+			Enabled:      &request.Enabled,
+		})
+		if err != nil {
+			return Channel{}, fmt.Errorf("%w: create direct listener: %v", ErrInvalid, err)
+		}
+		existing.DirectListenerID = directListener.ID
+	case request.DirectListener != nil:
+		current, err := s.listeners.Get(ctx, previousDirectListenerID)
+		if err != nil {
+			return Channel{}, err
+		}
+		if _, err := s.listeners.Update(ctx, current.ID, listener.UpdateRequest{
+			Version:      current.Version,
+			Name:         current.Name,
+			Kind:         request.DirectListener.Kind,
+			BindAddress:  request.DirectListener.BindAddress,
+			Port:         request.DirectListener.Port,
+			ProxyGroupID: current.ProxyGroupID,
+			Auth:         request.DirectListener.Auth,
+			Enabled:      request.Enabled,
+		}); err != nil {
+			return Channel{}, fmt.Errorf("update direct listener: %w", err)
+		}
+	case request.ClearDirect:
+		existing.DirectListenerID = ""
+	}
+
 	updated, err := s.repository.UpdateResidentialChannel(ctx, existing, request.Version)
 	if err != nil {
+		if existing.DirectListenerID != "" && previousDirectListenerID == "" {
+			if created, getErr := s.listeners.Get(ctx, existing.DirectListenerID); getErr == nil {
+				_ = s.listeners.Delete(ctx, created.ID, created.Version)
+			}
+		}
 		return Channel{}, mapStoreError(err)
+	}
+	if request.ClearDirect && previousDirectListenerID != "" {
+		if current, getErr := s.listeners.Get(ctx, previousDirectListenerID); getErr == nil {
+			if err := s.listeners.Delete(ctx, current.ID, current.Version); err != nil {
+				return Channel{}, fmt.Errorf("remove direct listener: %w", err)
+			}
+		}
 	}
 	if request.PublicEndpoint != nil {
 		if _, err := s.listeners.Update(ctx, currentListener.ID, listener.UpdateRequest{
@@ -355,13 +397,20 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 			return Channel{}, fmt.Errorf("update residential public endpoint: %w", err)
 		}
 	}
+	// Resizing publishes or releases ordinals. Surviving sessions keep their
+	// node names, credentials and residential IPs.
+	if updated.SessionCount != previousSessionCount || updated.SessionCount > 0 {
+		if err := s.SyncDeclaredSessions(ctx, updated.ID); err != nil {
+			return Channel{}, fmt.Errorf("resize declared sessions: %w", err)
+		}
+		updated, err = s.repository.GetResidentialChannel(ctx, updated.ID)
+		if err != nil {
+			return Channel{}, mapStoreError(err)
+		}
+	}
 	// Existing client allocations retain their current vendor session. The new
 	// region is used only by subsequent allocation or rotation requests.
-	provider, err := s.repository.GetResidentialProvider(ctx, updated.ProviderID)
-	if err != nil {
-		return Channel{}, mapStoreError(err)
-	}
-	return s.channelFromRecord(ctx, updated, s.providerFromRecord(provider))
+	return s.channelFromRecord(ctx, updated, s.providerFromRecord(providerRecord))
 }
 
 // DeleteChannel removes the channel and everything it provisioned, in reverse
@@ -377,13 +426,20 @@ func (s *Service) DeleteChannel(ctx context.Context, id string, version int) err
 	if err := s.repository.DeleteResidentialChannel(ctx, id, version); err != nil {
 		return mapStoreError(err)
 	}
-	listenerRecord, err := s.repository.GetListener(ctx, record.ListenerID)
-	if err == nil {
+	for _, id := range []string{record.DirectListenerID, record.ListenerID} {
+		if id == "" {
+			continue
+		}
+		listenerRecord, err := s.repository.GetListener(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
 		if err := s.listeners.Delete(ctx, listenerRecord.ID, listenerRecord.Version); err != nil {
 			return fmt.Errorf("channel deleted but listener cleanup failed: %w", err)
 		}
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return err
 	}
 	groupRecord, err := s.repository.GetProxyGroup(ctx, record.ProxyGroupID)
 	if err == nil {
@@ -399,109 +455,12 @@ func (s *Service) DeleteChannel(ctx context.Context, id string, version int) err
 	return nil
 }
 
-func (s *Service) channelFromRecord(
-	ctx context.Context,
-	record store.ResidentialChannelRecord,
-	provider Provider,
-) (Channel, error) {
-	pool, err := s.repository.ListResidentialSessionNodes(ctx, record.ID)
-	if err != nil {
-		return Channel{}, err
-	}
-	activeSessionCount := 0
-	if record.Mode == ModeSticky {
-		sessions, err := s.repository.ListResidentialClientSessions(ctx, record.ID)
-		if err != nil {
-			return Channel{}, err
-		}
-		for _, session := range sessions {
-			if session.RouteMode == ClientRouteResidential && session.NodeFingerprint != "" {
-				activeSessionCount++
-			}
-		}
-	} else {
-		activeSessionCount = len(pool)
-	}
-	channel := Channel{
-		ID:                      record.ID,
-		Name:                    record.Name,
-		ProviderID:              record.ProviderID,
-		ProviderName:            provider.Name,
-		Mode:                    record.Mode,
-		ProxyGroupID:            record.ProxyGroupID,
-		ListenerID:              record.ListenerID,
-		Region:                  record.Region,
-		RegionMode:              normalizedChannelRegionMode(record.RegionMode),
-		RandomRegions:           parseRegionList(record.RandomRegions),
-		ActiveSessionCount:      activeSessionCount,
-		PoolSize:                len(pool),
-		ActiveSessionIndex:      record.ActiveSessionIndex,
-		RotateCount:             record.RotateCount,
-		LastRotatedAt:           record.LastRotatedAt,
-		LastExitIP:              record.LastExitIP,
-		PoolCreatedAt:           record.PoolCreatedAt,
-		PoolRefreshAfterSeconds: int(SessionPoolRefreshAge(provider).Seconds()),
-		SessionTTLSeconds:       provider.SessionTTLSeconds,
-		CanRotate:               false,
-		Enabled:                 record.Enabled,
-		Version:                 record.Version,
-		CreatedAt:               record.CreatedAt,
-		UpdatedAt:               record.UpdatedAt,
-	}
-	if record.Mode == ModeSticky && record.RotateToken != "" {
-		channel.RotatePath = "/rot/" + record.RotateToken
-	}
-	listenerRecord, err := s.repository.GetListener(ctx, record.ListenerID)
-	if err == nil {
-		var transport listener.Transport
-		if err := json.Unmarshal([]byte(listenerRecord.TransportJSON), &transport); err != nil {
-			return Channel{}, fmt.Errorf("decode residential listener transport: %w", err)
-		}
-		channel.Endpoint = ChannelEndpoint{
-			Kind:        listenerRecord.Kind,
-			BindAddress: listenerRecord.BindAddress,
-			Port:        listenerRecord.Port,
-			AuthEnabled: listenerRecord.AuthMode != "none" && len(listenerRecord.AuthConfigEncrypted) > 0,
-			Transport:   transport,
-		}
-		if err := json.Unmarshal([]byte(listenerRecord.PublicEndpointJSON), &channel.PublicEndpoint); err != nil {
-			return Channel{}, fmt.Errorf("decode residential public endpoint: %w", err)
-		}
-		if listenerRecord.ShareToken != "" {
-			channel.Endpoint.SharePath = "/sub/" + listenerRecord.ShareToken
-			if record.Mode == ModePassthrough && isResidentialWebSocketKind(listenerRecord.Kind) {
-				channel.SubscriptionURL = listener.PublicPathURL(
-					channel.PublicEndpoint,
-					channel.Endpoint.SharePath+"?format=clash",
-				)
-			}
-		}
-		if channel.RotatePath != "" && channel.PublicEndpoint.TLS {
-			channel.RotationURL = listener.PublicPathURL(channel.PublicEndpoint, channel.RotatePath)
-		}
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return Channel{}, err
-	}
-	return channel, nil
-}
-
-func channelRegionSelection(mode RegionMode, region string, randomRegions []string, provider Provider) (RegionSelection, error) {
-	if strings.TrimSpace(string(mode)) == "" && strings.TrimSpace(region) == "" && len(randomRegions) == 0 {
-		selection := providerRegionSelection(provider)
-		return normalizeRegionSelection(string(selection.Mode), selection.Region, selection.RandomRegions)
-	}
-	return normalizeRegionSelection(string(mode), region, randomRegions)
-}
-
-func normalizedChannelRegionMode(mode string) RegionMode {
-	if mode == "" {
-		return RegionModeFixed
-	}
-	return RegionMode(mode)
-}
-
 func channelGroupName(channelName string) string {
 	return "residential-" + channelName
+}
+
+func channelDirectListenerName(channelName string) string {
+	return "residential-" + channelName + "-direct"
 }
 
 func channelListenerName(channelName string) string {

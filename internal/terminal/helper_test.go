@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,42 @@ func TestPrivilegedHelperRoundTrip(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("helper did not stop after context cancellation")
+	}
+}
+
+func TestAutomaticUpdateUsesDedicatedHelperFrame(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "update.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	received := make(chan byte, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		kind, _, readErr := readFrame(connection)
+		if readErr != nil {
+			return
+		}
+		received <- kind
+		_ = writeFrame(connection, frameReady, nil)
+	}()
+	service, err := NewService(Config{
+		PrivilegedSocket: socketPath,
+		UpdaterPath:      "/usr/local/sbin/hx-proxygroup-install",
+	}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.TriggerUpdate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if kind := <-received; kind != frameUpdate {
+		t.Fatalf("helper request frame = %d, want %d", kind, frameUpdate)
 	}
 }
 

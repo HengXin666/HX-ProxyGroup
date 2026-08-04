@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  MIHOMO_VERSION: v1.19.29
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: go test ./...
+      - run: go vet ./...
+      - run: npm ci
+        working-directory: web
+      - run: npm run check
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
+  package:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - name: Build control plane
+        env:
+          GOARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.version=${RELEASE_VERSION}" \
+            -o "build/hx-proxygroupd-${GOARCH}" ./cmd/hx-proxygroupd
+      - name: Download pinned Mihomo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p build/mihomo
+          gh release download "${MIHOMO_VERSION}" \
+            --repo MetaCubeX/mihomo \
+            --pattern "mihomo-linux-${TARGET_ARCH}-${MIHOMO_VERSION}.gz" \
+            --dir build/mihomo
+          gzip -dc "build/mihomo/mihomo-linux-${TARGET_ARCH}-${MIHOMO_VERSION}.gz" \
+            > "build/mihomo-${TARGET_ARCH}"
+          chmod 0755 "build/mihomo-${TARGET_ARCH}"
+      - name: Package release
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          scripts/package-release.sh \
+            --version "${RELEASE_VERSION}" \
+            --arch "${TARGET_ARCH}" \
+            --control "build/hx-proxygroupd-${TARGET_ARCH}" \
+            --mihomo "build/mihomo-${TARGET_ARCH}" \
+            --web-dir web/dist \
+            --output-dir release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: release/hx-proxygroup_${{ github.ref_name }}_linux_${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Create release metadata
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          cd release
+          sha256sum hx-proxygroup_*.tar.gz > SHA256SUMS
+          printf '%s\n' "${RELEASE_VERSION}" > VERSION
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            release/hx-proxygroup_*.tar.gz \
+            release/SHA256SUMS \
+            release/VERSION \
+            --verify-tag \
+            --generate-notes \
+            --title "HX-ProxyGroup ${GITHUB_REF_NAME}"

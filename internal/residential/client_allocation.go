@@ -120,7 +120,7 @@ func (s *Service) replaceClientSessionAllocation(ctx context.Context, channel st
 	if previous.NodeFingerprint != "" && previous.NodeFingerprint != fingerprint {
 		_ = s.repository.DeleteResidentialSessionNode(ctx, channel.ID, previous.NodeFingerprint)
 	}
-	if err := s.closeClientSessionConnections(ctx, channel.ListenerID, updated.AuthUsername); err != nil {
+	if err := s.closeChannelClientConnections(ctx, channel, updated.AuthUsername); err != nil {
 		return store.ResidentialClientSessionRecord{}, err
 	}
 	return updated, nil
@@ -138,5 +138,5 @@ func (s *Service) deleteClientSession(ctx context.Context, channel store.Residen
 	if current.NodeFingerprint != "" {
 		_ = s.repository.DeleteResidentialSessionNode(ctx, channel.ID, current.NodeFingerprint)
 	}
-	return s.closeClientSessionConnections(ctx, channel.ListenerID, current.AuthUsername)
+	return s.closeChannelClientConnections(ctx, channel, current.AuthUsername)
 }

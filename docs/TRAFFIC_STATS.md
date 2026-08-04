@@ -9,10 +9,15 @@ HX-ProxyGroup 从 Mihomo External Controller 的连接快照采集统计。普�
 - `listener`：自定义代理服务入口。
 - `proxy_group`：入口绑定的代理组及连接链中出现的嵌套组。
 - `node`：订阅节点；节点退出活动快照后仍保留历史总计和 30 天趋势。
+- `residential_channel`：住宅渠道；主 WS 入口和可选直连入口合并归因到稳定渠道 ID。
 
 每条连接按 Mihomo 的稳定入站名和代理链同时归属到上述维度。累计上传、下载和连接数保存在
 `traffic_totals`，直到对应 Listener、Proxy Group 或 Node 在本地被真正删除。订阅中消失的节点只会进入
 `retired` 状态，不会因此丢失累计统计。
+
+住宅供应商节点和真实出口 IP 会在 TTL 到期或 `next` 后替换，不能作为稳定的统计身份。
+采集器因此同时把住宅渠道拥有的所有 Listener 映射到 `residential_channel:<channel-id>`；轮换、
+空闲释放和重新分配都继续累计到同一渠道。删除渠道时才清理对应总计和趋势。
 
 ## 聚合与保留
 
@@ -29,9 +34,10 @@ HX-ProxyGroup 从 Mihomo External Controller 的连接快照采集统计。普�
 
 ```text
 GET /api/v1/traffic?resource_type=node&limit=100&offset=0
+GET /api/v1/traffic?resource_type=residential_channel&limit=100&offset=0
 ```
 
-按时间范围汇总入口、代理组或节点：
+按时间范围汇总入口、代理组、节点或住宅渠道：
 
 ```text
 GET /api/v1/traffic?resource_type=listener&from=<RFC3339>&to=<RFC3339>&limit=200&offset=0
@@ -43,6 +49,7 @@ GET /api/v1/traffic?resource_type=listener&from=<RFC3339>&to=<RFC3339>&limit=200
 
 ```text
 GET /api/v1/traffic?resource_type=listener&resource_id=<id>&from=<RFC3339>&to=<RFC3339>&max_points=240
+GET /api/v1/traffic?resource_type=residential_channel&resource_id=<channel-id>&from=<RFC3339>&to=<RFC3339>&max_points=240
 ```
 
 查询范围最多 30 天，返回点数最多 500。后端根据时间范围和点数预算自动选择 1 分钟、5 分钟或

@@ -33,8 +33,8 @@ type Mode struct {
 }
 
 // trackedSession adds lifecycle bookkeeping shared by all terminal backends.
-// Its methods are intentionally small so the API cannot bypass idle timeout
-// accounting when a remote helper is selected.
+// Its methods are intentionally small so lifecycle accounting is identical
+// when a remote helper is selected.
 type trackedSession struct {
 	Session
 	id         string
@@ -210,7 +210,7 @@ func (s *trackedSession) idleSince() time.Time {
 	return s.lastActive
 }
 
-// watch enforces the idle timeout and the absolute lifetime cap with a
+// watch enforces the optional idle timeout and the absolute lifetime cap with a
 // single goroutine per session that exits when the session closes.
 func (s *trackedSession) watch(ctx context.Context, idleTimeout, maxLifetime time.Duration) {
 	ticker := time.NewTicker(10 * time.Second)
@@ -230,7 +230,7 @@ func (s *trackedSession) watch(ctx context.Context, idleTimeout, maxLifetime tim
 				return
 			}
 			now := time.Now()
-			if now.Sub(lastActive) >= idleTimeout {
+			if idleTimeout > 0 && now.Sub(lastActive) >= idleTimeout {
 				s.Close("idle timeout")
 				return
 			}

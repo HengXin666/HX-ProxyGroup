@@ -395,6 +395,7 @@ export interface SystemInfo {
   dataplane_version?: string
   repository_url: string
   update_command: string
+  automatic_update: boolean
   supported_protocols: string[]
 }
 
@@ -416,7 +417,7 @@ export interface OverviewResourceSample {
   active_connections: number
 }
 
-export type TrafficResourceType = "listener" | "proxy_group" | "node"
+export type TrafficResourceType = "listener" | "proxy_group" | "node" | "residential_channel"
 
 export interface TrafficSummary {
   resource_type: TrafficResourceType
@@ -590,6 +591,26 @@ export interface ResidentialChannelEndpoint {
   share_path?: string
 }
 
+export interface ClientSubscriptionInfo {
+  share_path: string
+  node_count: number
+}
+
+export interface ResidentialChannelSession {
+  index: number
+  session_id: string
+  node_name: string
+  route_mode: string
+  country_code?: string
+  exit_ip?: string
+  allocated: boolean
+  allocated_at?: string
+  expires_at?: string
+  rotate_count: number
+  last_rotated_at?: string
+  last_used_at?: string
+}
+
 export interface ResidentialChannel {
   id: string
   name: string
@@ -605,6 +626,11 @@ export interface ResidentialChannel {
   public_endpoint: ListenerPublicEndpoint
   subscription_url?: string
   rotation_url?: string
+  session_count: number
+  idle_release_seconds: number
+  sessions?: ResidentialChannelSession[]
+  direct_endpoint?: ResidentialChannelEndpoint
+  control_path?: string
   active_session_count: number
   pool_size?: number
   active_session_index: number
@@ -637,12 +663,20 @@ export interface CreateResidentialChannelRequest {
   region?: string
   region_mode?: ResidentialRegionMode
   random_regions?: string[]
+  session_count?: number
+  idle_release_seconds?: number
   listener: {
     kind: string
     bind_address: string
     port: number
     auth?: { username: string; password: string }
     transport?: ListenerTransport
+  }
+  direct_listener?: {
+    kind: string
+    bind_address: string
+    port: number
+    auth: { username: string; password: string }
   }
   public_endpoint?: ListenerPublicEndpoint
   enabled?: boolean
@@ -654,6 +688,15 @@ export interface UpdateResidentialChannelRequest {
   region?: string
   region_mode?: ResidentialRegionMode
   random_regions?: string[]
+  session_count?: number
+  idle_release_seconds?: number
+  direct_listener?: {
+    kind: string
+    bind_address: string
+    port: number
+    auth: { username: string; password: string }
+  }
+  clear_direct_listener?: boolean
   public_endpoint?: ListenerPublicEndpoint
   enabled: boolean
 }

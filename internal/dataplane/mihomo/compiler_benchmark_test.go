@@ -26,6 +26,9 @@ func (repository benchmarkCompilerRepository) ListGroupNodeCandidates(context.Co
 func (benchmarkCompilerRepository) ListResidentialClientRoutes(context.Context) ([]store.ResidentialClientRouteRecord, error) {
 	return nil, nil
 }
+func (benchmarkCompilerRepository) ListResidentialChannels(context.Context) ([]store.ResidentialChannelRecord, error) {
+	return nil, nil
+}
 func (benchmarkCompilerRepository) GetMetadata(context.Context, string) (string, error) {
 	return "", store.ErrNotFound
 }

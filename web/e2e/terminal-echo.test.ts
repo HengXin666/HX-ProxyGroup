@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { PredictiveEcho } from "../src/lib/terminal-echo.ts"
+import { PredictiveEcho, shouldBatchTerminalInput } from "../src/lib/terminal-echo.ts"
 
 const bytes = (value: string) => new TextEncoder().encode(value)
 const text = (value: Uint8Array) => new TextDecoder().decode(value)
@@ -36,6 +36,14 @@ test("keeps earlier command echo pending while control input suspends prediction
   echo.setMode({ echo: false, canonical: true })
   assert.equal(text(echo.consume(bytes("read -s password"))), "")
   assert.equal(echo.predict("not-visible"), null)
+})
+
+test("batches only safe predictively echoed input", () => {
+  assert.equal(shouldBatchTerminalInput("a", "a"), true)
+  assert.equal(shouldBatchTerminalInput("命令", "命令"), true)
+  assert.equal(shouldBatchTerminalInput("secret", null), false)
+  assert.equal(shouldBatchTerminalInput("\r", null), false)
+  assert.equal(shouldBatchTerminalInput("x".repeat(1025), "x".repeat(1025)), false)
 })
 
 test("falls back to server output when the echo diverges", () => {

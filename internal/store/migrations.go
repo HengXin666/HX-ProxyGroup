@@ -573,6 +573,107 @@ WHERE id IN (SELECT listener_id FROM residential_channels)
   AND json_extract(public_endpoint_json, '$.tls') = 1;
 `,
 	},
+	{
+		version: 24,
+		name:    "residential_declared_sessions",
+		sql: `
+-- A sticky channel now declares how many logical sessions it publishes so a
+-- subscription can render a stable node list. Existing channels keep their
+-- current on-demand behaviour until an administrator sets a session count.
+ALTER TABLE residential_channels
+    ADD COLUMN session_count INTEGER NOT NULL DEFAULT 0
+    CHECK (session_count BETWEEN 0 AND 64);
+
+-- Idle release is opt-in. Zero keeps every declared session allocated, which
+-- is what makes a published subscription usable without a warm-up request.
+ALTER TABLE residential_channels
+    ADD COLUMN idle_release_seconds INTEGER NOT NULL DEFAULT 0
+    CHECK (idle_release_seconds >= 0);
+
+-- The subscription token is separate from rotate_token: a share link is
+-- pasted into client configuration and spreads, while the control token can
+-- spend provider quota through next.
+ALTER TABLE residential_channels
+    ADD COLUMN control_token TEXT NOT NULL DEFAULT '';
+
+-- A channel may publish one loopback WebSocket entry point behind the reverse
+-- proxy and one directly reachable TCP entry point at the same time.
+ALTER TABLE residential_channels
+    ADD COLUMN direct_listener_id TEXT REFERENCES listeners(id) ON DELETE RESTRICT;
+
+-- Declared sessions are addressed by their ordinal so node names stay stable
+-- across rotations. On-demand sessions created by older clients keep -1.
+ALTER TABLE residential_client_sessions
+    ADD COLUMN declared_index INTEGER NOT NULL DEFAULT -1
+    CHECK (declared_index >= -1);
+ALTER TABLE residential_client_sessions
+    ADD COLUMN last_used_at TEXT NOT NULL DEFAULT '';
+
+CREATE UNIQUE INDEX residential_client_sessions_declared
+    ON residential_client_sessions(channel_id, declared_index)
+    WHERE declared_index >= 0;
+`,
+	},
+	{
+		version: 25,
+		name:    "residential_channel_traffic",
+		sql: `
+-- Residential allocations are replaced during IP rotation, so node rows are
+-- not a durable accounting identity. Add the stable channel id as a traffic
+-- resource and keep both WS and direct listener traffic in the same totals.
+DROP TRIGGER IF EXISTS traffic_delete_listener;
+DROP TRIGGER IF EXISTS traffic_delete_proxy_group;
+DROP TRIGGER IF EXISTS traffic_delete_node;
+
+ALTER TABLE traffic_totals RENAME TO traffic_totals_v24;
+CREATE TABLE traffic_totals (
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('listener', 'proxy_group', 'node', 'residential_channel')),
+    resource_id TEXT NOT NULL,
+    upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK (upload_bytes >= 0),
+    download_bytes INTEGER NOT NULL DEFAULT 0 CHECK (download_bytes >= 0),
+    connection_count INTEGER NOT NULL DEFAULT 0 CHECK (connection_count >= 0),
+    active_connections INTEGER NOT NULL DEFAULT 0 CHECK (active_connections >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (resource_type, resource_id)
+) STRICT, WITHOUT ROWID;
+INSERT INTO traffic_totals SELECT * FROM traffic_totals_v24;
+DROP TABLE traffic_totals_v24;
+
+ALTER TABLE traffic_buckets RENAME TO traffic_buckets_v24;
+CREATE TABLE traffic_buckets (
+    resource_type TEXT NOT NULL CHECK (resource_type IN ('listener', 'proxy_group', 'node', 'residential_channel')),
+    resource_id TEXT NOT NULL,
+    bucket_start TEXT NOT NULL,
+    granularity_seconds INTEGER NOT NULL CHECK (granularity_seconds IN (60, 300, 3600)),
+    upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK (upload_bytes >= 0),
+    download_bytes INTEGER NOT NULL DEFAULT 0 CHECK (download_bytes >= 0),
+    connection_count INTEGER NOT NULL DEFAULT 0 CHECK (connection_count >= 0),
+    peak_active_connections INTEGER NOT NULL DEFAULT 0 CHECK (peak_active_connections >= 0),
+    PRIMARY KEY (resource_type, resource_id, bucket_start, granularity_seconds)
+) STRICT, WITHOUT ROWID;
+INSERT INTO traffic_buckets SELECT * FROM traffic_buckets_v24;
+DROP TABLE traffic_buckets_v24;
+CREATE INDEX traffic_buckets_time
+    ON traffic_buckets(granularity_seconds, bucket_start);
+
+CREATE TRIGGER traffic_delete_listener AFTER DELETE ON listeners BEGIN
+    DELETE FROM traffic_totals WHERE resource_type = 'listener' AND resource_id = OLD.id;
+    DELETE FROM traffic_buckets WHERE resource_type = 'listener' AND resource_id = OLD.id;
+END;
+CREATE TRIGGER traffic_delete_proxy_group AFTER DELETE ON proxy_groups BEGIN
+    DELETE FROM traffic_totals WHERE resource_type = 'proxy_group' AND resource_id = OLD.id;
+    DELETE FROM traffic_buckets WHERE resource_type = 'proxy_group' AND resource_id = OLD.id;
+END;
+CREATE TRIGGER traffic_delete_node AFTER DELETE ON nodes BEGIN
+    DELETE FROM traffic_totals WHERE resource_type = 'node' AND resource_id = OLD.id;
+    DELETE FROM traffic_buckets WHERE resource_type = 'node' AND resource_id = OLD.id;
+END;
+CREATE TRIGGER traffic_delete_residential_channel AFTER DELETE ON residential_channels BEGIN
+    DELETE FROM traffic_totals WHERE resource_type = 'residential_channel' AND resource_id = OLD.id;
+    DELETE FROM traffic_buckets WHERE resource_type = 'residential_channel' AND resource_id = OLD.id;
+END;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

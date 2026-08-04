@@ -24,10 +24,12 @@ type Repository interface {
 	CreateResidentialChannel(context.Context, store.ResidentialChannelRecord) (store.ResidentialChannelRecord, error)
 	GetResidentialChannel(context.Context, string) (store.ResidentialChannelRecord, error)
 	GetResidentialChannelByRotateToken(context.Context, string) (store.ResidentialChannelRecord, error)
+	GetResidentialChannelByControlToken(context.Context, string) (store.ResidentialChannelRecord, error)
 	ListResidentialChannels(context.Context) ([]store.ResidentialChannelRecord, error)
 	UpdateResidentialChannel(context.Context, store.ResidentialChannelRecord, int) (store.ResidentialChannelRecord, error)
 	SetResidentialChannelRotation(context.Context, string, int, string, time.Time) (store.ResidentialChannelRecord, error)
 	RotateResidentialChannelToken(context.Context, string, string) (store.ResidentialChannelRecord, error)
+	RotateResidentialChannelControlToken(context.Context, string, string) (store.ResidentialChannelRecord, error)
 	DeleteResidentialChannel(context.Context, string, int) error
 
 	ReplaceResidentialSessionPool(context.Context, string, []store.ResidentialSessionNode, time.Time) ([]string, error)
@@ -41,11 +43,15 @@ type Repository interface {
 	ListResidentialClientSessions(context.Context, string) ([]store.ResidentialClientSessionRecord, error)
 	UpdateResidentialClientSessionRoute(context.Context, string, string, string, int, *time.Time) (store.ResidentialClientSessionRecord, error)
 	UpdateResidentialClientSessionAllocation(context.Context, string, string, string, time.Time, *time.Time, bool) (store.ResidentialClientSessionRecord, error)
+	ClearResidentialClientSessionAllocation(context.Context, string, string) (store.ResidentialClientSessionRecord, error)
+	TouchResidentialClientSession(context.Context, string, string, time.Time) error
 	RestoreResidentialClientSessionState(context.Context, store.ResidentialClientSessionRecord) error
 	DeleteResidentialClientSession(context.Context, string, string) error
 
 	GetProxyGroup(context.Context, string) (store.ProxyGroupRecord, error)
 	GetListener(context.Context, string) (store.ListenerRecord, error)
+	GetListenerByShareToken(context.Context, string) (store.ListenerRecord, error)
+	GetResidentialChannelByListenerID(context.Context, string) (store.ResidentialChannelRecord, error)
 }
 
 type Cipher interface {
@@ -67,6 +73,9 @@ type ListenerService interface {
 	Get(context.Context, string) (listener.Listener, error)
 	Update(context.Context, string, listener.UpdateRequest) (listener.Listener, error)
 	Delete(context.Context, string, int) error
+	ExportByID(context.Context, string, string) (listener.ShareExport, error)
+	ExportWithNodes(context.Context, string, string, string, []listener.ShareNode) (listener.ShareExport, error)
+	RotateShareToken(context.Context, string) (listener.Listener, error)
 }
 
 // Selector switches which pooled session a channel's group currently uses. It is

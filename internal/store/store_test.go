@@ -158,7 +158,15 @@ CREATE TABLE schema_migrations (
 		legacy.Close()
 		t.Fatalf("create migration table: %v", err)
 	}
-	for _, migration := range migrations[:len(migrations)-1] {
+	// This test seeds the schema as it existed immediately before the
+	// residential path-boundary migration, then verifies that migration's
+	// normalization. Pin the boundary by version so adding later migrations
+	// does not silently change what is being exercised.
+	const residentialBoundaryVersion = 23
+	for _, migration := range migrations {
+		if migration.version >= residentialBoundaryVersion {
+			break
+		}
 		if _, err := transaction.ExecContext(ctx, migration.sql); err != nil {
 			transaction.Rollback()
 			legacy.Close()

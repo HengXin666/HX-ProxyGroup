@@ -22,6 +22,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
+	"github.com/HengXin666/HX-ProxyGroup/internal/clientsubscription"
 	"github.com/HengXin666/HX-ProxyGroup/internal/config"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/instance"
@@ -211,6 +212,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	clientSubscriptionService, err := clientsubscription.NewService(
+		database,
+		listenerService,
+		residentialService,
+	)
+	if err != nil {
+		return err
+	}
 	trafficService, err := metrics.NewService(database, mihomoManager, logger, metrics.Config{})
 	if err != nil {
 		return err
@@ -287,6 +296,7 @@ func run(logger *slog.Logger) error {
 		Enabled:          cfg.TerminalEnabled,
 		Shell:            cfg.TerminalShell,
 		PrivilegedSocket: cfg.TerminalPrivilegedSocket,
+		UpdaterPath:      "/usr/local/sbin/hx-proxygroup-install",
 	}, logger)
 	if err != nil {
 		return err
@@ -350,6 +360,7 @@ func run(logger *slog.Logger) error {
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
 		api.WithResidential(residentialService),
+		api.WithClientSubscriptions(clientSubscriptionService),
 		api.WithTraffic(trafficService),
 		api.WithSettings(settingsService),
 		api.WithRoutingRules(routingRulesService),
@@ -359,11 +370,13 @@ func run(logger *slog.Logger) error {
 		api.WithAuth(authService),
 		api.WithAlerts(alertService),
 		api.WithTerminal(terminalService),
+		api.WithUpdater(terminalService),
 		api.WithWebRoot(cfg.WebRoot),
 		api.WithSystemInfo(api.SystemInfo{
 			Application: "HX-ProxyGroup", Version: version,
 			RepositoryURL:      "https://github.com/HengXin666/HX-ProxyGroup",
 			UpdateCommand:      "sudo hx-proxygroup-install upgrade",
+			AutomaticUpdate:    cfg.MihomoExternal && strings.TrimSpace(cfg.TerminalPrivilegedSocket) != "",
 			SupportedProtocols: nodeparse.SupportedProtocols(),
 		}),
 	)
@@ -481,6 +494,7 @@ func runTerminalHelper(logger *slog.Logger, arguments []string) error {
 	flags.StringVar(&config.AllowedUser, "terminal-helper-user", "hx-proxygroup", "only accept this local Unix socket user")
 	flags.StringVar(&config.Shell, "terminal-shell", "", "shell executable")
 	flags.IntVar(&config.MaxSessions, "terminal-max-sessions", 2, "maximum helper sessions")
+	flags.StringVar(&config.UpdaterPath, "updater", "/usr/local/sbin/hx-proxygroup-install", "fixed automatic updater executable")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}

@@ -133,12 +133,17 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 	go func() {
 		defer close(outputDone)
 		buffer := make([]byte, 16<<10)
-		sendMode := func() bool {
+		var lastMode terminal.Mode
+		modeSent := false
+		sendMode := func(force bool) bool {
 			mode, modeErr := shell.TerminalMode()
 			if modeErr != nil {
 				// Unknown mode must disable prediction rather than risk echoing
 				// a password or full-screen application input locally.
 				mode = terminal.Mode{}
+			}
+			if !force && modeSent && mode == lastMode {
+				return true
 			}
 			payload, _ := json.Marshal(terminalModeMessage{Type: "mode", Echo: mode.Echo, Canonical: mode.Canonical})
 			writeCtx, writeCancel := context.WithTimeout(socketCtx, 15*time.Second)
@@ -147,15 +152,17 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 			if writeErr != nil {
 				return false
 			}
+			lastMode = mode
+			modeSent = true
 			return true
 		}
-		if !sendMode() {
+		if !sendMode(true) {
 			return
 		}
 		for {
 			count, readErr := shell.Read(buffer)
 			if count > 0 {
-				if !sendMode() {
+				if !sendMode(false) {
 					return
 				}
 				writeCtx, writeCancel := context.WithTimeout(socketCtx, 15*time.Second)

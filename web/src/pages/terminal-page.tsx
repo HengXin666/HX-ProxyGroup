@@ -6,7 +6,7 @@ import "@xterm/xterm/css/xterm.css"
 
 import { ApiError, api, type TerminalStatus } from "@/lib/api"
 import { Input } from "@/components/ui/input"
-import { PredictiveEcho, type TerminalMode } from "@/lib/terminal-echo"
+import { PredictiveEcho, shouldBatchTerminalInput, type TerminalMode } from "@/lib/terminal-echo"
 import { subscribeTheme } from "@/lib/theme"
 
 type ConnectionState = "idle" | "connecting" | "connected" | "closed"
@@ -85,6 +85,16 @@ export function TerminalPage({
     const terminal = terminalRef.current
     const fit = fitRef.current
     const predictiveEcho = echoRef.current
+    let pendingInput = ""
+    let inputTimer: number | null = null
+    const flushInput = () => {
+      if (inputTimer !== null) window.clearTimeout(inputTimer)
+      inputTimer = null
+      if (pendingInput && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "input", data: pendingInput }))
+      }
+      pendingInput = ""
+    }
     predictiveEcho.reset()
     terminal.reset()
     fit?.fit()
@@ -136,7 +146,13 @@ export function TerminalPage({
       if (socket.readyState === WebSocket.OPEN) {
         const predicted = predictiveEcho.predict(data)
         if (predicted != null) terminal.write(predicted)
-        socket.send(JSON.stringify({ type: "input", data }))
+        if (shouldBatchTerminalInput(data, predicted)) {
+          pendingInput += data
+          if (inputTimer === null) inputTimer = window.setTimeout(flushInput, 12)
+        } else {
+          pendingInput += data
+          flushInput()
+        }
       }
     })
     const resizeDisposable = terminal.onResize(() => sendResize())
@@ -147,6 +163,9 @@ export function TerminalPage({
       inputDisposable.dispose()
       resizeDisposable.dispose()
       observer.disconnect()
+      if (inputTimer !== null) window.clearTimeout(inputTimer)
+      inputTimer = null
+      pendingInput = ""
       predictiveEcho.reset()
     })
   }, [onNotice, status])
@@ -206,7 +225,7 @@ export function TerminalPage({
         <div>
           <span className="font-medium">高风险操作提示：</span>
           此终端以控制面进程用户身份在服务器上执行真实 Shell 命令。删除文件、修改系统配置、停止服务等操作立即生效且不可撤销。
-          会话空闲 {status ? Math.round(status.idle_timeout_seconds / 60) : 10} 分钟后自动断开，全部会话都会写入审计日志。
+          空闲不会自动断开；单次会话最长 {status ? Math.round(status.max_lifetime_seconds / 3600) : 2} 小时，全部会话都会写入审计日志。
         </div>
       </div>
 
@@ -252,7 +271,7 @@ function PageHeader() {
     <div>
       <h1 className="text-lg font-semibold">终端（v2）</h1>
       <p className="mt-0.5 text-sm text-muted-foreground">
-        基于 xterm.js 与服务端 PTY 的浏览器内终端。独立开关、管理员认证、空闲超时与审计缺一不可。
+        基于 xterm.js 与服务端 PTY 的浏览器内终端。独立开关、管理员认证、会话上限与审计缺一不可。
       </p>
     </div>
   )

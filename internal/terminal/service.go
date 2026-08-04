@@ -6,7 +6,7 @@
 // Safety model (docs/V1_CORE.md 9.3):
 //   - enabled by default, with an emergency environment kill switch;
 //   - administrator authentication is required unconditionally;
-//   - idle timeout and an absolute lifetime cap per session;
+//   - no idle disconnect, with an absolute lifetime cap per session;
 //   - bounded concurrent sessions;
 //   - every session start and end is audit-logged with cause and duration.
 package terminal
@@ -31,7 +31,6 @@ var (
 )
 
 const (
-	defaultIdleTimeout   = 10 * time.Minute
 	defaultMaxLifetime   = 2 * time.Hour
 	defaultMaxSessions   = 2
 	defaultShellSizeCols = 120
@@ -44,7 +43,8 @@ type Config struct {
 	Enabled bool
 	// Shell overrides the login shell; empty uses $SHELL then /bin/bash.
 	Shell string
-	// IdleTimeout closes a session with no input/output activity.
+	// IdleTimeout closes a session with no input/output activity. Zero disables
+	// idle disconnection, which is the production default for weak networks.
 	IdleTimeout time.Duration
 	// MaxLifetime is the absolute per-session cap.
 	MaxLifetime time.Duration
@@ -54,6 +54,9 @@ type Config struct {
 	// helper. When set, terminal sessions are created by that helper so the
 	// administrator can use su/sudo without running the control plane as root.
 	PrivilegedSocket string
+	// UpdaterPath enables the fixed-command privileged update request. The
+	// helper validates this root-owned executable before scheduling it.
+	UpdaterPath string
 }
 
 // Session is the PTY-like surface shared by local and helper-backed shells.
@@ -79,8 +82,8 @@ func NewService(config Config, logger *slog.Logger) (*Service, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if config.IdleTimeout <= 0 {
-		config.IdleTimeout = defaultIdleTimeout
+	if config.IdleTimeout < 0 {
+		return nil, errors.New("terminal idle timeout cannot be negative")
 	}
 	if config.MaxLifetime <= 0 {
 		config.MaxLifetime = defaultMaxLifetime
@@ -97,12 +100,20 @@ func NewService(config Config, logger *slog.Logger) (*Service, error) {
 
 func (s *Service) Enabled() bool { return s.config.Enabled }
 
+func (s *Service) TriggerUpdate(ctx context.Context) error {
+	if strings.TrimSpace(s.config.PrivilegedSocket) == "" || strings.TrimSpace(s.config.UpdaterPath) == "" {
+		return errors.New("automatic update is unavailable outside a production systemd installation")
+	}
+	return requestRemoteUpdate(ctx, s.config.PrivilegedSocket)
+}
+
 // Status is the API view of the terminal feature.
 type Status struct {
 	Enabled        bool `json:"enabled"`
 	ActiveSessions int  `json:"active_sessions"`
 	MaxSessions    int  `json:"max_sessions"`
 	IdleTimeoutSec int  `json:"idle_timeout_seconds"`
+	MaxLifetimeSec int  `json:"max_lifetime_seconds"`
 	Privileged     bool `json:"privileged"`
 }
 
@@ -115,6 +126,7 @@ func (s *Service) Status() Status {
 		ActiveSessions: active,
 		MaxSessions:    s.config.MaxSessions,
 		IdleTimeoutSec: int(s.config.IdleTimeout / time.Second),
+		MaxLifetimeSec: int(s.config.MaxLifetime / time.Second),
 		Privileged:     strings.TrimSpace(s.config.PrivilegedSocket) != "",
 	}
 }

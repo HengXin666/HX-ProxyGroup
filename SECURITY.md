@@ -19,7 +19,13 @@ impact on the independent Mihomo data plane.
 - The Mihomo External Controller uses a private Unix Socket in production and
   must not be exposed publicly.
 - Public proxy Listeners and the management endpoint are separate. WebSocket
-  paths are routing identifiers, not authentication.
+  paths are routing identifiers, not authentication. Direct HTTP/SOCKS/Mixed
+  residential listeners bypass Cloudflare/WAF and must use authentication,
+  firewall restrictions, and an explicit public bind.
+- `/sub/` share tokens disclose client proxy credentials. `/ctl/` control
+  tokens can rotate residential exits and spend provider quota. Treat both as
+  passwords, serve them only over HTTPS, and rotate them independently after
+  suspected disclosure.
 - Keep `/var/lib/hx-proxygroup`, the master key, SQLite database, runtime
   configuration, subscription snapshots, and disaster backups readable only
   by the service account and administrators.
@@ -31,17 +37,19 @@ impact on the independent Mihomo data plane.
 
 The optional browser terminal is a local PTY Shell on the HX-ProxyGroup server;
 it is not an SSH client or an SSH jump host. Enabling it grants the logged-in
-administrator command execution as the `hx-proxygroup` service account, which
-can read and modify the application's persistent state. Treat management-panel
-administrator access as equivalent to that OS account while the feature is on.
+administrator command execution. A local development session runs as the
+control-plane account; the production systemd helper creates a root PTY. Treat
+production management-panel administrator access as root-equivalent while the
+feature is on.
 
-The terminal is disabled by default and requires all of the following:
+The terminal is enabled by default, can be disabled with
+`HX_PROXYGROUP_TERMINAL=0`, and requires all of the following:
 
-- an explicitly configured feature flag;
 - a configured, authenticated administrator session;
+- a configured TOTP second factor and a recent step-up verification;
 - same-origin WebSocket acceptance;
 - a maximum of two concurrent sessions;
-- ten-minute idle and two-hour absolute session limits;
+- no idle disconnect and a two-hour absolute session limit;
 - periodic session revalidation, so logout, username changes, password changes,
   and expiry terminate existing sessions;
 - bounded WebSocket frames and PTY window dimensions;
@@ -50,14 +58,21 @@ The terminal is disabled by default and requires all of the following:
 - structured open/close audit records without command contents or secrets.
 
 Predictive local echo is enabled only when the server reads both `ECHO` and
-`ICANON` from the PTY. It is disabled for password prompts, unknown terminal
-state, control characters, and raw/full-screen applications. A control input
-also suspends subsequent prediction until the server explicitly synchronizes
-the PTY mode again. This covers silent password reads such as `read -s` while
-reducing ordinary command-line typing latency.
+`ICANON` from the PTY. Safe printable input may be batched for about 12ms; Enter,
+control characters, passwords and raw/full-screen input flush immediately and
+disable prediction as appropriate. A control input suspends subsequent
+prediction until the server synchronizes the PTY mode again. This covers silent
+password reads such as `read -s` while reducing weak-network typing latency.
+
+In production the terminal helper creates a root PTY after validating the
+control-plane peer through Unix-socket permissions and `SO_PEERCRED`. Therefore
+successful terminal authentication grants root command execution, not merely
+the `hx-proxygroup` service account. The same helper accepts one separate,
+argument-free update frame and can only schedule the root-owned installer's
+fixed `upgrade` action; browser input cannot supply a command or target version.
 
 Residual risk remains: an authorized administrator can intentionally damage
-application data, execute resource-intensive commands, or start processes that
+application or system data, execute resource-intensive commands, or start processes that
 outlive the browser session. Keep the terminal disabled when it is not needed,
 and prefer ordinary SSH with OS-level keys, MFA/bastion policy, and a dedicated
 administrative account for routine server administration.

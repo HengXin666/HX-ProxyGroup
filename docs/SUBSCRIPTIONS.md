@@ -180,7 +180,26 @@ next_refresh_at = now + refresh_interval
 
 退避最多达到订阅刷新周期或 30 分钟中的较小值。服务器在任务执行中崩溃时，租约到期后任务会再次被领取。
 
-## 8. 当前扩展项
+## 8. 统一客户端订阅
+
+来源订阅负责把机场节点导入库存；客户端订阅负责发布本机可以提供的入口，两者方向相反。
+管理员可在「订阅」页读取和轮换全局统一订阅：
+
+```text
+GET  /api/v1/client-subscription
+POST /api/v1/client-subscription  {"action":"rotate"}
+GET  /sub/<token>?format=clash|v2rayn|sing-box|uri
+```
+
+统一导出聚合所有可发布的普通 Listener 和住宅渠道声明节点，并排除住宅渠道内部的
+provisioning 凭据。普通 Listener 与住宅节点共用同一渲染器；Clash/Mihomo、v2rayN、
+sing-box 和明文 URI 格式看到相同的节点集合和稳定顺序。新 token 只有在完整候选订阅构建成功后
+才写入数据库，构建失败时旧链接继续有效。
+
+住宅节点的显示名称和认证信息不会随出口 IP 轮换变化。调用 `/ctl/<token>/nodes/<index>/next`
+后，客户端无需重新拉订阅。`/sub/` token 可读取客户端代理凭据，响应不缓存，日志隐藏完整路径。
+
+## 9. 当前扩展项
 
 - [x] 展开 Mihomo HTTP / File / Inline Provider，并建立协议兼容矩阵。
 - [x] 支持批量手工刷新 API。

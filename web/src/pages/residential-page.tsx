@@ -3,6 +3,7 @@ import {
   Copy,
   FlaskConical,
   KeyRound,
+  ListRestart,
   Pencil,
   Plus,
   RefreshCw,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { ResidentialSessionsDialog } from "@/components/residential-sessions-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -44,8 +46,9 @@ import type {
   ResidentialSessionExpiryPolicy,
   ResidentialTestResult,
   ProxyGroup,
+  TrafficSummary,
 } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn, formatBytes } from "@/lib/utils"
 
 type ProviderForm = {
   name: string
@@ -107,6 +110,14 @@ type ChannelForm = {
   publicHost: string
   publicPort: string
   publicTLS: boolean
+  sessionCount: string
+  idleReleaseSeconds: string
+  directEnabled: boolean
+  directKind: "mixed" | "http" | "socks"
+  directBindAddress: string
+  directPort: string
+  directAuthUsername: string
+  directAuthPassword: string
   enabled: boolean
 }
 
@@ -126,6 +137,14 @@ const emptyChannelForm: ChannelForm = {
   publicHost: "",
   publicPort: "443",
   publicTLS: false,
+  sessionCount: "3",
+  idleReleaseSeconds: "0",
+  directEnabled: false,
+  directKind: "mixed",
+  directBindAddress: "",
+  directPort: "18089",
+  directAuthUsername: "",
+  directAuthPassword: "",
   enabled: true,
 }
 
@@ -138,26 +157,33 @@ export function ResidentialPage({
   const [channels, setChannels] = useState<ResidentialChannel[]>([])
   const [presets, setPresets] = useState<ResidentialPreset[]>([])
   const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([])
+  const [traffic, setTraffic] = useState<Map<string, TrafficSummary>>(new Map())
   const [loading, setLoading] = useState(true)
   const [providerDialogOpen, setProviderDialogOpen] = useState(false)
   const [channelDialogOpen, setChannelDialogOpen] = useState(false)
   const [endpointChannel, setEndpointChannel] = useState<ResidentialChannel | null>(null)
+  const [sessionChannel, setSessionChannel] = useState<ResidentialChannel | null>(null)
   const [editingProvider, setEditingProvider] = useState<ResidentialProvider | null>(null)
   const [testResult, setTestResult] = useState<ResidentialTestResult | null>(null)
 
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const [providerList, channelList, catalog, groupList] = await Promise.all([
+      const [providerList, channelList, catalog, groupList, trafficList] = await Promise.all([
         api.listResidentialProviders(),
         api.listResidentialChannels(),
         api.residentialPresets(),
         api.listProxyGroups(),
+        api.trafficSummaries("residential_channel"),
       ])
       setProviders(providerList.items)
       setChannels(channelList.items)
       setPresets(catalog.items)
       setProxyGroups(groupList.items)
+      setTraffic(new Map(trafficList.items.map((item) => [item.resource_id, item])))
+      setSessionChannel((current) => current
+        ? channelList.items.find((item) => item.id === current.id) ?? null
+        : null)
     } catch (cause) {
       if (cause instanceof ApiError) onNotice(cause.message, "error")
     } finally {
@@ -196,7 +222,7 @@ export function ResidentialPage({
         <div>
           <h1 className="text-lg font-semibold">住宅代理</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            动态住宅 IP 渠道：客户端通过雷池 HTTPS 路径访问，住宅出口由 HX 代理组维护。
+            将稳定客户端节点映射到服务端轮换的住宅出口，并统一统计渠道流量。
           </p>
         </div>
         <button
@@ -237,8 +263,9 @@ export function ResidentialPage({
                       <th className="px-3 py-2 font-medium">模式</th>
                       <th className="px-3 py-2 font-medium">地区</th>
                       <th className="px-3 py-2 font-medium">客户端入口</th>
-                      <th className="px-3 py-2 font-medium">会话</th>
+                      <th className="px-3 py-2 font-medium">节点</th>
                       <th className="px-3 py-2 font-medium">出口 IP</th>
+                      <th className="px-3 py-2 font-medium">累计流量</th>
                       <th className="px-3 py-2 text-right font-medium">操作</th>
                     </tr>
                   </thead>
@@ -279,21 +306,33 @@ export function ResidentialPage({
                               <span className="text-[11px] text-warning">HTTP / SOCKS5 / Mixed 仅供本机或四层转发使用，不能通过雷池路径承载。</span>
                             )}
                             {isResidentialWebSocketKind(channel.endpoint.kind) && channel.mode === "sticky" && (
-                              <span className="text-[11px] text-muted-foreground">粘滞 WS 凭据由无端口的 /rot 会话 API 按需签发。</span>
+                              <span className="text-[11px] text-muted-foreground">节点名称和凭据稳定，住宅出口由服务端内部轮换。</span>
                             )}
                             {!hasPublicEndpoint(channel) && <span className="text-[11px] text-warning">未配置公网端点，禁止复制本机地址</span>}
                           </div>
-                          {channel.rotation_url && (
-                            <div className="mt-0.5 flex items-center gap-1.5 text-muted-foreground">
-                              <code className="max-w-[240px] truncate rounded bg-muted px-1.5 py-0.5" title="住宅会话控制地址">{channel.rotation_url}</code>
-                              <button type="button" onClick={() => void copyText(channel.rotation_url, "住宅会话控制地址")} className="hover:text-foreground"><Copy className="size-3" /></button>
+                        </td>
+                        <td className="px-3 py-2">
+                          {channel.session_count > 0 ? (
+                            <button type="button" className="font-medium text-primary hover:underline" onClick={() => setSessionChannel(channel)}>
+                              {channel.active_session_count}/{channel.session_count} 已分配
+                            </button>
+                          ) : (
+                            <span className="text-muted-foreground">{channel.active_session_count} 个按需分配</span>
+                          )}
+                          {channel.direct_endpoint && (
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              直连 {channel.direct_endpoint.kind} · {channel.direct_endpoint.bind_address}:{channel.direct_endpoint.port}
                             </div>
                           )}
                         </td>
-                        <td className="px-3 py-2">
-                          <span className="text-muted-foreground">{channel.active_session_count} 个按需分配</span>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {channel.sessions?.some((session) => session.exit_ip)
+                            ? `${channel.sessions.filter((session) => session.exit_ip).length} 个已记录`
+                            : "由服务端会话维护"}
                         </td>
-                        <td className="px-3 py-2 text-muted-foreground">由客户端会话独立维护</td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {formatBytes((traffic.get(channel.id)?.upload_bytes ?? 0) + (traffic.get(channel.id)?.download_bytes ?? 0))}
+                        </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-end gap-1">
                             <button
@@ -306,11 +345,12 @@ export function ResidentialPage({
                             </button>
                             <button
                               type="button"
-                              title="重置公共轮换 Token（旧链接立即失效）"
-                              onClick={() => void runAction(() => api.rotateResidentialChannelToken(channel.id), "已重置轮换 Token")}
-                              className="inline-flex size-7 items-center justify-center rounded-md border hover:bg-muted"
+                              title="管理住宅节点"
+                              disabled={channel.session_count < 1}
+                              onClick={() => setSessionChannel(channel)}
+                              className="inline-flex size-7 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              <KeyRound className="size-3.5" />
+                              <ListRestart className="size-3.5" />
                             </button>
                             <button
                               type="button"
@@ -472,6 +512,15 @@ export function ResidentialPage({
             onNotice("住宅公网端点已保存")
             await reload()
           }}
+          onNotice={onNotice}
+        />
+      )}
+
+      {sessionChannel && (
+        <ResidentialSessionsDialog
+          channel={sessionChannel}
+          onClose={() => setSessionChannel(null)}
+          onReload={reload}
           onNotice={onNotice}
         />
       )}
@@ -896,6 +945,8 @@ function ChannelDialog({
         region_mode: form.regionMode,
         region: form.regionMode === "fixed" ? form.region.trim() || undefined : undefined,
         random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
+        session_count: form.mode === "sticky" ? Number(form.sessionCount) : 0,
+        idle_release_seconds: form.mode === "sticky" ? Number(form.idleReleaseSeconds) : 0,
         listener: {
           kind: form.listenerKind,
           bind_address: form.bindAddress.trim(),
@@ -908,6 +959,23 @@ function ChannelDialog({
           ? { host: form.publicHost.trim(), port: isResidentialWebSocketKind(form.listenerKind) ? 443 : Number(form.publicPort) || Number(form.port), tls: form.publicTLS }
           : undefined,
         enabled: form.enabled,
+      }
+      if (form.mode === "sticky" && Number(form.sessionCount) < 1) {
+        throw new Error("粘滞渠道至少需要 1 个客户端节点")
+      }
+      if (form.directEnabled) {
+        if (!form.directBindAddress.trim() || !form.directAuthUsername.trim() || !form.directAuthPassword) {
+          throw new Error("直连入口必须填写可达绑定 IP、账号和密码")
+        }
+        payload.direct_listener = {
+          kind: form.directKind,
+          bind_address: form.directBindAddress.trim(),
+          port: Number(form.directPort),
+          auth: {
+            username: form.directAuthUsername.trim(),
+            password: form.directAuthPassword,
+          },
+        }
       }
       if (form.authUsername || form.authPassword) {
         payload.listener.auth = { username: form.authUsername, password: form.authPassword }
@@ -928,7 +996,7 @@ function ChannelDialog({
         <form onSubmit={(event) => void submit(event)}>
           <DialogHeader>
             <DialogTitle>新建渠道</DialogTitle>
-            <DialogDescription>渠道维护客户端会话；粘滞 IP 只在客户端建立会话时按需分配。</DialogDescription>
+            <DialogDescription>粘滞渠道发布固定客户端节点；出口 IP 由服务端按 TTL、空闲策略和 next 请求轮换。</DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-3 px-5 py-4 sm:grid-cols-2">
@@ -957,6 +1025,20 @@ function ChannelDialog({
                 </SelectContent>
               </Select>
             </label>
+            {form.mode === "sticky" && (
+              <>
+                <label className="grid gap-1 text-xs">
+                  节点数量
+                  <Input value={form.sessionCount} onChange={(event) => update("sessionCount", event.target.value)} inputMode="numeric" min={1} required />
+                  <span className="text-[11px] text-muted-foreground">每个逻辑节点拥有独立且稳定的客户端凭据。</span>
+                </label>
+                <label className="grid gap-1 text-xs">
+                  空闲释放（秒）
+                  <Input value={form.idleReleaseSeconds} onChange={(event) => update("idleReleaseSeconds", event.target.value)} inputMode="numeric" min={0} />
+                  <span className="text-[11px] text-muted-foreground">0 表示保持分配；换 IP 不改变节点凭据。</span>
+                </label>
+              </>
+            )}
             <label className="grid gap-1 text-xs">
               地区策略
               <Select value={form.regionMode} onValueChange={(value) => update("regionMode", value as ResidentialRegionMode)}>
@@ -1039,6 +1121,46 @@ function ChannelDialog({
               入口密码{isResidentialWebSocketKind(form.listenerKind) ? "（必填）" : "（可选）"}
               <Input value={form.authPassword} onChange={(event) => update("authPassword", event.target.value)} type="password" autoComplete="new-password" />
             </label>
+            {form.mode === "sticky" && (
+              <div className="grid gap-3 rounded-md border p-3 sm:col-span-2 sm:grid-cols-2">
+                <label className="flex items-center gap-2 text-xs sm:col-span-2">
+                  <Checkbox checked={form.directEnabled} onCheckedChange={(value) => update("directEnabled", value === true)} />
+                  同时开放 OutlookRegister 可用的直连 HTTP/SOCKS 入口
+                </label>
+                {form.directEnabled && (
+                  <>
+                    <label className="grid gap-1 text-xs">
+                      直连协议
+                      <Select value={form.directKind} onValueChange={(value) => update("directKind", value as ChannelForm["directKind"])}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="mixed">Mixed</SelectItem>
+                          <SelectItem value="http">HTTP CONNECT</SelectItem>
+                          <SelectItem value="socks">SOCKS5</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </label>
+                    <label className="grid gap-1 text-xs">
+                      直连端口
+                      <Input value={form.directPort} onChange={(event) => update("directPort", event.target.value)} inputMode="numeric" required />
+                    </label>
+                    <label className="grid gap-1 text-xs sm:col-span-2">
+                      可达绑定 IP
+                      <Input value={form.directBindAddress} onChange={(event) => update("directBindAddress", event.target.value)} placeholder="VPS 网卡上的公网或内网 IP" required />
+                      <span className="text-[11px] text-warning">该端口不能走 Cloudflare 橙云或雷池七层转发；请用防火墙限制来源。</span>
+                    </label>
+                    <label className="grid gap-1 text-xs">
+                      初始化账号
+                      <Input value={form.directAuthUsername} onChange={(event) => update("directAuthUsername", event.target.value)} autoComplete="off" required />
+                    </label>
+                    <label className="grid gap-1 text-xs">
+                      初始化密码
+                      <Input value={form.directAuthPassword} onChange={(event) => update("directAuthPassword", event.target.value)} type="password" autoComplete="new-password" required />
+                    </label>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           <DialogFooter>

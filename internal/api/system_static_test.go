@@ -12,11 +12,46 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 )
 
 type systemInfoDataPlane struct{}
+
+type systemUpdateAuth struct{ verified bool }
+
+func (*systemUpdateAuth) Configured(context.Context) (bool, error)            { return true, nil }
+func (*systemUpdateAuth) Setup(context.Context, string, string, string) error { return nil }
+func (*systemUpdateAuth) Login(context.Context, string, string, string) (auth.Session, error) {
+	return auth.Session{}, nil
+}
+func (*systemUpdateAuth) Authenticate(context.Context, string) (auth.Session, error) {
+	return auth.Session{Username: "admin", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (*systemUpdateAuth) Logout(context.Context, string) error                 { return nil }
+func (*systemUpdateAuth) LogoutAll(context.Context) error                      { return nil }
+func (*systemUpdateAuth) ChangePassword(context.Context, string, string) error { return nil }
+func (*systemUpdateAuth) ChangeUsername(context.Context, string, string) error { return nil }
+func (service *systemUpdateAuth) TwoFactorStatus(context.Context, string) (auth.TwoFactorStatus, error) {
+	return auth.TwoFactorStatus{Configured: true, Enabled: true, Verified: service.verified}, nil
+}
+func (*systemUpdateAuth) BeginTwoFactorSetup(context.Context) (auth.TwoFactorSetup, error) {
+	return auth.TwoFactorSetup{}, nil
+}
+func (*systemUpdateAuth) EnableTwoFactor(context.Context, string) error  { return nil }
+func (*systemUpdateAuth) DisableTwoFactor(context.Context, string) error { return nil }
+func (*systemUpdateAuth) VerifyTwoFactor(context.Context, string, string, string) error {
+	return nil
+}
+
+type systemUpdateService struct{ calls int }
+
+func (service *systemUpdateService) TriggerUpdate(context.Context) error {
+	service.calls++
+	return nil
+}
 
 func (systemInfoDataPlane) Apply(context.Context) error { return nil }
 func (systemInfoDataPlane) Status() mihomo.Status {
@@ -67,6 +102,37 @@ func TestSystemInfoAPI(t *testing.T) {
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/system/info", nil))
 	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodGet {
 		t.Fatalf("POST system info status = %d, Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+	}
+}
+
+func TestSystemUpdateRequiresStepUpAndSchedulesFixedUpdater(t *testing.T) {
+	authService := &systemUpdateAuth{}
+	updater := &systemUpdateService{}
+	server, err := NewServer(
+		&stubBundleService{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithAuth(authService),
+		WithUpdater(updater),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func() *http.Request {
+		result := httptest.NewRequest(http.MethodPost, "/api/v1/system/update", nil)
+		result.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "session"})
+		result.Header.Set("X-CSRF-Token", "csrf")
+		return result
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request())
+	if recorder.Code != http.StatusForbidden || updater.calls != 0 {
+		t.Fatalf("unverified update status=%d calls=%d", recorder.Code, updater.calls)
+	}
+	authService.verified = true
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request())
+	if recorder.Code != http.StatusAccepted || updater.calls != 1 {
+		t.Fatalf("verified update status=%d calls=%d body=%s", recorder.Code, updater.calls, recorder.Body.String())
 	}
 }
 

@@ -87,17 +87,17 @@
 - HTTP CONNECT、SOCKS5 和 Mixed Listener 可直接绑定 Proxy Group。
 - VLESS、VMess、Trojan over WebSocket 服务端入口由 Mihomo 提供。
 - Cloudflare / 雷池可将 `/__hx-proxy__/` WebSocket 路由统一转发到控制面，由受限 Edge Relay 精确转给本机 Mihomo Listener；控制面不解析 VLESS、VMess 或 Trojan。
-- 可导出 Clash/Mihomo、v2rayN URI 列表和 sing-box 客户端订阅。
+- 一份统一订阅聚合普通代理服务、机场反代入口和住宅声明节点，可导出 Clash/Mihomo、v2rayN、sing-box 和 URI 格式。
 - 路由规则可将站点集合指向 `DIRECT`、`REJECT` 或指定 Proxy Group。
 
 ### 可观测性与运维
 
 - SSE 秒级总览：上下行速率、活动连接、入口和路由拓扑。
-- Listener、Proxy Group、节点维度的流量与连接统计。
+- Listener、Proxy Group、节点和稳定住宅渠道维度的流量与连接统计。
 - 近 24 小时一分钟、2-7 天五分钟、8-30 天一小时分层聚合。
 - 订阅、空快照、空代理组和数据面异常告警，支持 SMTP、冷却、确认和恢复通知。
 - SQLite Online Backup、Portable Export、SHA-256 完整性校验与敏感灾难备份。
-- 浏览器本机 Shell：PTY + WebSocket + xterm.js，默认开启；必须完成管理员登录和 TOTP 2FA 解锁，带并发、空闲、寿命和审计限制。
+- 浏览器本机 Shell：PTY + WebSocket + xterm.js，默认开启；必须完成管理员登录和 TOTP 2FA 解锁，无空闲断开，保留 2 小时寿命、并发和审计限制。
 
 ### 安全与可靠性
 
@@ -174,7 +174,7 @@ http://127.0.0.1:<49152-65535 之间的随机端口>
 侧栏「住宅代理」页管理动态住宅 IP 渠道，整体模型是：
 
 ```text
-供应商(厂商账号/API + TTL) -> 渠道(Listener + 客户端会话) -> 客户端
+供应商(厂商账号/API + TTL) -> 渠道(1~2 个 Listener + N 个声明节点) -> 统一订阅
 ```
 
 需要通过海外网络访问住宅网关时，可在供应商中选择一个已启用的海外
@@ -198,17 +198,13 @@ Proxy Group。实际数据面链路为：
     `cc`、`country`、`region` 或 `area` 参数；不会依赖供应商自称的随机地区。
   - 控制面 API 上游代理：可选填写 `http://`、`https://` 或 `socks5://` 代理，
     仅用于 BestProxy API 提取和服务端测试连接；它不转发客户端业务流量，地址和代理认证信息均加密保存。
-- **渠道**：一个渠道 = 一个客户端入口（Listener）和客户端会话命名空间。渠道创建时
-  不预取住宅 IP；透传渠道直接把流量转发给供应商网关，由供应商自行轮换。住宅 Listener
-  强制绑定 `127.0.0.1` 或其他环回地址；公网端点只描述雷池/反向代理的 HTTPS 域名，
-  不代表 Mihomo 监听端口，也不会把内部端口发布给远程客户端。
-- **客户端**：HTTP/SOCKS/Mixed 渠道在 HX-ProxyGroup 同机使用
-  `http://127.0.0.1:<listener-port>`、`socks5://127.0.0.1:<listener-port>`；sticky
-  渠道支持一个 token、一个内部端口承载多个显式 `session_id`。客户端通过会话 API
-  获取独立代理账号，此时才实时分配住宅 IP；完成高成本阶段后可按会话切到 `DIRECT`。
-  需要跨国家轮换的客户端应在每个业务 flow 开始时选择一个国家并提交
-  `{"country_code":"XX"}`，在该 flow 内固定 session 和国家；国家池的随机选择属于客户端，
-  服务端只负责校验、回显并拒绝同一 session 的国家冲突。
+- **渠道**：sticky 渠道设置 `session_count` 后发布 N 个名称和认证稳定的逻辑节点。渠道拥有
+  一个主入口和可选直连入口；WS 主入口强制环回，直连 HTTP/SOCKS/Mixed 入口只有管理员显式
+  配置后才监听指定地址，并强制认证。
+- **客户端**：从统一 `/sub/<token>` 导入普通代理服务与住宅声明节点。住宅供应商会话、网关
+  节点和出口 IP 对普通用户不可见；TTL、空闲释放或 `next` 只改变服务端内部映射，不改变订阅。
+- **自动化**：`/ctl/<control-token>/nodes` 提供声明节点池，`/nodes/<index>/next` 指定节点换 IP。
+  OutlookRegister 在本地互斥租用节点，结束时只归还本地租约，不删除服务端节点。
 
 住宅渠道默认是 Mihomo 的 HTTP / SOCKS5 / Mixed 原生入口；需要走
 `Cloudflare -> 雷池 -> HX-ProxyGroup` 时，可把入口协议选择为 VLESS、VMess 或 Trojan over WebSocket。
@@ -220,21 +216,19 @@ Proxy Group。实际数据面链路为：
 ```
 
 Edge Relay 只转发固定 `/__hx-proxy__/` WebSocket 连接，协议认证、住宅节点选择和业务流量仍由
-Mihomo 负责。VLESS/VMess 入口需要 UUID；sticky 渠道的会话 API 会为每个会话生成合法 UUID，
-`proxy_username` 继续作为 Mihomo `IN-USER` 路由标识。HTTP CONNECT、SOCKS5 和 Mixed 仍不能
+Mihomo 负责。每个声明节点使用独立 VLESS/VMess UUID 或 Trojan 密码，并通过 Mihomo
+`IN-USER` 规则映射到当前住宅出口。HTTP CONNECT、SOCKS5 和 Mixed 仍不能
 经过 Cloudflare 橙云或仅支持 WebSocket 的 Edge Relay；这些入口必须使用可转发原生字节流的
-VPS 四层代理或 HTTP/SOCKS5 反向代理。对外只使用雷池 HTTPS 443 下的路径：透传 WS 渠道提供
-`https://proxy.example.com/sub/<token>?format=clash`，sticky 渠道通过
-`https://proxy.example.com/rot/<token>/sessions/<session_id>` 获取会话；链接省略默认 `:443`。
-`/sub/` 是订阅下载，不是 HTTP/SOCKS 代理端点；OutlookRegister 等同机程序仍把本机 Listener
-地址填入 Playwright，把 `/rot/` 的公网或本机控制面地址作为会话 API 根地址。未配置公网端点时
-只能在服务器本机使用，页面不会复制 `127.0.0.1`。
+VPS 直连端口或客户端本机 Mihomo 落地。对外使用雷池 HTTPS 443 下的统一订阅
+`https://proxy.example.com/sub/<token>?format=clash`；链接省略默认 `:443`。
+`/sub/` 和 `/ctl/` 都不是 HTTP/SOCKS 代理端点。OutlookRegister 必须从 `/ctl/` 得到直连入口
+生成的 `proxy_url`，纯 WS 渠道需要在 OutlookRegister 所在机器另设本地 Mihomo 落地。
 
 定制会话 API、并发容量、切流语义和安全边界见
 [住宅代理客户端会话 API](docs/RESIDENTIAL_SESSION_API.md)。
 
-每个客户端会话单独记录供应商 TTL。供应商可配置到期后终止客户端会话，或保留客户端认证并
-实时换一个住宅 IP；后台维护任务也会有界处理到期会话，不依赖客户端再次调用 API。
+每个声明节点单独记录供应商 TTL。供应商可配置到期后释放分配，或保留客户端认证并实时换一个
+住宅 IP；后台维护任务以有界批次处理到期与空闲分配，不依赖客户端重新拉订阅。
 BestProxy 的 `life` 按分钟计算，API 提取链接中的 `life` 参数优先于表单里的 TTL；通用供应商
 的 `session_ttl_seconds` 按秒计算。
 
@@ -249,10 +243,9 @@ Proxy Group，最后在住宅供应商编辑框的「上游海外 Proxy Group」
 `runtime/active.yaml` 中每个住宅节点是否出现 `dialer-proxy: <上游组名>`；没有该字段时，
 住宅网关仍然是直连，无法满足需要通过订阅访问住宅网关的网络环境。
 
-同机程序使用住宅渠道的环回 Listener 地址，不使用控制面 `19090`，也不把 `/sub/` 订阅 URL
-填入 Playwright 的 `proxy` 字段。`7890` 通常已被本机其他 Mihomo/Clash 占用，住宅渠道建议
-使用独立内部端口（例如 `18088`）；Listener 端口占用现在会在数据面应用前直接报错。公网
-入口只开放雷池的 `443`，控制面和 Mihomo Listener 端口均不应暴露到公网。
+同机程序可以使用住宅渠道的环回 HTTP/SOCKS Listener；远程浏览器自动化则需要显式公网直连
+Listener。两者都不使用控制面 `19090`，也不能把 `/sub/` 或 `/ctl/` URL 填入 Playwright 的
+`proxy` 字段。公网直连入口绕过 CF/WAF，必须用防火墙和强认证限制暴露范围。
 
 首次启动会生成：
 
@@ -287,6 +280,9 @@ curl -fsSLO https://raw.githubusercontent.com/HengXin666/HX-ProxyGroup/main/inst
 ```bash
 sudo hx-proxygroup-install upgrade
 ```
+
+生产 systemd 安装也可在「关于」页执行一键更新。该操作要求已登录管理员和最近完成的 TOTP
+2FA 验证；root helper 只接受固定的无参数升级请求，不接受浏览器提交命令或版本字符串。
 
 安装器在切换版本前校验新 Mihomo 与当前配置；三个服务 readiness 失败时原子恢复上一版 `current` 链接并重启旧版本。升级成功后安装器自身也会更新。
 
@@ -392,7 +388,7 @@ HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE=off bash run.sh
 HX_PROXYGROUP_TERMINAL=0 bash run.sh
 ```
 
-首次登录后进入「全局配置 -> 账号安全」，生成并启用 TOTP 2FA；终端连接前需要输入验证器当前的 6 位验证码。解锁状态对当前管理员 Session 有效 15 分钟。终端默认空闲 10 分钟断开、最长 2 小时、最多 2 个并发会话，并记录建立、关闭、来源、操作者、时长和原因。它不是远程 SSH 跳板。
+首次登录后进入「全局配置 -> 账号安全」，生成并启用 TOTP 2FA；终端连接前需要输入验证器当前的 6 位验证码。解锁状态对当前管理员 Session 有效 15 分钟。终端不因空闲自动断开，单会话最长 2 小时、最多 2 个并发会话，并记录建立、关闭、来源、操作者、时长和原因。它不是远程 SSH 跳板。
 
 这是 HX-ProxyGroup 所在服务器的本机 PTY Shell。普通命令行模式下，前端读取服务端 PTY 的 `ECHO` / `ICANON` 状态，只对可打印字符做有界预测回显，因此网络较慢时键入内容仍会立即出现在本地；真实命令结果仍取决于网络和服务器响应。密码提示、控制键、未知状态及 vim/top 等 raw/full-screen 程序不会预测回显。
 

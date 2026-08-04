@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,19 +21,39 @@ import (
 // disabled; the API maps it onto 404 to avoid leaking listener existence.
 var ErrShareDisabled = errors.New("listener share link is disabled")
 
+// ShareNode is one published proxy inside a subscription. A plain listener
+// exports exactly one; a residential channel exports one per declared session,
+// all sharing the same endpoint but carrying independent credentials.
+type ShareNode struct {
+	// Name is the node name a client displays. It must stay stable across
+	// rotations so a subscription does not have to be re-fetched.
+	Name string
+	Auth *Auth
+}
+
 // ShareExport is the rendered subscription payload for one listener.
 type ShareExport struct {
 	// Body is the plain URI list, one proxy URI per line.
 	Body string
 	// FileName is a suggested download name.
-	FileName  string
-	Name      string
-	Kind      string
-	Host      string
-	Port      int
-	Auth      *Auth
+	FileName string
+	Name     string
+	Kind     string
+	Host     string
+	Port     int
+	// Nodes is the published node list, in stable order.
+	Nodes     []ShareNode
 	Transport Transport
 	Endpoint  PublicEndpoint
+}
+
+// Auth reports the first node's credentials. It preserves the pre-0.2.0
+// single-node accessor used by callers that only ever publish one proxy.
+func (export ShareExport) Auth() *Auth {
+	if len(export.Nodes) == 0 {
+		return nil
+	}
+	return export.Nodes[0].Auth
 }
 
 func newShareToken() (string, error) {
@@ -56,20 +77,61 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 	if err != nil {
 		return ShareExport{}, mapStoreError(err)
 	}
+	return s.exportRecord(record, requestHost, nil)
+}
+
+// ExportByID renders an enabled listener for the unified client catalog.
+func (s *Service) ExportByID(ctx context.Context, id, requestHost string) (ShareExport, error) {
+	record, err := s.repository.GetListener(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return ShareExport{}, mapStoreError(err)
+	}
+	return s.exportRecord(record, requestHost, nil)
+}
+
+// ExportWithNodes renders an enabled listener with caller-supplied credentials.
+// Residential channels use it to publish stable declared sessions without
+// exposing the listener's provisioning credential.
+func (s *Service) ExportWithNodes(
+	ctx context.Context,
+	id, requestHost, name string,
+	nodes []ShareNode,
+) (ShareExport, error) {
+	record, err := s.repository.GetListener(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return ShareExport{}, mapStoreError(err)
+	}
+	if strings.TrimSpace(name) != "" {
+		record.Name = strings.TrimSpace(name)
+	}
+	return s.exportRecord(record, requestHost, nodes)
+}
+
+func (s *Service) exportRecord(
+	record store.ListenerRecord,
+	requestHost string,
+	nodes []ShareNode,
+) (ShareExport, error) {
 	if !record.Enabled {
 		return ShareExport{}, ErrShareDisabled
 	}
-	var auth *Auth
-	if record.AuthMode == "userpass" && len(record.AuthConfigEncrypted) > 0 {
-		plaintext, err := s.cipher.Open(record.AuthConfigEncrypted, associatedData(record.ID))
-		if err != nil {
-			return ShareExport{}, fmt.Errorf("decrypt listener %q auth: %w", record.Name, err)
+	if nodes == nil {
+		var auth *Auth
+		if record.AuthMode == "userpass" && len(record.AuthConfigEncrypted) > 0 {
+			plaintext, err := s.cipher.Open(record.AuthConfigEncrypted, associatedData(record.ID))
+			if err != nil {
+				return ShareExport{}, fmt.Errorf("decrypt listener %q auth: %w", record.Name, err)
+			}
+			decoded := Auth{}
+			if err := json.Unmarshal(plaintext, &decoded); err != nil {
+				return ShareExport{}, fmt.Errorf("decode listener %q auth: %w", record.Name, err)
+			}
+			auth = &decoded
 		}
-		decoded := Auth{}
-		if err := json.Unmarshal(plaintext, &decoded); err != nil {
-			return ShareExport{}, fmt.Errorf("decode listener %q auth: %w", record.Name, err)
-		}
-		auth = &decoded
+		nodes = []ShareNode{{Name: record.Name, Auth: auth}}
+	}
+	if len(nodes) == 0 {
+		return ShareExport{}, ErrShareDisabled
 	}
 	var transport Transport
 	var endpoint PublicEndpoint
@@ -102,13 +164,29 @@ func (s *Service) ExportByShareToken(ctx context.Context, token, requestHost str
 	if port < 1 || port > 65535 {
 		return ShareExport{}, fmt.Errorf("%w: listener export port must be between 1 and 65535", ErrInvalid)
 	}
-	uris := shareURIs(record.Kind, record.Name, host, port, auth, transport, endpoint)
+	return NewShareExport(record.Name, record.Kind, host, port, nodes, transport, endpoint), nil
+}
+
+// NewShareExport renders the URI body for a node list. Every renderer walks the
+// same list, so a residential channel and a plain listener cannot drift into
+// two different subscription formats.
+func NewShareExport(
+	name, kind, host string,
+	port int,
+	nodes []ShareNode,
+	transport Transport,
+	endpoint PublicEndpoint,
+) ShareExport {
+	uris := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		uris = append(uris, shareURIs(kind, node.Name, host, port, node.Auth, transport, endpoint)...)
+	}
 	return ShareExport{
 		Body:     strings.Join(uris, "\n") + "\n",
-		FileName: sanitizeFileName(record.Name) + ".txt",
-		Name:     record.Name, Kind: record.Kind, Host: host, Port: port,
-		Auth: auth, Transport: transport, Endpoint: endpoint,
-	}, nil
+		FileName: sanitizeFileName(name) + ".txt",
+		Name:     name, Kind: kind, Host: host, Port: port,
+		Nodes: nodes, Transport: transport, Endpoint: endpoint,
+	}
 }
 
 func isLoopbackBind(value string) bool {
@@ -132,16 +210,22 @@ func (export ShareExport) Render(format string) (body, fileName, contentType str
 		return export.Body, sanitizeFileName(export.Name) + ".txt", "text/plain; charset=utf-8", nil
 	case "clash", "mihomo":
 		groupName := "HX-PROXY"
-		if export.Name == groupName {
-			groupName = "HX-PROXY-GROUP"
+		proxies := make([]map[string]any, 0, len(export.Nodes))
+		names := make([]string, 0, len(export.Nodes)+1)
+		for _, node := range export.Nodes {
+			if node.Name == groupName {
+				groupName = "HX-PROXY-GROUP"
+			}
+			proxies = append(proxies, export.clashProxy(node))
+			names = append(names, node.Name)
 		}
 		encoded, encodeErr := yaml.Marshal(map[string]any{
 			"mode":      "rule",
 			"log-level": "info",
 			"allow-lan": false,
-			"proxies":   []map[string]any{export.clashProxy()},
+			"proxies":   proxies,
 			"proxy-groups": []map[string]any{{
-				"name": groupName, "type": "select", "proxies": []string{export.Name, "DIRECT"},
+				"name": groupName, "type": "select", "proxies": append(names, "DIRECT"),
 			}},
 			"rules": []string{"MATCH," + groupName},
 		})
@@ -150,7 +234,11 @@ func (export ShareExport) Render(format string) (body, fileName, contentType str
 		}
 		return string(encoded), sanitizeFileName(export.Name) + ".yaml", "application/yaml; charset=utf-8", nil
 	case "sing-box", "singbox":
-		encoded, encodeErr := json.MarshalIndent(map[string]any{"outbounds": []map[string]any{export.singBoxOutbound()}}, "", "  ")
+		outbounds := make([]map[string]any, 0, len(export.Nodes))
+		for _, node := range export.Nodes {
+			outbounds = append(outbounds, export.singBoxOutbound(node))
+		}
+		encoded, encodeErr := json.MarshalIndent(map[string]any{"outbounds": outbounds}, "", "  ")
 		if encodeErr != nil {
 			return "", "", "", fmt.Errorf("encode sing-box subscription: %w", encodeErr)
 		}
@@ -229,8 +317,8 @@ func shareURIs(kind, name, host string, port int, auth *Auth, transport Transpor
 	return uris
 }
 
-func (export ShareExport) clashProxy() map[string]any {
-	proxy := map[string]any{"name": export.Name, "type": export.Kind, "server": export.Host, "port": export.Port}
+func (export ShareExport) clashProxy(node ShareNode) map[string]any {
+	proxy := map[string]any{"name": node.Name, "type": export.Kind, "server": export.Host, "port": export.Port}
 	switch export.Kind {
 	case "http", "socks":
 		if export.Kind == "http" && export.Endpoint.TLS {
@@ -239,22 +327,22 @@ func (export ShareExport) clashProxy() map[string]any {
 		if export.Kind == "socks" {
 			proxy["type"] = "socks5"
 		}
-		addUserPassword(proxy, export.Auth)
+		addUserPassword(proxy, node.Auth)
 	case "mixed":
 		proxy["type"] = "http"
 		if export.Endpoint.TLS {
 			proxy["tls"] = true
 		}
-		addUserPassword(proxy, export.Auth)
+		addUserPassword(proxy, node.Auth)
 	case "vless", "vmess", "trojan":
 		proxy["tls"] = true
 		proxy["network"] = "ws"
 		proxy["server-name"] = export.Endpoint.Host
 		proxy["ws-opts"] = map[string]any{"path": export.Transport.WSPath, "headers": map[string]string{"Host": export.Endpoint.Host}}
 		if export.Kind == "trojan" {
-			proxy["password"] = authPassword(export.Auth)
+			proxy["password"] = authPassword(node.Auth)
 		} else {
-			proxy["uuid"] = authPassword(export.Auth)
+			proxy["uuid"] = authPassword(node.Auth)
 		}
 		if export.Kind == "vless" {
 			proxy["udp"] = true
@@ -263,8 +351,8 @@ func (export ShareExport) clashProxy() map[string]any {
 	return proxy
 }
 
-func (export ShareExport) singBoxOutbound() map[string]any {
-	outbound := map[string]any{"type": export.Kind, "tag": export.Name, "server": export.Host, "server_port": export.Port}
+func (export ShareExport) singBoxOutbound(node ShareNode) map[string]any {
+	outbound := map[string]any{"type": export.Kind, "tag": node.Name, "server": export.Host, "server_port": export.Port}
 	switch export.Kind {
 	case "http", "socks", "mixed":
 		if export.Kind == "mixed" {
@@ -273,14 +361,14 @@ func (export ShareExport) singBoxOutbound() map[string]any {
 		if export.Kind == "socks" {
 			outbound["type"] = "socks"
 		}
-		addUserPassword(outbound, export.Auth)
+		addUserPassword(outbound, node.Auth)
 	case "vless", "vmess", "trojan":
 		outbound["tls"] = map[string]any{"enabled": true, "server_name": export.Endpoint.Host}
 		outbound["transport"] = map[string]any{"type": "ws", "path": export.Transport.WSPath, "headers": map[string]string{"Host": export.Endpoint.Host}}
 		if export.Kind == "trojan" {
-			outbound["password"] = authPassword(export.Auth)
+			outbound["password"] = authPassword(node.Auth)
 		} else {
-			outbound["uuid"] = authPassword(export.Auth)
+			outbound["uuid"] = authPassword(node.Auth)
 		}
 		if export.Kind == "vmess" {
 			outbound["security"] = "auto"

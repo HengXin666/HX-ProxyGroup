@@ -60,6 +60,32 @@ func openRemoteSession(ctx context.Context, path string) (Session, error) {
 	}
 }
 
+func requestRemoteUpdate(ctx context.Context, path string) error {
+	requestContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	connection, err := (&net.Dialer{}).DialContext(requestContext, "unix", path)
+	if err != nil {
+		return fmt.Errorf("connect privileged update helper: %w", err)
+	}
+	defer connection.Close()
+	if err := writeFrame(connection, frameUpdate, nil); err != nil {
+		return fmt.Errorf("request automatic update: %w", err)
+	}
+	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	kind, payload, err := readFrame(connection)
+	if err != nil {
+		return fmt.Errorf("read automatic update response: %w", err)
+	}
+	switch kind {
+	case frameReady:
+		return nil
+	case frameError:
+		return errors.New(string(payload))
+	default:
+		return fmt.Errorf("unexpected automatic update response frame %d", kind)
+	}
+}
+
 func (s *remoteSession) readLoop() {
 	defer close(s.output)
 	defer s.signalStop()

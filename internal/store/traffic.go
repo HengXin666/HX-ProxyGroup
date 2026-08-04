@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	TrafficResourceListener   = "listener"
-	TrafficResourceProxyGroup = "proxy_group"
-	TrafficResourceNode       = "node"
+	TrafficResourceListener           = "listener"
+	TrafficResourceProxyGroup         = "proxy_group"
+	TrafficResourceNode               = "node"
+	TrafficResourceResidentialChannel = "residential_channel"
 )
 
 type TrafficWrite struct {
@@ -310,7 +311,8 @@ ON CONFLICT(resource_type, resource_id, bucket_start, granularity_seconds) DO UP
 }
 
 func validTrafficResource(value string) bool {
-	return value == TrafficResourceListener || value == TrafficResourceProxyGroup || value == TrafficResourceNode
+	return value == TrafficResourceListener || value == TrafficResourceProxyGroup ||
+		value == TrafficResourceNode || value == TrafficResourceResidentialChannel
 }
 
 func validTrafficGranularity(value time.Duration) bool {

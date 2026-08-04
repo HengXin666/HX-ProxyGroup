@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/residential"
 )
 
@@ -207,6 +209,34 @@ func (s *Server) handleResidentialChannelAction(
 	id string,
 	action string,
 ) {
+	if strings.HasPrefix(action, "sessions/") {
+		parts := strings.Split(action, "/")
+		if len(parts) != 3 || parts[2] != "next" || request.Method != http.MethodPost {
+			if len(parts) == 3 && parts[2] == "next" {
+				methodNotAllowed(writer, request, http.MethodPost)
+			} else {
+				http.NotFound(writer, request)
+			}
+			return
+		}
+		index, err := strconv.Atoi(parts[1])
+		if err != nil {
+			http.NotFound(writer, request)
+			return
+		}
+		service, ok := s.residential.(residentialDeclaredControlService)
+		if !ok {
+			s.writeAPIError(writer, request, http.StatusNotImplemented, "residential_control_unavailable", "residential node control is unavailable")
+			return
+		}
+		updated, err := service.RotateDeclaredSession(request.Context(), id, index)
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, updated)
+		return
+	}
 	switch action {
 	case "rotate":
 		if request.Method != http.MethodPost {
@@ -230,6 +260,38 @@ func (s *Server) handleResidentialChannelAction(
 			return
 		}
 		writeJSON(writer, http.StatusOK, updated)
+	case "rotate-share":
+		if request.Method != http.MethodPost {
+			methodNotAllowed(writer, request, http.MethodPost)
+			return
+		}
+		service, ok := s.residential.(residentialDeclaredControlService)
+		if !ok {
+			s.writeAPIError(writer, request, http.StatusNotImplemented, "residential_control_unavailable", "residential node control is unavailable")
+			return
+		}
+		updated, err := service.RotateChannelShareToken(request.Context(), id)
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, updated)
+	case "rotate-control":
+		if request.Method != http.MethodPost {
+			methodNotAllowed(writer, request, http.MethodPost)
+			return
+		}
+		service, ok := s.residential.(residentialDeclaredControlService)
+		if !ok {
+			s.writeAPIError(writer, request, http.StatusNotImplemented, "residential_control_unavailable", "residential node control is unavailable")
+			return
+		}
+		updated, err := service.RotateChannelControlToken(request.Context(), id)
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, updated)
 	case "refresh-pool":
 		if request.Method != http.MethodPost {
 			methodNotAllowed(writer, request, http.MethodPost)
@@ -248,6 +310,92 @@ func (s *Server) handleResidentialChannelAction(
 	default:
 		http.NotFound(writer, request)
 	}
+}
+
+type residentialShareService interface {
+	ExportByShareToken(context.Context, string, string) (listener.ShareBundle, bool, error)
+}
+
+type residentialDeclaredControlService interface {
+	ControlNodesByToken(context.Context, string) (residential.ControlNodeList, error)
+	RotateDeclaredSession(context.Context, string, int) (residential.ChannelSession, error)
+	RotateDeclaredSessionByControlToken(context.Context, string, int) (residential.ControlNode, error)
+	SwitchDeclaredSessionRouteByControlToken(context.Context, string, int, string) (residential.ControlNode, error)
+	RotateChannelShareToken(context.Context, string) (residential.Channel, error)
+	RotateChannelControlToken(context.Context, string) (residential.Channel, error)
+}
+
+func (s *Server) handleResidentialControlPublic(writer http.ResponseWriter, request *http.Request) {
+	service, ok := s.residential.(residentialDeclaredControlService)
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	path := strings.TrimPrefix(request.URL.Path, "/ctl/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] == "" {
+		http.NotFound(writer, request)
+		return
+	}
+	token := parts[0]
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	if len(parts) == 2 && parts[1] == "nodes" {
+		if request.Method != http.MethodGet {
+			methodNotAllowed(writer, request, http.MethodGet)
+			return
+		}
+		result, err := service.ControlNodesByToken(request.Context(), token)
+		if err != nil {
+			s.handleResidentialControlError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, result)
+		return
+	}
+	if len(parts) != 4 || parts[1] != "nodes" || request.Method != http.MethodPost {
+		if len(parts) == 4 && parts[1] == "nodes" {
+			methodNotAllowed(writer, request, http.MethodPost)
+		} else {
+			http.NotFound(writer, request)
+		}
+		return
+	}
+	index, err := strconv.Atoi(parts[2])
+	if err != nil {
+		http.NotFound(writer, request)
+		return
+	}
+	var node residential.ControlNode
+	switch parts[3] {
+	case "next":
+		node, err = service.RotateDeclaredSessionByControlToken(request.Context(), token, index)
+	case "route":
+		var body struct {
+			RouteMode string `json:"route_mode"`
+		}
+		if decodeErr := decodeJSONBody(writer, request, &body); decodeErr != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+			return
+		}
+		node, err = service.SwitchDeclaredSessionRouteByControlToken(request.Context(), token, index, body.RouteMode)
+	default:
+		http.NotFound(writer, request)
+		return
+	}
+	if err != nil {
+		s.handleResidentialControlError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, node)
+}
+
+func (s *Server) handleResidentialControlError(writer http.ResponseWriter, request *http.Request, err error) {
+	if errors.Is(err, residential.ErrNotFound) {
+		http.NotFound(writer, request)
+		return
+	}
+	s.handleError(writer, request, err)
 }
 
 // handleResidentialRotatePublic serves the consumer-facing rotation API.

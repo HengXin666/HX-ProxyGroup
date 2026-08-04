@@ -18,8 +18,8 @@ func (s *Server) handleTraffic(writer http.ResponseWriter, request *http.Request
 	}
 	resourceType := strings.TrimSpace(request.URL.Query().Get("resource_type"))
 	resourceID := strings.TrimSpace(request.URL.Query().Get("resource_id"))
-	if resourceType != "listener" && resourceType != "proxy_group" && resourceType != "node" {
-		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", "resource_type must be listener, proxy_group, or node")
+	if !metrics.ValidResourceType(resourceType) {
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", "resource_type must be listener, proxy_group, node, or residential_channel")
 		return
 	}
 	if resourceID == "" {

@@ -45,6 +45,15 @@ func residentialDefaultString(value, fallback string) string {
 	return value
 }
 
+// nullableString maps an empty optional foreign key onto SQL NULL so a
+// REFERENCES constraint is not evaluated against the empty string.
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func (s *Store) CreateResidentialProvider(
 	ctx context.Context,
 	record ResidentialProviderRecord,

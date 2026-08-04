@@ -16,7 +16,7 @@ Environment=HOME=/root
 Environment=USER=root
 Environment=LOGNAME=root
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/local/lib/hx-proxygroup/current/hx-proxygroupd --terminal-helper --terminal-socket /run/hx-proxygroup/terminal.sock --terminal-socket-group hx-proxygroup --terminal-helper-user hx-proxygroup
+ExecStart=/usr/local/lib/hx-proxygroup/current/hx-proxygroupd --terminal-helper --terminal-socket /run/hx-proxygroup/terminal.sock --terminal-socket-group hx-proxygroup --terminal-helper-user hx-proxygroup --updater /usr/local/sbin/hx-proxygroup-install
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=20s

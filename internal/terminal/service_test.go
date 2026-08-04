@@ -27,6 +27,20 @@ func TestDisabledServiceRefusesSessions(t *testing.T) {
 	}
 }
 
+func TestDefaultLifecycleDisablesIdleTimeoutAndKeepsAbsoluteCap(t *testing.T) {
+	service, err := NewService(Config{}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := service.Status()
+	if status.IdleTimeoutSec != 0 {
+		t.Fatalf("idle timeout = %d, want disabled", status.IdleTimeoutSec)
+	}
+	if status.MaxLifetimeSec != int((2*time.Hour)/time.Second) {
+		t.Fatalf("max lifetime = %d", status.MaxLifetimeSec)
+	}
+}
+
 func TestSessionEchoAndClose(t *testing.T) {
 	service, err := NewService(Config{Enabled: true, Shell: "/bin/sh"}, discardLogger())
 	if err != nil {

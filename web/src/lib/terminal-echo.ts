@@ -67,3 +67,8 @@ function isSafeText(data: string): boolean {
   }
   return true
 }
+
+export function shouldBatchTerminalInput(data: string, predicted: string | null): boolean {
+  if (predicted == null || !data || encoder.encode(data).byteLength > 1024) return false
+  return isSafeText(data)
+}

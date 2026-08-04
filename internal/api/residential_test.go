@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -40,6 +41,41 @@ type stubResidentialService struct {
 type countryAwareStubResidentialService struct {
 	*stubResidentialService
 	requestedCountry string
+}
+
+type declaredControlStubResidentialService struct {
+	*stubResidentialService
+	controlCalls []string
+}
+
+func (s *declaredControlStubResidentialService) ControlNodesByToken(_ context.Context, token string) (residential.ControlNodeList, error) {
+	s.controlCalls = append(s.controlCalls, "list:"+token)
+	return residential.ControlNodeList{Channel: "residential-us", Nodes: []residential.ControlNode{{Index: 1, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential}}}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) RotateDeclaredSession(_ context.Context, channelID string, index int) (residential.ChannelSession, error) {
+	s.controlCalls = append(s.controlCalls, fmt.Sprintf("admin-next:%s:%d", channelID, index))
+	return residential.ChannelSession{Index: index, NodeName: "residential-us-01"}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) RotateDeclaredSessionByControlToken(_ context.Context, token string, index int) (residential.ControlNode, error) {
+	s.controlCalls = append(s.controlCalls, fmt.Sprintf("next:%s:%d", token, index))
+	return residential.ControlNode{Index: index, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) SwitchDeclaredSessionRouteByControlToken(_ context.Context, token string, index int, routeMode string) (residential.ControlNode, error) {
+	s.controlCalls = append(s.controlCalls, fmt.Sprintf("route:%s:%d:%s", token, index, routeMode))
+	return residential.ControlNode{Index: index, NodeName: "residential-us-01", RouteMode: routeMode}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) RotateChannelShareToken(context.Context, string) (residential.Channel, error) {
+	s.controlCalls = append(s.controlCalls, "rotate-share")
+	return residential.Channel{ID: "residential-channel-1"}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) RotateChannelControlToken(context.Context, string) (residential.Channel, error) {
+	s.controlCalls = append(s.controlCalls, "rotate-control")
+	return residential.Channel{ID: "residential-channel-1"}, s.clientSessionErr
 }
 
 func (s *countryAwareStubResidentialService) EnsureClientSessionByTokenWithOptions(
@@ -683,5 +719,60 @@ func TestAdminRotateReportsRateLimit(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", response.StatusCode)
+	}
+}
+
+func TestDeclaredResidentialControlRoutes(t *testing.T) {
+	service := &declaredControlStubResidentialService{stubResidentialService: &stubResidentialService{}}
+	testServer := newResidentialTestServer(t, service)
+
+	response, err := http.Get(testServer.URL + "/ctl/control-token/nodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET control nodes status = %d", response.StatusCode)
+	}
+
+	for _, test := range []struct {
+		path string
+		body string
+	}{
+		{path: "/ctl/control-token/nodes/1/next"},
+		{path: "/ctl/control-token/nodes/1/route", body: `{"route_mode":"direct"}`},
+		{path: "/api/v1/residential/channels/residential-channel-1/sessions/1/next"},
+		{path: "/api/v1/residential/channels/residential-channel-1/rotate-share"},
+		{path: "/api/v1/residential/channels/residential-channel-1/rotate-control"},
+	} {
+		request, err := http.NewRequest(http.MethodPost, testServer.URL+test.path, strings.NewReader(test.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		result, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.Body.Close()
+		if result.StatusCode != http.StatusOK {
+			t.Errorf("POST %s status = %d", test.path, result.StatusCode)
+		}
+	}
+	if len(service.controlCalls) != 6 {
+		t.Fatalf("control calls = %v", service.controlCalls)
+	}
+}
+
+func TestResidentialControlUnknownTokenIsOpaque(t *testing.T) {
+	service := &declaredControlStubResidentialService{stubResidentialService: &stubResidentialService{clientSessionErr: residential.ErrNotFound}}
+	testServer := newResidentialTestServer(t, service)
+	response, err := http.Get(testServer.URL + "/ctl/unknown-token/nodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown control token status = %d, want 404", response.StatusCode)
 	}
 }

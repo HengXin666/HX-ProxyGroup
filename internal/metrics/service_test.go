@@ -108,6 +108,27 @@ func TestServiceAggregatesConnectionDeltasAndResetsActiveGauge(t *testing.T) {
 	}
 }
 
+func TestServiceAggregatesResidentialChannelResource(t *testing.T) {
+	resource := Resource{Type: store.TrafficResourceResidentialChannel, ID: "channel-1"}
+	source := &fakeSource{snapshot: RuntimeSnapshot{Connections: []Connection{{
+		ID: "connection-1", Upload: 12, Download: 34, Resources: []Resource{resource},
+	}}}}
+	repository := &fakeRepository{}
+	service, err := NewService(repository, source, nil, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.writes) != 1 || repository.writes[0].ResourceType != store.TrafficResourceResidentialChannel {
+		t.Fatalf("residential channel writes = %+v", repository.writes)
+	}
+}
+
 func TestCollectPublishesLiveSamplesAndKeepsActiveResources(t *testing.T) {
 	resource := Resource{Type: store.TrafficResourceListener, ID: "listener-1"}
 	source := &fakeSource{snapshot: RuntimeSnapshot{Connections: []Connection{{

@@ -87,3 +87,32 @@ VALUES ('node-1', 'fingerprint-1', 'Node 1', 'socks5', X'01', 'candidate', ?, ?,
 		t.Fatalf("traffic survived local entity deletion: %+v", total)
 	}
 }
+
+func TestResidentialChannelTrafficUsesStableResourceType(t *testing.T) {
+	ctx := context.Background()
+	storage, err := Open(ctx, filepath.Join(t.TempDir(), "residential-traffic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	if err := storage.WriteTraffic(ctx, []TrafficWrite{{
+		ResourceType:      TrafficResourceResidentialChannel,
+		ResourceID:        "residential-channel-1",
+		BucketStart:       now,
+		Granularity:       time.Minute,
+		UploadBytes:       128,
+		DownloadBytes:     512,
+		ConnectionCount:   1,
+		ActiveConnections: 1,
+	}}, now); err != nil {
+		t.Fatal(err)
+	}
+	total, err := storage.GetTrafficTotal(ctx, TrafficResourceResidentialChannel, "residential-channel-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total.UploadBytes != 128 || total.DownloadBytes != 512 || total.ConnectionCount != 1 {
+		t.Fatalf("residential channel total = %+v", total)
+	}
+}

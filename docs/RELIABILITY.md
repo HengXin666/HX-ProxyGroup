@@ -178,6 +178,9 @@ WantedBy=multi-user.target
 `--terminal-helper` 模式，在 `/run/hx-proxygroup/terminal.sock` 提供 PTY。Socket 为
 `root:hx-proxygroup`、`0660`，helper 同时通过 Linux `SO_PEERCRED` 校验对端 UID；它不监听
 TCP/HTTP，也不承载代理流量。控制面退出或关闭时，`PartOf` 会回收 helper 和其 root PTY。
+helper 还接受一个与 PTY 帧分离的无参数更新请求；它只在校验 root 所有、不可被组/其他用户写入的
+安装器后，通过 `systemd-run` 调度 `/usr/local/sbin/hx-proxygroup-install upgrade`，不接受浏览器
+提供命令、路径或目标版本。
 
 仓库中的 `deploy/systemd/` 是发布包的权威 unit。控制面和数据面均以非 root 用户运行，管理 API 只监听 `127.0.0.1`，External Controller 使用 Unix Socket，并启用 systemd 文件系统、设备、内核和 capability 沙箱。浏览器终端另有一个 root PTY helper，只监听控制面用户可访问的本机 Unix Socket；它不接收网络流量，终端 WebSocket 仍必须通过管理员登录和 TOTP 2FA。
 
@@ -261,6 +264,15 @@ preflight
 ```bash
 sudo hx-proxygroup-install upgrade
 ```
+
+`.github/workflows/release.yml` 是在线发布入口。推送 `v*` tag 后先执行 `go test ./...`、
+`go vet ./...`、前端类型检查与构建，再分别构建 Linux amd64/arm64 控制面，下载固定 Mihomo
+`v1.19.29`，按发布包契约打包并生成 `SHA256SUMS` 和 `VERSION`，最后创建 GitHub Release。
+下载的第三方 Mihomo 文件名与版本固定，不使用浮动 latest 资产。
+
+生产安装的「关于」页可调用 `POST /api/v1/system/update`。接口要求有效管理员 Session、CSRF
+和最近完成的 TOTP 2FA step-up，只返回 202 表示升级任务已调度；实际下载、校验、原子切换、
+readiness 和失败回滚仍全部由安装器执行。非 systemd 本地开发环境不提供自动更新。
 
 ### 6.5 卸载语义
 

@@ -24,17 +24,20 @@ import (
 )
 
 func TestMapTrafficConnectionsAttributesKnownResources(t *testing.T) {
-	identities := map[string]metrics.Resource{
-		"hx-in-1":   {Type: store.TrafficResourceListener, ID: "listener-1"},
-		"group":     {Type: store.TrafficResourceProxyGroup, ID: "group-1"},
-		"hx-node-1": {Type: store.TrafficResourceNode, ID: "node-1"},
+	identities := map[string][]metrics.Resource{
+		"hx-in-1": {
+			{Type: store.TrafficResourceListener, ID: "listener-1"},
+			{Type: store.TrafficResourceResidentialChannel, ID: "channel-1"},
+		},
+		"group":     {{Type: store.TrafficResourceProxyGroup, ID: "group-1"}},
+		"hx-node-1": {{Type: store.TrafficResourceNode, ID: "node-1"}},
 	}
 	snapshot := mapTrafficConnections([]runtimeConnection{{
 		ID: "connection-1", Upload: 10, Download: 20,
 		Metadata: connectionMetadata{InboundName: "hx-in-1", SpecialProxy: "group"},
 		Chains:   []string{"hx-node-1", "group", "DIRECT"},
 	}}, identities)
-	if len(snapshot.Connections) != 1 || len(snapshot.Connections[0].Resources) != 4 {
+	if len(snapshot.Connections) != 1 || len(snapshot.Connections[0].Resources) != 5 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 }

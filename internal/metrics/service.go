@@ -540,7 +540,13 @@ func nonnegativeDelta(current, previous int64) int64 {
 	return current - previous
 }
 
+func ValidResourceType(resourceType string) bool {
+	return resourceType == store.TrafficResourceListener ||
+		resourceType == store.TrafficResourceProxyGroup ||
+		resourceType == store.TrafficResourceNode ||
+		resourceType == store.TrafficResourceResidentialChannel
+}
+
 func validResource(resource Resource) bool {
-	return resource.ID != "" && (resource.Type == store.TrafficResourceListener ||
-		resource.Type == store.TrafficResourceProxyGroup || resource.Type == store.TrafficResourceNode)
+	return resource.ID != "" && ValidResourceType(resource.Type)
 }

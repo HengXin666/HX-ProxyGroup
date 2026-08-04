@@ -24,6 +24,7 @@ type Repository interface {
 	ListNodeConfigs(context.Context, []string) ([]store.NodeConfigRecord, error)
 	ListGroupNodeCandidates(context.Context) ([]store.GroupNodeCandidate, error)
 	ListResidentialClientRoutes(context.Context) ([]store.ResidentialClientRouteRecord, error)
+	ListResidentialChannels(context.Context) ([]store.ResidentialChannelRecord, error)
 	GetMetadata(context.Context, string) (string, error)
 }
 
@@ -153,8 +154,15 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	usedEdgeRoutes := make(map[string]string)
 	routesByListener := make(map[string][]store.ResidentialClientRouteRecord)
 	for _, route := range clientRoutes {
-		if route.ChannelEnabled {
-			routesByListener[route.ListenerID] = append(routesByListener[route.ListenerID], route)
+		if !route.ChannelEnabled {
+			continue
+		}
+		// A channel may publish the same logical sessions on a reverse-proxied
+		// WebSocket entry point and on a directly reachable TCP one. Both
+		// listeners authenticate the same users and reach the same exit.
+		routesByListener[route.ListenerID] = append(routesByListener[route.ListenerID], route)
+		if route.DirectListenerID != "" {
+			routesByListener[route.DirectListenerID] = append(routesByListener[route.DirectListenerID], route)
 		}
 	}
 	for _, record := range listeners {

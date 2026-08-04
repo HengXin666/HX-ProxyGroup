@@ -17,6 +17,7 @@ type ResidentialClientSessionRecord struct {
 	AuthUsername          string
 	AuthPasswordEncrypted []byte
 	SessionIndex          int
+	DeclaredIndex         int
 	NodeFingerprint       string
 	RouteMode             string
 	RotateCount           int
@@ -24,6 +25,7 @@ type ResidentialClientSessionRecord struct {
 	AllocatedAt           *time.Time
 	ExpiresAt             *time.Time
 	CountryCode           string
+	LastUsedAt            *time.Time
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -32,9 +34,21 @@ type ResidentialClientSessionRecord struct {
 // is resolved from the channel pool's stable slot ordering.
 type ResidentialClientRouteRecord struct {
 	ResidentialClientSessionRecord
-	ListenerID     string
-	UpstreamGroup  string
-	ChannelEnabled bool
+	ListenerID       string
+	DirectListenerID string
+	UpstreamGroup    string
+	ChannelEnabled   bool
+}
+
+// normalizedDeclaredIndex maps an unset ordinal onto the sentinel the schema
+// uses for on-demand sessions. Declared ordinals start at 1, so a zero value
+// from an older caller must not collide in the partial unique index that
+// covers declared_index >= 0.
+func normalizedDeclaredIndex(index int) int {
+	if index < 1 {
+		return -1
+	}
+	return index
 }
 
 func (s *Store) CreateResidentialClientSession(
@@ -44,15 +58,17 @@ func (s *Store) CreateResidentialClientSession(
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO residential_client_sessions(
 		channel_id, session_id, auth_username, auth_password_encrypted,
-		session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-		allocated_at, expires_at, created_at, updated_at, country_code
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		session_index, declared_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
+		allocated_at, expires_at, created_at, updated_at, country_code, last_used_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, record.ChannelID, record.SessionID, record.AuthUsername, record.AuthPasswordEncrypted,
-		record.SessionIndex, record.NodeFingerprint, record.RouteMode, record.RotateCount,
+		record.SessionIndex, normalizedDeclaredIndex(record.DeclaredIndex),
+		record.NodeFingerprint, record.RouteMode, record.RotateCount,
 		nullableTimeString(record.LastRotatedAt),
 		nullableTimeString(record.AllocatedAt), nullableTimeString(record.ExpiresAt),
 		record.CreatedAt.UTC().Format(time.RFC3339Nano),
-		record.UpdatedAt.UTC().Format(time.RFC3339Nano), record.CountryCode)
+		record.UpdatedAt.UTC().Format(time.RFC3339Nano), record.CountryCode,
+		nullableTimeString(record.LastUsedAt))
 	if err != nil {
 		if isUniqueConstraint(err) {
 			return ResidentialClientSessionRecord{}, ErrConflict
@@ -68,8 +84,8 @@ func (s *Store) GetResidentialClientSession(
 ) (ResidentialClientSessionRecord, error) {
 	record, err := scanResidentialClientSession(s.db.QueryRowContext(ctx, `
 	SELECT channel_id, session_id, auth_username, auth_password_encrypted,
-	       session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-	       allocated_at, expires_at, created_at, updated_at, country_code
+	       session_index, declared_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
+	       allocated_at, expires_at, created_at, updated_at, country_code, last_used_at
 FROM residential_client_sessions
 WHERE channel_id = ? AND session_id = ?
 `, channelID, sessionID))
@@ -88,8 +104,8 @@ func (s *Store) ListResidentialClientSessions(
 ) ([]ResidentialClientSessionRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 	SELECT channel_id, session_id, auth_username, auth_password_encrypted,
-	       session_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-	       allocated_at, expires_at, created_at, updated_at, country_code
+	       session_index, declared_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
+	       allocated_at, expires_at, created_at, updated_at, country_code, last_used_at
 FROM residential_client_sessions
 WHERE channel_id = ?
 ORDER BY created_at ASC, session_id ASC
@@ -123,8 +139,10 @@ WITH pooled AS (
     WHERE origin = ? AND lifecycle_state NOT IN ('disabled', 'retired')
 )
 SELECT cs.channel_id, cs.session_id, cs.auth_username, cs.auth_password_encrypted,
-       cs.session_index, cs.node_fingerprint, cs.route_mode, cs.rotate_count, cs.last_rotated_at,
-	       cs.allocated_at, cs.expires_at, cs.created_at, cs.updated_at, cs.country_code, c.listener_id,
+       cs.session_index, cs.declared_index, cs.node_fingerprint, cs.route_mode,
+       cs.rotate_count, cs.last_rotated_at,
+	       cs.allocated_at, cs.expires_at, cs.created_at, cs.updated_at, cs.country_code,
+       c.listener_id, COALESCE(c.direct_listener_id, ''),
        COALESCE(NULLIF(cs.node_fingerprint, ''), p.fingerprint, ''),
        COALESCE(upstream.name, ''), c.enabled
 FROM residential_client_sessions cs
@@ -147,9 +165,11 @@ ORDER BY cs.channel_id ASC, cs.session_id ASC
 		var enabled int
 		if err := rows.Scan(
 			&record.ChannelID, &record.SessionID, &record.AuthUsername,
-			&record.AuthPasswordEncrypted, &record.SessionIndex, &record.NodeFingerprint, &record.RouteMode,
+			&record.AuthPasswordEncrypted, &record.SessionIndex, &record.DeclaredIndex,
+			&record.NodeFingerprint, &record.RouteMode,
 			&record.RotateCount, &lastRotatedAt, &allocatedAt, &expiresAt,
-			&createdAt, &updatedAt, &record.CountryCode, &record.ListenerID, &record.NodeFingerprint,
+			&createdAt, &updatedAt, &record.CountryCode,
+			&record.ListenerID, &record.DirectListenerID, &record.NodeFingerprint,
 			&record.UpstreamGroup, &enabled,
 		); err != nil {
 			return nil, fmt.Errorf("scan residential client route: %w", err)
@@ -274,6 +294,86 @@ WHERE channel_id = ? AND session_id = ?
 	return nil
 }
 
+// ClearResidentialClientSessionAllocation drops a session's residential node
+// while keeping it in residential route mode. Idle release uses this so the
+// published node name and its credentials survive; the next request
+// reallocates an exit IP transparently.
+func (s *Store) ClearResidentialClientSessionAllocation(
+	ctx context.Context,
+	channelID, sessionID string,
+) (ResidentialClientSessionRecord, error) {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE residential_client_sessions
+SET node_fingerprint = '', allocated_at = '', expires_at = '', updated_at = ?
+WHERE channel_id = ? AND session_id = ?
+`, time.Now().UTC().Format(time.RFC3339Nano), channelID, sessionID)
+	if err != nil {
+		return ResidentialClientSessionRecord{}, fmt.Errorf("clear residential client allocation: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return ResidentialClientSessionRecord{}, fmt.Errorf("read residential client clear result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return ResidentialClientSessionRecord{}, ErrNotFound
+	}
+	return s.GetResidentialClientSession(ctx, channelID, sessionID)
+}
+
+// TouchResidentialClientSession records that a caller used this session. Idle
+// release uses it to decide which allocations can be returned to the vendor.
+// It is runtime state and does not bump any configuration version.
+func (s *Store) TouchResidentialClientSession(
+	ctx context.Context,
+	channelID, sessionID string,
+	usedAt time.Time,
+) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE residential_client_sessions
+SET last_used_at = ?
+WHERE channel_id = ? AND session_id = ?
+`, usedAt.UTC().Format(time.RFC3339Nano), channelID, sessionID)
+	if err != nil {
+		return fmt.Errorf("touch residential client session: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read residential client session touch result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetResidentialClientSessionDeclaredIndex assigns a declared ordinal to a
+// session so its published node name stays stable across rotations.
+func (s *Store) SetResidentialClientSessionDeclaredIndex(
+	ctx context.Context,
+	channelID, sessionID string,
+	declaredIndex int,
+) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE residential_client_sessions
+SET declared_index = ?, updated_at = ?
+WHERE channel_id = ? AND session_id = ?
+`, normalizedDeclaredIndex(declaredIndex), time.Now().UTC().Format(time.RFC3339Nano), channelID, sessionID)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return ErrConflict
+		}
+		return fmt.Errorf("set residential client declared index: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read residential client declared index result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) DeleteResidentialClientSession(ctx context.Context, channelID, sessionID string) error {
 	result, err := s.db.ExecContext(ctx, `
 DELETE FROM residential_client_sessions WHERE channel_id = ? AND session_id = ?
@@ -297,13 +397,14 @@ type residentialClientSessionScanner interface {
 
 func scanResidentialClientSession(scanner residentialClientSessionScanner) (ResidentialClientSessionRecord, error) {
 	var record ResidentialClientSessionRecord
-	var lastRotatedAt, allocatedAt, expiresAt sql.NullString
+	var lastRotatedAt, allocatedAt, expiresAt, lastUsedAt sql.NullString
 	var createdAt, updatedAt string
 	if err := scanner.Scan(
 		&record.ChannelID, &record.SessionID, &record.AuthUsername,
-		&record.AuthPasswordEncrypted, &record.SessionIndex, &record.NodeFingerprint, &record.RouteMode,
+		&record.AuthPasswordEncrypted, &record.SessionIndex, &record.DeclaredIndex,
+		&record.NodeFingerprint, &record.RouteMode,
 		&record.RotateCount, &lastRotatedAt, &allocatedAt, &expiresAt, &createdAt, &updatedAt,
-		&record.CountryCode,
+		&record.CountryCode, &lastUsedAt,
 	); err != nil {
 		return ResidentialClientSessionRecord{}, err
 	}
@@ -317,6 +418,10 @@ func scanResidentialClientSession(scanner residentialClientSessionScanner) (Resi
 		return ResidentialClientSessionRecord{}, err
 	}
 	record.ExpiresAt, err = parseNullableTime(expiresAt)
+	if err != nil {
+		return ResidentialClientSessionRecord{}, err
+	}
+	record.LastUsedAt, err = parseNullableTime(lastUsedAt)
 	if err != nil {
 		return ResidentialClientSessionRecord{}, err
 	}

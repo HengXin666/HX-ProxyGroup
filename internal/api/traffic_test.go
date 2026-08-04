@@ -61,6 +61,24 @@ func TestTrafficAPIListsBoundedSummaries(t *testing.T) {
 	}
 }
 
+func TestTrafficAPIListsResidentialChannelSummaries(t *testing.T) {
+	traffic := &fakeTrafficService{items: []metrics.Summary{{
+		ResourceType:  "residential_channel",
+		ResourceID:    "channel-1",
+		DownloadBytes: 42,
+	}}}
+	server, err := NewServer(&stubBundleService{}, slog.New(slog.NewTextHandler(io.Discard, nil)), WithTraffic(traffic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/traffic?resource_type=residential_channel&limit=10", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"resource_type":"residential_channel"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestTrafficAPIRedactsRepositoryErrors(t *testing.T) {
 	traffic := &fakeTrafficService{queryErr: errors.New("sqlite secret detail")}
 	server, err := NewServer(&stubBundleService{}, slog.New(slog.NewTextHandler(io.Discard, nil)), WithTraffic(traffic))

@@ -61,15 +61,26 @@ func (m *Manager) TrafficSnapshot(ctx context.Context) (metrics.RuntimeSnapshot,
 	if err != nil {
 		return metrics.RuntimeSnapshot{}, fmt.Errorf("list traffic group identities: %w", err)
 	}
-	identities := make(map[string]metrics.Resource, len(nodes)+len(groups)+len(endpoints))
+	channels, err := m.compiler.repository.ListResidentialChannels(ctx)
+	if err != nil {
+		return metrics.RuntimeSnapshot{}, fmt.Errorf("list residential traffic identities: %w", err)
+	}
+	identities := make(map[string][]metrics.Resource, len(nodes)+len(groups)+len(endpoints))
 	for _, record := range nodes {
-		identities[nodeProxyName(record.Fingerprint)] = metrics.Resource{Type: store.TrafficResourceNode, ID: record.ID}
+		addTrafficIdentity(identities, nodeProxyName(record.Fingerprint), metrics.Resource{Type: store.TrafficResourceNode, ID: record.ID})
 	}
 	for _, record := range groups {
-		identities[record.Name] = metrics.Resource{Type: store.TrafficResourceProxyGroup, ID: record.ID}
+		addTrafficIdentity(identities, record.Name, metrics.Resource{Type: store.TrafficResourceProxyGroup, ID: record.ID})
 	}
 	for _, endpoint := range endpoints {
-		identities[listenerConfigName(endpoint.ID)] = metrics.Resource{Type: store.TrafficResourceListener, ID: endpoint.ID}
+		addTrafficIdentity(identities, listenerConfigName(endpoint.ID), metrics.Resource{Type: store.TrafficResourceListener, ID: endpoint.ID})
+	}
+	for _, channel := range channels {
+		resource := metrics.Resource{Type: store.TrafficResourceResidentialChannel, ID: channel.ID}
+		addTrafficIdentity(identities, listenerConfigName(channel.ListenerID), resource)
+		if channel.DirectListenerID != "" {
+			addTrafficIdentity(identities, listenerConfigName(channel.DirectListenerID), resource)
+		}
 	}
 
 	transport := &http.Transport{
@@ -104,19 +115,23 @@ func (m *Manager) TrafficSnapshot(ctx context.Context) (metrics.RuntimeSnapshot,
 	return mapTrafficConnections(payload.Connections, identities), nil
 }
 
-func mapTrafficConnections(connections []runtimeConnection, identities map[string]metrics.Resource) metrics.RuntimeSnapshot {
+func addTrafficIdentity(identities map[string][]metrics.Resource, name string, resource metrics.Resource) {
+	identities[name] = append(identities[name], resource)
+}
+
+func mapTrafficConnections(connections []runtimeConnection, identities map[string][]metrics.Resource) metrics.RuntimeSnapshot {
 	result := metrics.RuntimeSnapshot{Connections: make([]metrics.Connection, 0, len(connections))}
 	for _, connection := range connections {
 		resources := make([]metrics.Resource, 0, len(connection.Chains)+2)
-		if resource, exists := identities[connection.Metadata.InboundName]; exists {
-			resources = append(resources, resource)
+		if matched, exists := identities[connection.Metadata.InboundName]; exists {
+			resources = append(resources, matched...)
 		}
-		if resource, exists := identities[connection.Metadata.SpecialProxy]; exists {
-			resources = append(resources, resource)
+		if matched, exists := identities[connection.Metadata.SpecialProxy]; exists {
+			resources = append(resources, matched...)
 		}
 		for _, name := range connection.Chains {
-			if resource, exists := identities[name]; exists {
-				resources = append(resources, resource)
+			if matched, exists := identities[name]; exists {
+				resources = append(resources, matched...)
 			}
 		}
 		result.Connections = append(result.Connections, metrics.Connection{

@@ -312,7 +312,7 @@ func (s *Service) SwitchClientSessionRouteByToken(
 	if err != nil {
 		return ClientSession{}, mapStoreError(err)
 	}
-	if err := s.commitClientSessionRoute(ctx, current, channel.ListenerID, updated.AuthUsername); err != nil {
+	if err := s.commitClientSessionRoute(ctx, current, channel, updated.AuthUsername); err != nil {
 		return ClientSession{}, err
 	}
 	if routeMode != ClientRouteResidential && current.NodeFingerprint != "" {
@@ -532,7 +532,7 @@ func clientSessionRegionSelection(channel store.ResidentialChannelRecord, countr
 func (s *Service) commitClientSessionRoute(
 	ctx context.Context,
 	previous store.ResidentialClientSessionRecord,
-	listenerID string,
+	channel store.ResidentialChannelRecord,
 	authUsername string,
 ) error {
 	if err := s.applyClientSessionRoutes(ctx); err != nil {
@@ -542,7 +542,7 @@ func (s *Service) commitClientSessionRoute(
 		}
 		return fmt.Errorf("publish residential client route: %w; rollback: %v", err, restoreErr)
 	}
-	return s.closeClientSessionConnections(ctx, listenerID, authUsername)
+	return s.closeChannelClientConnections(ctx, channel, authUsername)
 }
 
 func (s *Service) applyClientSessionRoutes(ctx context.Context) error {
@@ -562,7 +562,26 @@ func (s *Service) closeClientSessionConnections(ctx context.Context, listenerID,
 	return nil
 }
 
+func (s *Service) closeChannelClientConnections(
+	ctx context.Context,
+	channel store.ResidentialChannelRecord,
+	username string,
+) error {
+	for _, listenerID := range []string{channel.ListenerID, channel.DirectListenerID} {
+		if listenerID == "" {
+			continue
+		}
+		if err := s.closeClientSessionConnections(ctx, listenerID, username); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateClientSessionID(value string) error {
+	if _, declared := declaredSessionIndex(value); declared {
+		return nil
+	}
 	if len(value) < 4 || len(value) > 64 {
 		return fmt.Errorf("%w: session_id must contain 4 to 64 characters", ErrInvalid)
 	}

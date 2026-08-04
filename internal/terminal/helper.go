@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -24,6 +26,7 @@ const (
 	frameInput  byte = 2
 	frameResize byte = 3
 	frameClose  byte = 4
+	frameUpdate byte = 5
 	frameReady  byte = 11
 	frameOutput byte = 12
 	frameMode   byte = 13
@@ -40,6 +43,7 @@ type HelperConfig struct {
 	AllowedUser string
 	Shell       string
 	MaxSessions int
+	UpdaterPath string
 }
 
 // RunHelper serves root PTYs until ctx is cancelled. It is deliberately kept
@@ -126,7 +130,7 @@ func RunHelper(ctx context.Context, config HelperConfig, logger *slog.Logger) er
 		go func() {
 			defer waitGroup.Done()
 			defer func() { <-semaphore }()
-			handleHelperConnection(ctx, connection, config.Shell)
+			handleHelperConnection(ctx, connection, config.Shell, config.UpdaterPath)
 		}()
 	}
 }
@@ -203,7 +207,7 @@ func unixPeerCredentials(fd int) (int, error) {
 	return int(credentials.Uid), nil
 }
 
-func handleHelperConnection(ctx context.Context, connection net.Conn, shell string) {
+func handleHelperConnection(ctx context.Context, connection net.Conn, shell, updaterPath string) {
 	closeOnContext := make(chan struct{})
 	go func() {
 		select {
@@ -217,7 +221,15 @@ func handleHelperConnection(ctx context.Context, connection net.Conn, shell stri
 	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
 	kind, _, err := readFrame(connection)
 	_ = connection.SetReadDeadline(time.Time{})
-	if err != nil || kind != frameOpen {
+	if err != nil {
+		_ = connection.Close()
+		return
+	}
+	if kind == frameUpdate {
+		handleUpdateRequest(ctx, connection, updaterPath)
+		return
+	}
+	if kind != frameOpen {
 		_ = connection.Close()
 		return
 	}
@@ -286,6 +298,41 @@ func handleHelperConnection(ctx context.Context, connection net.Conn, shell stri
 	_ = connection.Close()
 	session.Close("helper input closed")
 	<-outputDone
+}
+
+func handleUpdateRequest(ctx context.Context, connection net.Conn, updaterPath string) {
+	defer connection.Close()
+	updaterPath = filepath.Clean(strings.TrimSpace(updaterPath))
+	if !filepath.IsAbs(updaterPath) {
+		_ = writeFrame(connection, frameError, []byte("automatic updater is unavailable"))
+		return
+	}
+	info, err := os.Stat(updaterPath)
+	if err != nil {
+		_ = writeFrame(connection, frameError, []byte("automatic updater is unavailable"))
+		return
+	}
+	stat, ownedByRoot := info.Sys().(*syscall.Stat_t)
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || !ownedByRoot || stat.Uid != 0 {
+		_ = writeFrame(connection, frameError, []byte("automatic updater is unavailable"))
+		return
+	}
+	command := exec.CommandContext(
+		ctx,
+		"systemd-run",
+		"--unit=hx-proxygroup-update",
+		"--collect",
+		"--property=Type=exec",
+		updaterPath,
+		"upgrade",
+	)
+	command.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+	if output, err := command.CombinedOutput(); err != nil {
+		_ = output
+		_ = writeFrame(connection, frameError, []byte("could not schedule automatic update"))
+		return
+	}
+	_ = writeFrame(connection, frameReady, nil)
 }
 
 type helperWriter struct {

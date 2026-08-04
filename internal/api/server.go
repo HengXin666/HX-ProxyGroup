@@ -20,6 +20,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/artifact"
 	"github.com/HengXin666/HX-ProxyGroup/internal/auth"
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
+	"github.com/HengXin666/HX-ProxyGroup/internal/clientsubscription"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
@@ -91,7 +92,12 @@ type SystemInfo struct {
 	Version            string   `json:"version"`
 	RepositoryURL      string   `json:"repository_url"`
 	UpdateCommand      string   `json:"update_command"`
+	AutomaticUpdate    bool     `json:"automatic_update"`
 	SupportedProtocols []string `json:"supported_protocols"`
+}
+
+type UpdaterService interface {
+	TriggerUpdate(context.Context) error
 }
 
 type ProxyServiceService interface {
@@ -157,6 +163,12 @@ type ResidentialService interface {
 	RefreshChannelPool(context.Context, string) error
 }
 
+type ClientSubscriptionService interface {
+	Info(context.Context, string) (clientsubscription.Info, error)
+	Rotate(context.Context, string) (clientsubscription.Info, error)
+	ExportByToken(context.Context, string, string) (listener.ShareBundle, bool, error)
+}
+
 type Option func(*Server) error
 
 func WithSubscriptions(service SubscriptionService) Option {
@@ -216,6 +228,16 @@ func WithSystemInfo(info SystemInfo) Option {
 		}
 		info.SupportedProtocols = append([]string(nil), info.SupportedProtocols...)
 		server.systemInfo = &info
+		return nil
+	}
+}
+
+func WithUpdater(service UpdaterService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("updater service is required")
+		}
+		server.updater = service
 		return nil
 	}
 }
@@ -290,29 +312,41 @@ func WithResidential(service ResidentialService) Option {
 	}
 }
 
+func WithClientSubscriptions(service ClientSubscriptionService) Option {
+	return func(server *Server) error {
+		if service == nil {
+			return errors.New("client subscription service is required")
+		}
+		server.clientSubscriptions = service
+		return nil
+	}
+}
+
 type Server struct {
-	bundles          BundleService
-	subscriptions    SubscriptionService
-	nodes            NodeService
-	proxyGroups      ProxyGroupService
-	listeners        ListenerService
-	proxyServices    ProxyServiceService
-	traffic          TrafficService
-	settings         SettingsService
-	routingRules     RoutingRulesService
-	overview         OverviewService
-	residential      ResidentialService
-	logs             http.Handler
-	dataplane        DataPlaneService
-	systemInfo       *SystemInfo
-	auth             AuthService
-	alerts           AlertService
-	terminal         TerminalService
-	webRoot          string
-	logger           *slog.Logger
-	ready            atomic.Bool
-	overviewInterval time.Duration
-	edgeSlots        chan struct{}
+	bundles             BundleService
+	subscriptions       SubscriptionService
+	nodes               NodeService
+	proxyGroups         ProxyGroupService
+	listeners           ListenerService
+	proxyServices       ProxyServiceService
+	traffic             TrafficService
+	settings            SettingsService
+	routingRules        RoutingRulesService
+	overview            OverviewService
+	residential         ResidentialService
+	clientSubscriptions ClientSubscriptionService
+	logs                http.Handler
+	dataplane           DataPlaneService
+	systemInfo          *SystemInfo
+	auth                AuthService
+	alerts              AlertService
+	terminal            TerminalService
+	updater             UpdaterService
+	webRoot             string
+	logger              *slog.Logger
+	ready               atomic.Bool
+	overviewInterval    time.Duration
+	edgeSlots           chan struct{}
 }
 
 type errorResponse struct {
@@ -397,12 +431,17 @@ func (s *Server) Handler() http.Handler {
 	if s.listeners != nil {
 		mux.HandleFunc("/api/v1/listeners", s.handleListeners)
 		mux.HandleFunc("/api/v1/listeners/", s.handleListener)
-		// Public token-addressed subscription export; the token itself is
-		// the credential, so the route stays outside /api/v1 auth.
-		mux.HandleFunc("/sub/", s.handleListenerShare)
 		// Public WebSocket proxy routes use a reserved namespace and are
 		// resolved to loopback Mihomo listeners by the edge relay.
 		mux.HandleFunc(listener.WebSocketPathPrefix, s.handleEdgeRelay)
+	}
+	if s.listeners != nil || s.clientSubscriptions != nil || s.residential != nil {
+		// Public token-addressed subscription export; the token itself is
+		// the credential, so the route stays outside /api/v1 auth.
+		mux.HandleFunc("/sub/", s.handleListenerShare)
+	}
+	if s.clientSubscriptions != nil {
+		mux.HandleFunc("/api/v1/client-subscription", s.handleClientSubscription)
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
@@ -417,6 +456,7 @@ func (s *Server) Handler() http.Handler {
 		// credential, so these routes stay outside /api/v1 session auth in the
 		// same way as the /sub/ subscription export.
 		mux.HandleFunc("/rot/", s.handleResidentialRotatePublic)
+		mux.HandleFunc("/ctl/", s.handleResidentialControlPublic)
 	}
 	if s.traffic != nil {
 		mux.HandleFunc("/api/v1/traffic", s.handleTraffic)
@@ -439,6 +479,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.systemInfo != nil {
 		mux.HandleFunc("/api/v1/system/info", s.handleSystemInfo)
+	}
+	if s.updater != nil {
+		mux.HandleFunc("/api/v1/system/update", s.handleSystemUpdate)
 	}
 	if s.alerts != nil {
 		mux.HandleFunc("/api/v1/alerts", s.handleAlerts)
@@ -724,7 +767,7 @@ func (s *Server) requestContext(next http.Handler) http.Handler {
 		startedAt := time.Now()
 		next.ServeHTTP(writer, request.WithContext(ctx))
 		loggedPath := request.URL.Path
-		if strings.HasPrefix(loggedPath, "/sub/") || strings.HasPrefix(loggedPath, "/rot/") {
+		if strings.HasPrefix(loggedPath, "/sub/") || strings.HasPrefix(loggedPath, "/rot/") || strings.HasPrefix(loggedPath, "/ctl/") {
 			loggedPath = strings.SplitN(loggedPath, "/", 3)[1] + "/[redacted]"
 			loggedPath = "/" + loggedPath
 		}

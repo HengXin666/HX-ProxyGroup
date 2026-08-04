@@ -19,12 +19,13 @@ flowchart LR
     DP --> UP[Subscription Nodes]
     DP --> DIRECT[Server DIRECT Egress]
     Client[Proxy Clients] -->|local HTTP/SOCKS or public WS| DP
-    RP[Cloudflare / LeiChi / Reverse Proxy] -->|HTTPS 443 /sub /rot /__hx-proxy__| CP
+    RP[Cloudflare / LeiChi / Reverse Proxy] -->|HTTPS 443 /sub /ctl /rot /__hx-proxy__| CP
     CP -->|Edge Relay| DP
 ```
 
-关键约束：**协议处理和目标连接建立始终属于 Mihomo 数据面。** HTTP/SOCKS/Mixed Listener
-和 Mihomo 的内部端口只绑定环回；公网雷池只暴露 HTTPS 443，并按 `/sub/`、`/rot/` 和固定
+关键约束：**协议处理和目标连接建立始终属于 Mihomo 数据面。** WS Listener 和 Mihomo 的内部
+端口只绑定环回；HTTP/SOCKS/Mixed 仅在管理员显式配置直连入口时监听指定 TCP 地址。公网雷池
+只暴露 HTTPS 443，并按 `/sub/`、`/ctl/`、兼容 `/rot/` 和固定
 `/__hx-proxy__/` 路径回源控制面。控制面只在 `__hx-proxy__` 命名空间内提供受限 WebSocket
 Edge Relay，转发已经升级的连接，不解析 VLESS、VMess 或 Trojan，不接受任意目标地址。控制面退出
 时，直接监听的数据面仍应继续使用最后一版有效配置提供代理；Edge Relay 与路径 API 的新请求需等待控制面恢复。
@@ -293,25 +294,35 @@ Listener
 
 当前 `source_spec` 可同时保存固定 `node_ids` 与动态选择条件：`subscription_ids`、名称地区标签、协议、生命周期、最大延迟、排序字段和数量上限。数据库只保存用户意图；Mihomo 编译器每次从活动订阅快照与最新节点质量记录重新解析成员，并稳定排序输出。地区当前来自节点展示名称标签，后续结构化 Geo Enricher 上线后应替换为带采样时间的地区字段。
 
-### 6.8 住宅客户端会话
+### 6.8 住宅声明节点与统一订阅
 
-`residential_client_sessions` 保存一个住宅渠道下由客户端显式命名的逻辑会话、加密代理
-密码、当前节点指纹、分配时间、过期时间和 `residential | upstream | direct` 路由状态。
-一个渠道仍只有一个 Listener 和一个公共 token，但不保存或预建 IP 池。
+一个住宅渠道由以下资源组成：
 
-sticky 渠道创建时生成显式允许为空的 fail-closed Proxy Group，其唯一成员为 `REJECT`。
-客户端调用会话建立 API 后，应用服务才向供应商获取或生成一个节点，将节点直接绑定到
-该逻辑会话并完整校验、发布配置。供应商的并发配置只限制活跃会话数量，不代表预取数量。
+```text
+ResidentialChannel
+├── 1 ProxyGroup（fail-closed）
+├── 1 主 Listener（通常为环回 VLESS/VMess/Trojan WS）
+├── 0..1 直连 Listener（HTTP/SOCKS/Mixed，显式配置）
+└── N residential_client_sessions（声明节点 s01..sNN）
+```
 
-编译器将会话账号加入该 Listener 的 Mihomo `users`，并在普通站点路由规则之前生成
-`IN-USER` 规则。切流属于 Desired State 变更，必须经过完整配置校验和应用；应用成功后
-控制面通过 Mihomo Controller 删除该 `inboundUser` 的旧连接。流量本身始终留在 Mihomo
-数据面。完整外部协议见 [住宅代理客户端会话 API](RESIDENTIAL_SESSION_API.md)。
+`residential_client_sessions` 保存稳定逻辑 ID、声明序号、加密代理密码、当前供应商节点指纹、
+分配/过期时间和 `residential | upstream | direct` 路由状态。客户端订阅只看到稳定节点名称、
+入口和认证；供应商会话与真实出口 IP 轮换是服务端内部状态。`next` 替换节点映射但保留客户端
+身份，因此客户端无需重拉订阅。
 
-注册后的会话可切到供应商配置的普通上游代理组，避免继续消耗住宅代理流量；物理
-`DIRECT` 仍作为显式选项保留，适用于服务器自身具备公网直连能力的部署。
-供应商定义会话 TTL 和 `expire | rotate` 到期策略。`expire` 删除认证、路由和节点；
-`rotate` 为同一客户端认证现场分配新节点并关闭旧连接。后台任务以有界批次执行相同状态迁移。
+编译器把同一逻辑节点的账号同时加入渠道拥有的 WS 和直连 Listener，并在普通路由规则之前
+生成 `IN-USER` 规则。切流或换节点属于 Desired State 变更，必须经过完整候选配置校验和应用；
+成功后控制面通过 Mihomo Controller 删除该 `inboundUser` 的旧连接。流量字节始终留在 Mihomo。
+
+`internal/clientsubscription` 从普通 Listener 和住宅渠道收集 `ShareExport`，排除住宅 provisioning
+凭据并使用 `internal/listener` 的统一渲染器输出 `/sub/<token>`。全局 share token、住宅渠道
+share token 与自动化 control token 权限分离。`/ctl/<token>/nodes/<index>/next` 供 OutlookRegister
+等程序指定节点换出口；旧 `/rot/` 会话接口只保留兼容。
+
+Schema v24 引入声明节点、空闲释放、控制 token 和可选直连 Listener。Schema v25 引入稳定
+`residential_channel` 流量资源；渠道的所有入口映射到同一渠道 ID，出口 IP 和内部节点轮换不会
+重置累计统计。完整外部协议见 [住宅代理客户端与自动化 API](RESIDENTIAL_SESSION_API.md)。
 
 ### 6.9 住宅地区选择
 
@@ -505,14 +516,15 @@ Periodic Batch Flush -> SQLite time buckets
 
 - 连接明细只保留短周期或按需采样。
 - 长期统计只保存聚合值。
-- 节点、组和 Listener 使用稳定内部 ID 映射，避免名称变更断开历史。
+- 节点、组、Listener 和住宅渠道使用稳定内部 ID 映射，避免名称或出口 IP 变化断开历史。
 - 数据面重启导致累计计数归零时，聚合器识别 counter reset，不写入负数增量。
 
 ### 11.1 秒级操作总览
 
-实时总览与长期聚合使用不同读路径。浏览器通过 `/api/v1/overview/stream` 建立只读 SSE，控制面按秒读取 Mihomo Unix Controller 的活动连接累计字节并计算相邻快照差值。即使差值为零也发送样本，前端只保留固定大小的 30/60/120 秒滑动窗口。
-
-该采样循环归属于 HTTP 请求：客户端断开或服务关闭时通过 `request.Context()` 取消并停止 ticker。没有总览客户端时不运行额外后台采样任务。连接数据只用于计算和展示，代理流量仍不经过控制面。
+实时总览与长期聚合共享一个后台采集源，使用不同读路径。`traffic_service` 按秒读取 Mihomo
+Unix Controller 的活动连接累计字节，在内存计算增量并维护有界实时历史；每分钟批量 Flush 到
+SQLite。浏览器通过 `/api/v1/overview/stream` 订阅只读 SSE，关闭浏览器不会停止长期统计。
+服务退出时共享 Context 取消采集并执行有界 Flush。连接数据只用于计算和展示，代理流量仍不经过控制面。
 
 ---
 
@@ -545,7 +557,7 @@ Admin -> VPN / private network / protected HTTPS -> hx-proxygroupd
 
 管理面默认不通过公开代理节点域名暴露。确需公网访问时，必须使用独立域名、强认证、访问控制和 TLS。
 
-### 13.2 WS / gRPC 代理节点
+### 13.2 WebSocket 代理节点
 
 ```text
 Client
@@ -556,14 +568,16 @@ Client
   -> assigned Proxy Group or DIRECT
 ```
 
-订阅和会话控制 API 使用同一个 HTTPS 443 虚拟主机，但仍是普通 HTTP 路径：
+订阅和住宅控制 API 使用同一个 HTTPS 443 虚拟主机，但仍是普通 HTTP 路径：
 
 ```text
-Client -> HTTPS 443 /sub/<token> or /rot/<token>/... -> LeiChi -> hx-proxygroupd:19090
+Client -> HTTPS 443 /sub/<token> or /ctl/<token>/... -> LeiChi -> hx-proxygroupd:19090
+Legacy -> HTTPS 443 /rot/<token>/... -> LeiChi -> hx-proxygroupd:19090
 ```
 
-发布给外部客户端的链接省略默认 `:443`。`19090` 和 Listener 内部端口只允许环回访问；
-雷池不应直接回源某个住宅 Listener 端口。
+发布给外部客户端的链接省略默认 `:443`。`19090` 和 WS Listener 内部端口只允许环回访问；
+雷池不应直接回源某个住宅 Listener 端口。显式直连 HTTP/SOCKS/Mixed Listener 不经过雷池，
+使用独立公网 TCP 端口并强制认证。
 
 雷池负责 TLS 终止时，内部 Mihomo Listener 仍只监听环回地址；控制面 Edge Relay 根据公网
 `Host` 和完整 WebSocket Path 精确选择 Listener。所有高级 Listener 的路径都规范化为
@@ -572,7 +586,7 @@ Client -> HTTPS 443 /sub/<token> or /rot/<token>/... -> LeiChi -> hx-proxygroupd
 
 住宅渠道的 VLESS/VMess/Trojan WS Listener 复用同一条 Edge Relay 路径；其默认代理组成员是
 动态住宅节点，住宅节点通过 `dialer-proxy` 选择供应商配置的上游 Proxy Group。住宅 HTTP、
-SOCKS5 和 Mixed Listener 不经过该七层 Relay，仍需要原生端口或四层字节流转发。
+SOCKS5 和 Mixed Listener 不经过该七层 Relay，必须使用显式直连端口或客户端本机 Mihomo 落地。
 
 ### 13.3 原生 TCP / UDP
 
@@ -633,7 +647,7 @@ HX 上游，`hx-proxygroupd` 在保留的 `/__hx-proxy__/` 路径下提供受限
 
 **原因**：不在 Go 中实现代理协议，同时允许雷池只维护一个 HTTPS 443 上游，不为每个 Mihomo
 端口开放公网入口。Relay 只在 WebSocket Upgrade 后复制连接字节，使用 Host 和规范化路径做
-白名单路由，设有并发上限；`/sub/` 和 `/rot/` 只处理订阅与会话控制，不复制代理业务流量。
+白名单路由，设有并发上限；`/sub/`、`/ctl/` 和兼容 `/rot/` 只处理订阅与住宅控制，不复制代理业务流量。
 
 ### ADR-002：v1 使用 SQLite
 

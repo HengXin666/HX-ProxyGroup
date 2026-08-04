@@ -390,7 +390,7 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 - [x] 服务器节点：在代理服务页提供 DIRECT 出口、服务端协议模板、公开域名和客户端订阅导出。
 - [ ] 统计：近 24 小时趋势已完成，7 天和 30 天前端视图仍待补齐。
 - [x] 告警页：当前告警、历史、确认与 SMTP 邮件设置；静默与维护窗口待后续。
-- [x] 关于页：控制面版本、数据面版本、GitHub 仓库、解析协议边界和一行升级命令。
+- [x] 关于页：控制面版本、数据面版本、GitHub 仓库、解析协议边界、一行升级命令和需管理员 2FA step-up 的一键更新。
 - [ ] 系统诊断整合页：配置校验、日志、备份和更新历史仍分散在现有页面。
 - [ ] 实时任务使用 SSE 推送进度，避免高频轮询；批量节点复测和秒级总览已接入，其他长任务仍待迁移。
 
@@ -398,7 +398,7 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 
 - [x] 浏览器内终端（本机 PTY Shell；生产通过受限 Unix Socket 使用独立 root PTY helper，跳板式 SSH 远程连接不在本迭代范围）。
 - [x] 基于成熟组件实现：前端 xterm.js，后端 creack/pty + coder/websocket，不自行实现终端协议。
-- [x] 默认开启浏览器终端并保留紧急关闭开关（`HX_PROXYGROUP_TERMINAL=0`），强制管理员认证和 TOTP 2FA step-up 验证、空闲超时（10 分钟）、会话寿命上限（2 小时）、并发上限、结构化审计日志和页面内高风险操作提示；生产终端支持 `su` / `sudo`。
+- [x] 默认开启浏览器终端并保留紧急关闭开关（`HX_PROXYGROUP_TERMINAL=0`），强制管理员认证和 TOTP 2FA step-up 验证；默认不因空闲断开，保留会话寿命上限（2 小时）、并发上限、结构化审计日志和页面内高风险操作提示；生产终端支持 `su` / `sudo`。
 
 ---
 
@@ -460,13 +460,15 @@ v1 优先提供适合反向代理和 CDN 的成熟协议模板：
 - [x] 创建不可登录的系统用户 `hx-proxygroup`。
 - [x] 创建 `/etc/hx-proxygroup`、`/var/lib/hx-proxygroup`、`/var/log/hx-proxygroup`。
 - [x] 配置目录权限为最小可用权限。
-- [x] 安装控制面、Mihomo、静态前端、安装器自身和双 systemd unit。
+- [x] 安装控制面、Mihomo、静态前端、安装器自身和控制面/数据面/终端 helper 三个 systemd unit。
 - [x] 切换版本前用新 Mihomo 校验最后生效配置，服务启动执行数据库迁移。
 - [x] 注册并启动双服务，确认两者 active 且 `/health/ready` 成功后结束。
 - [x] 重复执行时只更新版本文件和服务定义，不主动删除用户数据。
 - [x] 支持 `install`、`upgrade`、`repair`、`status`、`uninstall`、`purge` 子命令。
 - [x] 更新 readiness 失败时原子恢复上一版完整 Release 链接；数据面配置应用失败恢复 `previous.yaml`。
 - [x] 安装后通过 `sudo hx-proxygroup-install upgrade` 一行命令更新，成功升级时同步替换安装器自身。
+- [x] Git tag `v*` 工作流执行 Go/前端校验，构建 amd64/arm64 包，固定 Mihomo 版本并发布 `SHA256SUMS`。
+- [x] 生产前端可在管理员最近完成 2FA 后请求更新；root helper 只调度固定安装器 `upgrade`，不接受任意命令或版本参数。
 
 ### 12.2 systemd
 

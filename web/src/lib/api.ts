@@ -4,6 +4,7 @@ import type {
   ArtifactList,
   ArtifactRecord,
   BatchRefreshList,
+  ClientSubscriptionInfo,
   CreateListenerRequest,
   CreateProxyGroupRequest,
   CreateProxyServiceRequest,
@@ -31,6 +32,7 @@ import type {
   ResidentialProvider,
   ResidentialProviderList,
   ResidentialRotationResult,
+  ResidentialChannelSession,
   ResidentialTestResult,
   UpdateResidentialChannelRequest,
   UpdateResidentialProviderRequest,
@@ -150,6 +152,7 @@ export type TerminalStatus = {
   active_sessions: number
   max_sessions: number
   idle_timeout_seconds: number
+  max_lifetime_seconds: number
   privileged: boolean
   two_factor_configured: boolean
   two_factor_enabled: boolean
@@ -310,6 +313,21 @@ export const api = {
 
   systemInfo(): Promise<SystemInfo> {
     return request("/api/v1/system/info")
+  },
+
+  triggerSystemUpdate(): Promise<{ accepted: boolean }> {
+    return request("/api/v1/system/update", { method: "POST" })
+  },
+
+  clientSubscription(): Promise<ClientSubscriptionInfo> {
+    return request("/api/v1/client-subscription")
+  },
+
+  rotateClientSubscription(): Promise<ClientSubscriptionInfo> {
+    return request("/api/v1/client-subscription", {
+      method: "POST",
+      body: JSON.stringify({ action: "rotate" }),
+    })
   },
 
   listSubscriptions(): Promise<SubscriptionList> {
@@ -691,6 +709,24 @@ export const api = {
 
   rotateResidentialChannelToken(id: string): Promise<ResidentialChannel> {
     return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/rotate-token`, {
+      method: "POST",
+    })
+  },
+
+  rotateResidentialShareToken(id: string): Promise<ResidentialChannel> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/rotate-share`, {
+      method: "POST",
+    })
+  },
+
+  rotateResidentialControlToken(id: string): Promise<ResidentialChannel> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/rotate-control`, {
+      method: "POST",
+    })
+  },
+
+  rotateResidentialSession(id: string, index: number): Promise<ResidentialChannelSession> {
+    return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/sessions/${index}/next`, {
       method: "POST",
     })
   },

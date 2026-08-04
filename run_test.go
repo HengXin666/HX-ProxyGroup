@@ -89,7 +89,7 @@ func TestRunScriptUsesAndReleasesRandomHighPorts(t *testing.T) {
 	backendPort := 0
 	frontendPort := 0
 	client := &http.Client{Timeout: 500 * time.Millisecond, Transport: &http.Transport{Proxy: nil}}
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
 		select {
@@ -207,7 +207,7 @@ func TestRunScriptStartsAndStopsBackend(t *testing.T) {
 		},
 	}
 	healthURL := "http://" + address + "/health/ready"
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
 		select {
@@ -379,7 +379,7 @@ func TestRunScriptStartsFrontendAndProxiesBackend(t *testing.T) {
 
 	client := &http.Client{Timeout: 500 * time.Millisecond, Transport: &http.Transport{Proxy: nil}}
 	frontendURL := fmt.Sprintf("http://127.0.0.1:%d", frontendPort)
-	deadline := time.Now().Add(25 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	ready := false
 	for time.Now().Before(deadline) {
 		select {

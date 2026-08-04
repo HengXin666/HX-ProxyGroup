@@ -133,6 +133,12 @@ func compileResidentialClientRules(
 		switch route.RouteMode {
 		case "residential":
 			fingerprint := strings.TrimSpace(route.NodeFingerprint)
+			if fingerprint == "" {
+				// A declared lazy session has credentials before it has a
+				// residential allocation. Let the listener fallback route send it
+				// to the channel's fail-closed group until /next allocates a node.
+				continue
+			}
 			key := fingerprint
 			if len(key) > 16 {
 				key = key[:16]

@@ -102,6 +102,10 @@ func (s *Service) syncDeclaredSessionsLocked(ctx context.Context, channelID stri
 	if err != nil {
 		return mapStoreError(err)
 	}
+	repaired, err := s.clearMissingClientSessionAllocations(ctx, channel)
+	if err != nil {
+		return err
+	}
 	existing, err := s.repository.ListResidentialClientSessions(ctx, channel.ID)
 	if err != nil {
 		return err
@@ -138,6 +142,9 @@ func (s *Service) syncDeclaredSessionsLocked(ctx context.Context, channelID stri
 		if err := s.createDeclaredSession(ctx, channel, providerRecord, index, eager); err != nil {
 			return fmt.Errorf("provision declared session %s: %w", declaredSessionID(index), err)
 		}
+	}
+	if repaired {
+		return s.republishClientSessionGroup(ctx, channel)
 	}
 	return nil
 }

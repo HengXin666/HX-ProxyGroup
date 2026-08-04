@@ -63,9 +63,16 @@ ON CONFLICT(fingerprint) DO UPDATE SET
 }
 
 func (s *Store) DeleteResidentialSessionNode(ctx context.Context, channelID, fingerprint string) error {
-	_, err := s.db.ExecContext(ctx,
-		"DELETE FROM nodes WHERE origin = ? AND origin_ref = ? AND fingerprint = ?",
-		ResidentialOrigin, channelID, fingerprint)
+	_, err := s.db.ExecContext(ctx, `
+DELETE FROM nodes
+WHERE origin = ? AND origin_ref = ? AND fingerprint = ?
+  AND NOT EXISTS (
+      SELECT 1
+      FROM residential_client_sessions sessions
+      WHERE sessions.channel_id = ?
+        AND sessions.node_fingerprint = nodes.fingerprint
+  )
+`, ResidentialOrigin, channelID, fingerprint, channelID)
 	if err != nil {
 		return fmt.Errorf("delete residential session node: %w", err)
 	}

@@ -42,6 +42,22 @@ func TestCompileResidentialClientRulesKeepSessionsIndependent(t *testing.T) {
 	}
 }
 
+func TestCompileResidentialClientRulesAllowsUnallocatedDeclaredSession(t *testing.T) {
+	t.Parallel()
+	rules, err := compileResidentialClientRules([]store.ResidentialClientRouteRecord{{
+		ResidentialClientSessionRecord: store.ResidentialClientSessionRecord{
+			SessionID: "s01", AuthUsername: "hx-session-one", RouteMode: "residential",
+		},
+		ListenerID: "listener-channel-a", ChannelEnabled: true,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("unallocated session rules = %v, want listener fallback only", rules)
+	}
+}
+
 func TestCompileListenerAddsResidentialClientCredentials(t *testing.T) {
 	t.Parallel()
 	compiler := &Compiler{cipher: benchmarkCipher{}}

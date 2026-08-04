@@ -100,7 +100,54 @@ func (s *Service) republishClientSessionGroup(ctx context.Context, channel store
 	return s.applyClientSessionRoutes(ctx)
 }
 
+// clearMissingClientSessionAllocations repairs sessions left behind by an
+// interrupted publish or by older releases that deleted a shared node while
+// another logical session still referenced it. An empty allocation is a valid
+// lazy state and will be filled by the next session rotation.
+func (s *Service) clearMissingClientSessionAllocations(
+	ctx context.Context,
+	channel store.ResidentialChannelRecord,
+) (bool, error) {
+	nodes, err := s.repository.ListResidentialSessionNodes(ctx, channel.ID)
+	if err != nil {
+		return false, err
+	}
+	known := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		known[node.Fingerprint] = struct{}{}
+	}
+	sessions, err := s.repository.ListResidentialClientSessions(ctx, channel.ID)
+	if err != nil {
+		return false, err
+	}
+	repaired := false
+	for _, session := range sessions {
+		if session.RouteMode != ClientRouteResidential || session.NodeFingerprint == "" {
+			continue
+		}
+		if _, exists := known[session.NodeFingerprint]; exists {
+			continue
+		}
+		if _, err := s.repository.ClearResidentialClientSessionAllocation(
+			ctx,
+			channel.ID,
+			session.SessionID,
+		); err != nil {
+			return repaired, mapStoreError(err)
+		}
+		repaired = true
+	}
+	return repaired, nil
+}
+
 func (s *Service) replaceClientSessionAllocation(ctx context.Context, channel store.ResidentialChannelRecord, provider store.ResidentialProviderRecord, previous store.ResidentialClientSessionRecord, rotated bool) (store.ResidentialClientSessionRecord, error) {
+	if _, err := s.clearMissingClientSessionAllocations(ctx, channel); err != nil {
+		return store.ResidentialClientSessionRecord{}, err
+	}
+	previous, err := s.repository.GetResidentialClientSession(ctx, channel.ID, previous.SessionID)
+	if err != nil {
+		return store.ResidentialClientSessionRecord{}, mapStoreError(err)
+	}
 	now := s.now().UTC()
 	fingerprint, expiresAt, err := s.allocateClientSessionNode(ctx, channel, provider, previous.SessionID, now, previous.CountryCode)
 	if err != nil {

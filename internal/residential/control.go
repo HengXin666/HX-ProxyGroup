@@ -2,6 +2,7 @@ package residential
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -20,6 +21,10 @@ type ControlNode struct {
 	ExitIP      string            `json:"exit_ip,omitempty"`
 	CountryCode string            `json:"country_code,omitempty"`
 	RouteMode   string            `json:"route_mode"`
+	// ResidentialEndpoint is the vendor endpoint assigned to this logical
+	// node. It is only rendered by the control-token API; subscription and
+	// administrator views use separate DTOs which cannot carry this secret.
+	ResidentialEndpoint *ControlResidentialEndpoint `json:"residential_endpoint,omitempty"`
 }
 
 // ControlEndpoint describes one standard client-facing entry point for a
@@ -32,6 +37,19 @@ type ControlEndpoint struct {
 	BrowserCompatible bool   `json:"browser_compatible"`
 }
 
+// ControlResidentialEndpoint is the minimal upstream configuration a trusted
+// automation client needs to build its own local data plane. Password is
+// intentionally available only behind the channel's high-privilege control
+// token and must never be copied into logs or ordinary subscriptions.
+type ControlResidentialEndpoint struct {
+	Protocol string `json:"protocol"`
+	Server   string `json:"server"`
+	Port     int    `json:"port"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	TLS      bool   `json:"tls"`
+}
+
 type ControlNodeList struct {
 	Channel string        `json:"channel"`
 	Nodes   []ControlNode `json:"nodes"`
@@ -42,9 +60,13 @@ func (s *Service) ControlNodesByToken(ctx context.Context, token string) (Contro
 	if err != nil {
 		return ControlNodeList{}, err
 	}
+	residentialEndpoints, err := s.controlResidentialEndpoints(ctx, channel)
+	if err != nil {
+		return ControlNodeList{}, err
+	}
 	nodes := make([]ControlNode, 0, channel.SessionCount)
 	for index := 1; index <= channel.SessionCount; index++ {
-		node, err := s.controlNodeView(ctx, channel, index)
+		node, err := s.controlNodeViewWithResidentialEndpoints(ctx, channel, index, residentialEndpoints)
 		if err != nil {
 			return ControlNodeList{}, err
 		}
@@ -178,6 +200,19 @@ func (s *Service) controlNodeView(
 	channel store.ResidentialChannelRecord,
 	index int,
 ) (ControlNode, error) {
+	residentialEndpoints, err := s.controlResidentialEndpoints(ctx, channel)
+	if err != nil {
+		return ControlNode{}, err
+	}
+	return s.controlNodeViewWithResidentialEndpoints(ctx, channel, index, residentialEndpoints)
+}
+
+func (s *Service) controlNodeViewWithResidentialEndpoints(
+	ctx context.Context,
+	channel store.ResidentialChannelRecord,
+	index int,
+	residentialEndpoints map[string]ControlResidentialEndpoint,
+) (ControlNode, error) {
 	if err := validateDeclaredIndex(channel, index); err != nil {
 		return ControlNode{}, err
 	}
@@ -203,6 +238,13 @@ func (s *Service) controlNodeView(
 	if err != nil {
 		return ControlNode{}, err
 	}
+	if session.RouteMode == ClientRouteResidential && session.NodeFingerprint != "" {
+		if endpoint, exists := residentialEndpoints[session.NodeFingerprint]; exists {
+			node.ResidentialEndpoint = &endpoint
+		} else if residentialEndpoints != nil {
+			return ControlNode{}, errors.New("resolve residential control endpoint: assigned node is missing")
+		}
+	}
 	for _, endpoint := range node.Endpoints {
 		if endpoint.BrowserCompatible {
 			proxyURL := browserProxyURL(endpoint.URI)
@@ -214,6 +256,63 @@ func (s *Service) controlNodeView(
 		node.Hint = "no browser-compatible endpoint is configured; use an advanced endpoint through a local data plane"
 	}
 	return node, nil
+}
+
+func (s *Service) controlResidentialEndpoints(
+	ctx context.Context,
+	channel store.ResidentialChannelRecord,
+) (map[string]ControlResidentialEndpoint, error) {
+	provider, err := s.repository.GetResidentialProvider(ctx, channel.ProviderID)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	// Direct endpoint disclosure is intentionally limited to extraction APIs.
+	// Session-template gateways derive vendor account credentials and remain on
+	// the server-side data plane even for callers holding a control token.
+	if provider.RotationMode != RotationAPIList {
+		return nil, nil
+	}
+	nodes, err := s.repository.ListResidentialSessionNodes(ctx, channel.ID)
+	if err != nil {
+		return nil, err
+	}
+	endpoints := make(map[string]ControlResidentialEndpoint, len(nodes))
+	for _, node := range nodes {
+		plaintext, err := s.cipher.Open(
+			node.CanonicalConfigEncrypted,
+			[]byte("node:"+node.Fingerprint),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt residential control endpoint: %w", err)
+		}
+		var canonical struct {
+			Protocol string `json:"type"`
+			Server   string `json:"server"`
+			Port     int    `json:"port"`
+			Username string `json:"username"`
+			Password string `json:"password"`
+			TLS      bool   `json:"tls"`
+		}
+		if err := json.Unmarshal(plaintext, &canonical); err != nil {
+			return nil, fmt.Errorf("decode residential control endpoint: %w", err)
+		}
+		canonical.Protocol = strings.ToLower(strings.TrimSpace(canonical.Protocol))
+		canonical.Server = strings.TrimSpace(canonical.Server)
+		if (canonical.Protocol != "http" && canonical.Protocol != "socks5") ||
+			validateGatewayHost(canonical.Server) != nil ||
+			canonical.Port < 1 || canonical.Port > 65535 {
+			return nil, errors.New("decode residential control endpoint: invalid proxy fields")
+		}
+		endpoints[node.Fingerprint] = ControlResidentialEndpoint{
+			Protocol: canonical.Protocol,
+			Server:   canonical.Server,
+			Port:     canonical.Port,
+			Username: canonical.Username,
+			Password: canonical.Password,
+			TLS:      canonical.TLS,
+		}
+	}
+	return endpoints, nil
 }
 
 func browserProxyURL(uri string) string {

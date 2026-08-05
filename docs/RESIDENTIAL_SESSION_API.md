@@ -73,9 +73,21 @@ Content-Type: application/json
     }
   ],
   "proxy_url": null,
+  "residential_endpoint": {
+    "protocol": "http",
+    "server": "203.0.113.10",
+    "port": 8000,
+    "username": "<node-user>",
+    "password": "<node-password>",
+    "tls": false
+  },
   "route_mode": "residential"
 }
 ```
+
+`residential_endpoint` 只适用于 `api-list` 提取供应商，并且只在逻辑节点已有分配时出现：延迟分配
+的节点在 `GET nodes` 中省略该字段，`POST .../next` 成功分配后返回。它不会出现在 `/sub/`、
+管理员渠道/供应商列表或请求日志中。账密网关模式不会下发供应商主账号派生凭据。
 
 代理流量始终由 Mihomo 转发。Go 控制面只维护映射、编译 `IN-USER` 规则、应用候选配置并调用
 Mihomo Controller，不实现 HTTP CONNECT、SOCKS5、VLESS、VMess 或 Trojan 协议。
@@ -86,13 +98,16 @@ Mihomo Controller，不实现 HTTP CONNECT、SOCKS5、VLESS、VMess 或 Trojan �
 1. GET /ctl/<token>/nodes，读取固定节点池
 2. 在 OutlookRegister 进程内互斥租用一个空闲 index
 3. POST /nodes/<index>/next，刷新住宅出口
-4. 选择 endpoints[] 中支持的 VLESS/VMess/Trojan WS 端点，通过受管本地 Mihomo 落地
+4. API 提取渠道优先把 residential_endpoint 配置给受管本地 Mihomo；其他渠道从 endpoints[]
+   选择 VLESS/VMess/Trojan WS 端点
 5. 从选定端点探测出口身份并运行完整 flow
 6. flow 结束后只归还本地 index，不删除服务端节点
 ```
 
-渠道 `session_count` 和供应商 `max_concurrent_sessions` 都应不小于业务并发数。控制 token 可执行
-轮换并消耗供应商配额，权限高于只读订阅 token，应独立轮换且不得进入截图或日志。
+渠道 `session_count` 和供应商 `max_concurrent_sessions` 都应不小于业务并发数。OutlookRegister
+的第一个本地实例优先监听 `127.0.0.1:2334`；并发或端口冲突时每个租约使用不同的随机环回端口，
+不会让多个 flow 共享无认证入口。控制 token 可执行轮换、消耗供应商配额，并在 API 提取模式读取
+临时节点鉴权，权限高于只读订阅 token，应独立轮换且不得进入截图或日志。
 
 ## 兼容 `/rot/` 接口
 

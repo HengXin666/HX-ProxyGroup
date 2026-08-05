@@ -47,13 +47,15 @@ Clash / OutlookRegister 本机 Mihomo
 
 ### 2.3 自动化控制与 OutlookRegister
 
-- `GET /ctl/<control_token>/nodes` 返回声明节点池和协议中立的 `endpoints[]`。
+- `GET /ctl/<control_token>/nodes` 返回声明节点池和协议中立的 `endpoints[]`；API 提取节点已分配时
+  额外返回只对 control token 可见的 `residential_endpoint`。
 - `POST /ctl/<control_token>/nodes/<index>/next` 刷新指定节点背后的住宅出口。
 - `POST /ctl/<control_token>/nodes/<index>/route` 切换该节点路由。
 - 控制 token 与订阅 token 分离；未知、禁用和不适用的 token 返回 404，访问日志隐藏 token。
 - 「代理服务」行独立提供自动化控制 URL 复制动作。
-- OutlookRegister 保留 `endpoints[]`，从 VLESS/VMess/Trojan WS URI 启动短生命周期本机 Mihomo，
-  只把随机环回 HTTP 代理交给 Playwright；释放租约或验证失败时停止并清理本地实例。
+- OutlookRegister 跨代理池实例共享同一 control URL 的节点租约；API 提取模式直接把住宅 IP:port
+  交给短生命周期本机 Mihomo，首实例优先 127.0.0.1:2334，并发实例使用独立环回端口。其他模式
+  继续从 VLESS/VMess/Trojan WS URI 落地；释放租约或验证失败时停止并清理本地实例。
 
 ### 2.4 住宅流量统计
 

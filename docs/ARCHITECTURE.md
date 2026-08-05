@@ -320,6 +320,11 @@ Listener 或跨渠道的全局聚合 token。渠道 share token 与自动化 con
 `/ctl/<token>/nodes/<index>/next` 供 OutlookRegister 等程序指定节点换出口；旧 `/rot/` 会话接口
 只保留兼容。管理前端在「代理服务」聚合视图中提供两类 URL 的独立复制动作。
 
+API 提取供应商在逻辑节点成功分配后，可由高权限 `/ctl/` 响应返回最小化的
+`residential_endpoint`（协议、主机、端口、节点级鉴权和 TLS 标记）。客户端本机 Mihomo 直接拨号
+该端点，控制面只参与节点申请，不进入业务流量路径。该字段不进入 `/sub/`、管理员资源 DTO 或
+日志；账密网关也不使用此能力，避免 control token 导出供应商主账号派生凭据。
+
 Schema v24 引入声明节点、空闲释放、控制 token 和历史可选直连 Listener。新建渠道不再允许
 创建直连 Listener；旧记录仅保留升级兼容。Schema v25 引入稳定
 `residential_channel` 流量资源；渠道的所有入口映射到同一渠道 ID，出口 IP 和内部节点轮换不会

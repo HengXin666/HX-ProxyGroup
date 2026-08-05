@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,6 +56,10 @@ func (s *declaredControlStubResidentialService) ControlNodesByToken(_ context.Co
 		Endpoints: []residential.ControlEndpoint{{
 			Protocol: "vless", Transport: "ws", URI: "vless://credential@proxy.example.com:443", BrowserCompatible: false,
 		}},
+		ResidentialEndpoint: &residential.ControlResidentialEndpoint{
+			Protocol: "http", Server: "11.22.33.44", Port: 8000,
+			Username: "endpoint-user", Password: "endpoint-secret",
+		},
 	}}}, s.clientSessionErr
 }
 
@@ -740,13 +745,19 @@ func TestDeclaredResidentialControlRoutes(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("GET control nodes status = %d", response.StatusCode)
 	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", response.Header.Get("Cache-Control"))
+	}
 	var payload residential.ControlNodeList
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
 	if len(payload.Nodes) != 1 || len(payload.Nodes[0].Endpoints) != 1 ||
 		payload.Nodes[0].Endpoints[0].Protocol != "vless" || payload.Nodes[0].Endpoints[0].Transport != "ws" {
-		t.Fatalf("GET control nodes payload = %+v", payload)
+		t.Fatal("GET control nodes returned an invalid endpoint shape")
+	}
+	if payload.Nodes[0].ResidentialEndpoint == nil {
+		t.Fatal("GET control nodes omitted the residential endpoint")
 	}
 
 	for _, test := range []struct {
@@ -772,9 +783,44 @@ func TestDeclaredResidentialControlRoutes(t *testing.T) {
 		if result.StatusCode != http.StatusOK {
 			t.Errorf("POST %s status = %d", test.path, result.StatusCode)
 		}
+		if strings.HasPrefix(test.path, "/ctl/") && result.Header.Get("Cache-Control") != "no-store" {
+			t.Errorf("POST control response Cache-Control = %q, want no-store", result.Header.Get("Cache-Control"))
+		}
 	}
 	if len(service.controlCalls) != 6 {
 		t.Fatalf("control calls = %v", service.controlCalls)
+	}
+}
+
+func TestResidentialControlLogsRedactTokenAndEndpointSecrets(t *testing.T) {
+	service := &declaredControlStubResidentialService{stubResidentialService: &stubResidentialService{}}
+	var logs bytes.Buffer
+	server, err := NewServer(
+		&stubBundleService{},
+		slog.New(slog.NewTextHandler(&logs, nil)),
+		WithResidential(service),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := httptest.NewServer(server.Handler())
+	t.Cleanup(testServer.Close)
+
+	response, err := http.Get(testServer.URL + "/ctl/control-token-must-be-redacted/nodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET control nodes status = %d", response.StatusCode)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "path=/ctl/[redacted]") ||
+		strings.Contains(logged, "control-token-must-be-redacted") ||
+		strings.Contains(logged, "endpoint-user") ||
+		strings.Contains(logged, "endpoint-secret") {
+		t.Fatal("control request log did not preserve the redaction boundary")
 	}
 }
 

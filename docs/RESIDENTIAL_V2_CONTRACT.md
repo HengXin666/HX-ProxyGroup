@@ -107,6 +107,14 @@ Content-Type: application/json
         }
       ],
       "proxy_url": null,
+      "residential_endpoint": {
+        "protocol": "http",
+        "server": "203.0.113.10",
+        "port": 8000,
+        "username": "<node-user>",
+        "password": "<node-password>",
+        "tls": false
+      },
       "country_code": "US",
       "route_mode": "residential"
     }
@@ -119,6 +127,10 @@ Content-Type: application/json
 消费 WS 协议 URI，应由客户端受管的本地 Mihomo 或 sing-box 落地。`GET nodes` 会更新声明节点
 最后使用时间。未知、禁用、不属于 sticky 声明渠道的 token 和越界 index 统一返回 404。
 
+`residential_endpoint` 仅由 API 提取供应商在节点已分配后返回，并且只存在于高权限 `/ctl/`
+响应。客户端可用它在本机直接落地住宅 `IP:port`，使 VPS 只负责申请节点。账密网关不下发供应商
+主凭据；`/sub/`、管理员列表和请求日志都不包含该字段。
+
 OutlookRegister 的推荐配置是：
 
 ```json
@@ -130,8 +142,9 @@ OutlookRegister 的推荐配置是：
 }
 ```
 
-它在本地互斥租用节点，获取时调用 `next`，从 `endpoints[]` 启动短生命周期 Mihomo 环回代理并
-探测出口，释放时停止本地实例并归还本地租约，不删除服务端节点。
+它在进程级按 control URL 互斥租用节点，获取时调用 `next`，优先从 `residential_endpoint` 启动
+短生命周期 Mihomo 环回代理，其他模式再使用 `endpoints[]`。首实例优先使用 127.0.0.1:2334，
+并发实例使用独立端口；释放时停止本地实例并归还本地租约，不删除服务端节点。
 
 ## 5. 订阅渲染
 

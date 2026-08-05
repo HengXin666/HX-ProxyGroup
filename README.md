@@ -224,7 +224,18 @@ Mihomo 负责。每个声明节点使用独立协议凭据，并通过 Mihomo `I
 HTTP/SOCKS 入口。每个渠道对外使用雷池 HTTPS 443 下自己的订阅
 `https://proxy.example.com/sub/<token>?format=clash`；链接省略默认 `:443`。
 `/sub/` 和 `/ctl/` 都不是 HTTP/SOCKS 代理端点。`/ctl/` 为每个声明节点返回通用 `endpoints[]`；
-OutlookRegister 托管本机 Mihomo，把 VLESS/VMess/Trojan WS 端点落地为线程独享的环回代理。
+对于 API 提取供应商，节点执行 `next` 后还会在仅 control token 可读的 `residential_endpoint`
+中返回本次提取的协议、IP/主机、端口和节点级鉴权。OutlookRegister 优先让本机 Mihomo 直接拨号
+该住宅节点，首实例监听 `http://127.0.0.1:2334`，并发或端口占用时为各 flow 分配独立环回端口：
+
+```text
+浏览器 -> 本机 Mihomo 环回 HTTP -> API 提取的住宅 IP:port -> 目标站点
+          （VPS 只申请节点，不承载浏览器业务流量）
+```
+
+账密网关不会通过该字段下发供应商主凭据，仍使用服务器数据面与 `endpoints[]`。普通 `/sub/`、
+管理列表和请求日志均不包含 `residential_endpoint`。control token 因此能够消耗提取配额并读取
+临时节点鉴权，必须按高权限 bearer 凭据保管和轮换。
 
 定制会话 API、并发容量、切流语义和安全边界见
 [住宅代理客户端会话 API](docs/RESIDENTIAL_SESSION_API.md)。

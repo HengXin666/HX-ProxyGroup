@@ -234,7 +234,7 @@ func (s *trackedSession) watch(ctx context.Context, idleTimeout, maxLifetime tim
 				s.Close("idle timeout")
 				return
 			}
-			if now.After(deadline) {
+			if maxLifetime > 0 && now.After(deadline) {
 				s.Close("maximum session lifetime reached")
 				return
 			}

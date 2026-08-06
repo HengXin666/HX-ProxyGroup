@@ -15,6 +15,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
+import { HostResources } from "@/components/host-resources"
 import type { DataPlaneStatus, ListenerRecord, OverviewSample, ProxyGroup, RoutingRuleSet, TrafficSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -129,6 +130,8 @@ export function OverviewPage({ onNotice }: OverviewPageProps) {
       <Metric icon={Activity} label="活动连接" value={String(latest?.active_connections ?? 0)} color="text-primary" />
       <Metric icon={Route} label="有效入口" value={String(routes.filter((item) => item.listener.enabled).length)} color="text-warning" />
     </section>
+
+    <HostResources onNotice={onNotice} />
 
     <section className="border-y bg-card py-4">
       <div className="flex flex-col gap-3 px-4 sm:flex-row sm:items-center sm:justify-between">

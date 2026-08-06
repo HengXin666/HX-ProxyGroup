@@ -293,6 +293,13 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer terminalService.Shutdown()
+	terminalService.SetDataPlanePIDResolver(func() map[int]string {
+		status := mihomoManager.Status()
+		if status.PID == 0 {
+			return nil
+		}
+		return map[int]string{status.PID: "mihomo"}
+	})
 
 	portableStatePath := filepath.Join(cfg.DataDirectory, "state", "control-plane.json")
 	if err := writePortableState(portableStatePath, cfg, databaseStatus.SchemaVersion); err != nil {

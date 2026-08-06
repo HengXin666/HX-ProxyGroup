@@ -6,7 +6,7 @@
 // Safety model (docs/V1_CORE.md 9.3):
 //   - enabled by default, with an emergency environment kill switch;
 //   - administrator authentication is required unconditionally;
-//   - no idle disconnect, with an absolute lifetime cap per session;
+//   - no idle disconnect and no absolute lifetime cap per session;
 //   - bounded concurrent sessions;
 //   - every session start and end is audit-logged with cause and duration.
 package terminal
@@ -31,7 +31,7 @@ var (
 )
 
 const (
-	defaultMaxLifetime   = 2 * time.Hour
+	defaultMaxLifetime   = 0 // 0 means no absolute lifetime cap
 	defaultMaxSessions   = 2
 	defaultShellSizeCols = 120
 	defaultShellSizeRows = 32
@@ -46,7 +46,9 @@ type Config struct {
 	// IdleTimeout closes a session with no input/output activity. Zero disables
 	// idle disconnection, which is the production default for weak networks.
 	IdleTimeout time.Duration
-	// MaxLifetime is the absolute per-session cap.
+	// MaxLifetime is the absolute per-session cap. Zero (the default for
+	// v2) disables the cap entirely; configure a positive value to re-enable
+	// a hard ceiling.
 	MaxLifetime time.Duration
 	// MaxSessions bounds concurrently open sessions.
 	MaxSessions int
@@ -76,6 +78,11 @@ type Service struct {
 
 	mutex    sync.Mutex
 	sessions map[string]Session
+
+	// host samples the local machine + monitored processes at a low cadence.
+	host           *hostCollector
+	dataplanePIDs  func() map[int]string
+	metricsTargets map[int]string
 }
 
 func NewService(config Config, logger *slog.Logger) (*Service, error) {
@@ -85,20 +92,45 @@ func NewService(config Config, logger *slog.Logger) (*Service, error) {
 	if config.IdleTimeout < 0 {
 		return nil, errors.New("terminal idle timeout cannot be negative")
 	}
-	if config.MaxLifetime <= 0 {
-		config.MaxLifetime = defaultMaxLifetime
+	if config.MaxLifetime < 0 {
+		config.MaxLifetime = 0 // 0 disables the absolute cap
 	}
 	if config.MaxSessions <= 0 {
 		config.MaxSessions = defaultMaxSessions
 	}
 	return &Service{
-		config:   config,
-		logger:   logger,
-		sessions: make(map[string]Session),
+		config:         config,
+		logger:         logger,
+		sessions:       make(map[string]Session),
+		host:           newHostCollector(),
+		metricsTargets: map[int]string{os.Getpid(): "hx-proxygroupd"},
 	}, nil
 }
 
 func (s *Service) Enabled() bool { return s.config.Enabled }
+
+// SetDataPlanePIDResolver lets the caller report the active Mihomo PID(s) so
+// the terminal UI can show data-plane CPU/RAM alongside the control plane.
+func (s *Service) SetDataPlanePIDResolver(resolver func() map[int]string) {
+	s.dataplanePIDs = resolver
+}
+
+// HostSnapshot returns one resource sample. dataplane PIDs are resolved fresh
+// on every call so a restarted data plane is picked up without wiring changes.
+func (s *Service) HostSnapshot() HostSnapshot {
+	targets := map[int]string{}
+	for k, v := range s.metricsTargets {
+		targets[k] = v
+	}
+	if s.dataplanePIDs != nil {
+		for pid, name := range s.dataplanePIDs() {
+			if pid > 0 {
+				targets[pid] = name
+			}
+		}
+	}
+	return s.host.Snapshot(targets, 0)
+}
 
 func (s *Service) TriggerUpdate(ctx context.Context) error {
 	if strings.TrimSpace(s.config.PrivilegedSocket) == "" || strings.TrimSpace(s.config.UpdaterPath) == "" {

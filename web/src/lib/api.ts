@@ -73,7 +73,7 @@ export function setUnauthenticatedHandler(handler: (() => void) | null) {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
-  if (init?.body && !headers.has("Content-Type")) {
+  if (init?.body && !headers.has("Content-Type") && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json")
   }
   const method = (init?.method ?? "GET").toUpperCase()
@@ -157,6 +157,46 @@ export type TerminalStatus = {
   two_factor_enabled: boolean
   two_factor_verified: boolean
   two_factor_verification_ttl_seconds: number
+}
+
+export type TerminalHostSample = {
+  timestamp: string
+  cpu_usage_pct: number
+  cpu_count: number
+  load1: number
+  load5: number
+  load15: number
+  memory_total_bytes: number
+  memory_used_bytes: number
+  memory_cached_bytes: number
+  swap_total_bytes: number
+  swap_used_bytes: number
+  net_rx_bytes_per_sec: number
+  net_tx_bytes_per_sec: number
+  processes: TerminalProcessResource[]
+}
+
+export type TerminalProcessResource = {
+  name: string
+  pid: number
+  cpu_usage_pct: number
+  memory_rss_bytes: number
+}
+
+export type SystemResourceSample = TerminalHostSample
+
+export type TerminalFileEntry = {
+  name: string
+  size: number
+  mode: string
+  is_dir: boolean
+  modified: string
+}
+
+export type TerminalFileList = {
+  path: string
+  parent: string
+  entries: TerminalFileEntry[]
 }
 
 export type TwoFactorStatus = {
@@ -300,6 +340,38 @@ export const api = {
     const scheme = window.location.protocol === "https:" ? "wss" : "ws"
     return `${scheme}://${window.location.host}/api/v1/terminal/ws`
   },
+  terminalMetricsURL(): string {
+    return "/api/v1/terminal/metrics"
+  },
+  listTerminalFiles(path: string): Promise<TerminalFileList> {
+    const query = new URLSearchParams({ path })
+    return request(`/api/v1/terminal/files?${query.toString()}`)
+  },
+  terminalFileDownloadURL(path: string): string {
+    const query = new URLSearchParams({ path, op: "download" })
+    return `/api/v1/terminal/files?${query.toString()}`
+  },
+  uploadTerminalFile(directory: string, file: File): Promise<{ saved: string[] }> {
+    const form = new FormData()
+    form.append("file", file, file.name)
+    const query = new URLSearchParams({ path: directory })
+    return request(`/api/v1/terminal/files?${query.toString()}`, {
+      method: "POST",
+      body: form,
+    })
+  },
+  removeTerminalFile(path: string): Promise<{ removed: string }> {
+    return request("/api/v1/terminal/files/remove", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    })
+  },
+  mkdirTerminalFile(path: string): Promise<{ path: string }> {
+    return request("/api/v1/terminal/files/mkdir", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    })
+  },
 
   async health(): Promise<boolean> {
     try {
@@ -312,6 +384,9 @@ export const api = {
 
   systemInfo(): Promise<SystemInfo> {
     return request("/api/v1/system/info")
+  },
+  systemResources(): Promise<SystemResourceSample> {
+    return request("/api/v1/system/resources")
   },
 
   triggerSystemUpdate(): Promise<{ accepted: boolean }> {

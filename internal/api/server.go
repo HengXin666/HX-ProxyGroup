@@ -469,6 +469,15 @@ func (s *Server) Handler() http.Handler {
 	if s.terminal != nil {
 		mux.HandleFunc("/api/v1/terminal/status", s.handleTerminalStatus)
 		mux.HandleFunc("/api/v1/terminal/ws", s.handleTerminalSocket)
+		// Sensitive file/metrics surfaces carry the same authority as a root
+		// shell, so they are gated by the same 2FA step-up as the WebSocket.
+		mux.Handle("/api/v1/terminal/metrics", s.requireTerminalTwoFactor(http.HandlerFunc(s.handleTerminalMetrics)))
+		mux.Handle("/api/v1/terminal/files", s.requireTerminalTwoFactor(http.HandlerFunc(s.handleTerminalFiles)))
+		mux.Handle("/api/v1/terminal/files/mkdir", s.requireTerminalTwoFactor(http.HandlerFunc(s.handleTerminalFileMkdir)))
+		mux.Handle("/api/v1/terminal/files/remove", s.requireTerminalTwoFactor(http.HandlerFunc(s.handleTerminalFileRemove)))
+		// Host resource snapshot for the overview dashboard (admin-only, no 2FA
+		// required because it exposes utilization numbers, not shell authority).
+		mux.HandleFunc("/api/v1/system/resources", s.handleSystemResources)
 	}
 	if s.webRoot != "" {
 		mux.Handle("/", newSPAHandler(s.webRoot))

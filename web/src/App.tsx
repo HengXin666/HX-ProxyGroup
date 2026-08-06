@@ -267,7 +267,7 @@ export default function App() {
           </nav>
         </header>
 
-        <main key={page} className={cn("page-enter mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7", page === "routing" && "lg:h-full lg:max-w-none lg:overflow-hidden")}>
+        <main key={page} className={cn("page-enter mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7", (page === "routing" || page === "terminal") && "lg:h-full lg:max-w-none lg:overflow-hidden")}>
           {healthy === false && (
             <div className="mb-4 flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
               <CircleX className="mt-0.5 size-4 shrink-0" />

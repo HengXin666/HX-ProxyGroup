@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { AlertTriangle, LoaderCircle, Play, ShieldCheck, Square, TerminalSquare } from "lucide-react"
+import { AlertTriangle, LoaderCircle, Maximize2, PanelLeft, Play, ShieldCheck, Square, TerminalSquare } from "lucide-react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import "@xterm/xterm/css/xterm.css"
 
 import { ApiError, api, type TerminalStatus } from "@/lib/api"
+import { FilePanel } from "@/components/terminal/file-panel"
+import { HostMonitor } from "@/components/terminal/host-monitor"
 import { Input } from "@/components/ui/input"
-import { PredictiveEcho, shouldBatchTerminalInput, type TerminalMode } from "@/lib/terminal-echo"
+import { PredictiveEcho, type TerminalMode } from "@/lib/terminal-echo"
 import { subscribeTheme } from "@/lib/theme"
+import { cn } from "@/lib/utils"
 
 type ConnectionState = "idle" | "connecting" | "connected" | "closed"
 
@@ -21,10 +24,12 @@ export function TerminalPage({
   const fitRef = useRef<FitAddon | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const echoRef = useRef(new PredictiveEcho())
+  const keepAliveRef = useRef<number | null>(null)
   const [status, setStatus] = useState<TerminalStatus | null>(null)
   const [connection, setConnection] = useState<ConnectionState>("idle")
   const [twoFactorCode, setTwoFactorCode] = useState("")
   const [unlocking, setUnlocking] = useState(false)
+  const [panelHidden, setPanelHidden] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -42,6 +47,10 @@ export function TerminalPage({
   }, [onNotice])
 
   const disconnect = useCallback(() => {
+    if (keepAliveRef.current !== null) {
+      window.clearInterval(keepAliveRef.current)
+      keepAliveRef.current = null
+    }
     socketRef.current?.close(1000, "user disconnect")
     socketRef.current = null
     setConnection("closed")
@@ -65,6 +74,52 @@ export function TerminalPage({
     }
   }
 
+  // Keep the session synced with server PTY clock even when the browser tab is
+  // hidden: switch tabs must NOT disconnect the user. A lightweight no-op ping
+  // frame every 20s encourages NAT/proxy keepalive and helps the server keep
+  // the session lastActive fresh without sending real input. This is far below
+  // the heavy feeling of genuine round-trip-per-keystroke.
+  const startKeepalive = useCallback((socket: WebSocket) => {
+    if (keepAliveRef.current !== null) window.clearInterval(keepAliveRef.current)
+    keepAliveRef.current = window.setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) {
+        // An empty resize frame costs ~40 bytes and keeps the connection warm
+        // without producing terminal output. Server ignores cols/rows==0.
+        socket.send(JSON.stringify({ type: "resize", cols: 0, rows: 0 }))
+      }
+    }, 20_000)
+  }, [])
+
+  // When returning to this tab, the terminal may have buffered output while we
+  // were away. We do NOT reconnect — the socket is still open — but we
+  // re-fit so the visible terminal matches the viewport again.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        fitRef.current?.fit()
+        if (terminalRef.current) terminalRef.current.focus()
+      }
+    }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => document.removeEventListener("visibilitychange", onVisible)
+  }, [])
+
+  // Debounced refit on container resize so the PTY window tracks layout changes
+  // caused by expanding/collapsing the side panel.
+  useEffect(() => {
+    if (!containerRef.current) return
+    const observer = new ResizeObserver(() => {
+      fitRef.current?.fit()
+      const term = terminalRef.current
+      const socket = socketRef.current
+      if (term && socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }))
+      }
+    })
+    observer.observe(containerRef.current)
+    return () => observer.disconnect()
+  }, [])
+
   const connect = useCallback(() => {
     if (!containerRef.current || socketRef.current || !status?.two_factor_verified) return
     setConnection("connecting")
@@ -81,6 +136,7 @@ export function TerminalPage({
       terminal.open(containerRef.current)
       terminalRef.current = terminal
       fitRef.current = fit
+      subscribeTheme(() => { terminalRef.current && (terminalRef.current.options.theme = terminalTheme()) })
     }
     const terminal = terminalRef.current
     const fit = fitRef.current
@@ -90,7 +146,8 @@ export function TerminalPage({
     const flushInput = () => {
       if (inputTimer !== null) window.clearTimeout(inputTimer)
       inputTimer = null
-      if (pendingInput && socket.readyState === WebSocket.OPEN) {
+      const socket = socketRef.current
+      if (pendingInput && socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "input", data: pendingInput }))
       }
       pendingInput = ""
@@ -114,6 +171,7 @@ export function TerminalPage({
       fit?.fit()
       sendResize()
       terminal.focus()
+      startKeepalive(socket)
     }
     socket.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
@@ -133,81 +191,55 @@ export function TerminalPage({
       }
     }
     socket.onclose = (event) => {
+      if (keepAliveRef.current !== null) {
+        window.clearInterval(keepAliveRef.current)
+        keepAliveRef.current = null
+      }
       socketRef.current = null
       predictiveEcho.reset()
       setConnection("closed")
       terminal.write(`\r\n\x1b[33m[会话已结束${event.reason ? `：${event.reason}` : ""}]\x1b[0m\r\n`)
+      if (event.wasClean === false) {
+        onNotice("终端连接被中断，请确认网络稳定后重连", "error")
+      }
     }
     socket.onerror = () => {
       onNotice("终端连接失败，请确认已登录并完成 2FA 解锁", "error")
     }
 
     const inputDisposable = terminal.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        const predicted = predictiveEcho.predict(data)
-        if (predicted != null) terminal.write(predicted)
-        if (shouldBatchTerminalInput(data, predicted)) {
-          pendingInput += data
-          if (inputTimer === null) inputTimer = window.setTimeout(flushInput, 12)
-        } else {
-          pendingInput += data
-          flushInput()
-        }
+      if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
+      const predicted = predictiveEcho.predict(data)
+      if (predicted) terminal.write(predicted)
+      // Collapse safe keystrokes into one frame (≤12ms) so weak round-trips do
+      // not make typing feel laggy.
+      pendingInput += data
+      const isControl = /[\x00-\x1f]/.test(data) || data === "\x7f"
+      if (isControl || pendingInput.length >= 1024) {
+        flushInput()
+      } else if (inputTimer === null) {
+        inputTimer = window.setTimeout(flushInput, 12)
       }
     })
-    const resizeDisposable = terminal.onResize(() => sendResize())
-    const observer = new ResizeObserver(() => fit?.fit())
-    observer.observe(containerRef.current)
 
-    socket.addEventListener("close", () => {
-      inputDisposable.dispose()
-      resizeDisposable.dispose()
-      observer.disconnect()
-      if (inputTimer !== null) window.clearTimeout(inputTimer)
-      inputTimer = null
-      pendingInput = ""
-      predictiveEcho.reset()
-    })
-  }, [onNotice, status])
+    return () => inputDisposable.dispose()
+  }, [onNotice, startKeepalive, status?.two_factor_verified])
 
-  useEffect(() => () => disconnect(), [disconnect])
-  useEffect(() => subscribeTheme(() => {
-    if (terminalRef.current) terminalRef.current.options.theme = terminalTheme()
-  }), [])
-
-  if (status && !status.enabled) {
-    return (
-      <div className="space-y-4">
-        <PageHeader />
-        <div className="rounded-md border border-warning-border bg-warning-muted px-4 py-3 text-sm text-warning-foreground">
-          <div className="font-medium">终端功能未启用</div>
-          <p className="mt-1 text-xs leading-5">
-            当前服务端已显式关闭终端。终端默认开启；如需恢复，请移除环境变量{" "}
-            <code className="rounded bg-card/60 px-1">HX_PROXYGROUP_TERMINAL=0</code>{" "}
-            后重启控制面。
-          </p>
-        </div>
-      </div>
-    )
-  }
-
-  if (status && !status.two_factor_enabled) {
-    return (
-      <div className="space-y-4">
-        <PageHeader />
-        <div className="rounded-md border border-warning-border bg-warning-muted px-4 py-3 text-sm text-warning-foreground">
-          <div className="font-medium">需要先启用 2FA</div>
-          <p className="mt-1 text-xs leading-5">请进入“全局配置 → 账号安全”，生成并启用 TOTP 2FA。终端默认开启，但没有 2FA 时不会接受 Shell 连接。</p>
-        </div>
-      </div>
-    )
-  }
+  useEffect(() => {
+    return () => {
+      if (keepAliveRef.current !== null) window.clearInterval(keepAliveRef.current)
+      socketRef.current?.close(1000, "unmount")
+      socketRef.current = null
+      terminalRef.current?.dispose()
+      terminalRef.current = null
+    }
+  }, [])
 
   if (status && !status.two_factor_verified) {
     return (
       <div className="space-y-4">
         <PageHeader />
-        <section className="max-w-md rounded-md border bg-card p-4">
+        <section className="rounded-md border bg-card p-4">
           <div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />验证 2FA 后解锁终端</div>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">输入验证器当前显示的 6 位验证码。验证成功后，当前登录会话可在 {Math.round(status.two_factor_verification_ttl_seconds / 60)} 分钟内建立终端连接。</p>
           <div className="mt-4 flex items-end gap-2"><label className="block min-w-0 flex-1 text-xs font-medium">一次性验证码<Input aria-label="终端 2FA 验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-1 font-mono tracking-[0.25em]" /></label><button type="button" onClick={() => void unlockTerminal()} disabled={unlocking} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60">{unlocking ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}解锁</button></div>
@@ -217,51 +249,78 @@ export function TerminalPage({
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader />
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <PageHeader />
+        <button
+          type="button"
+          onClick={() => setPanelHidden((v) => !v)}
+          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs hover:bg-muted"
+        >
+          <PanelLeft className="size-3.5" />
+          {panelHidden ? "展开侧栏" : "收起侧栏"}
+        </button>
+      </div>
 
       <div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs leading-5 text-destructive">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
         <div>
           <span className="font-medium">高风险操作提示：</span>
-          此终端以控制面进程用户身份在服务器上执行真实 Shell 命令。删除文件、修改系统配置、停止服务等操作立即生效且不可撤销。
-          空闲不会自动断开；单次会话最长 {status ? Math.round(status.max_lifetime_seconds / 3600) : 2} 小时，全部会话都会写入审计日志。
+          此终端以控制面进程用户身份在服务器上执行真实 Shell 命令。删除文件、修改系统配置、停止服务等操作立即生效且不可撤销。会话无空闲与寿命上限，全部会话都会写入审计日志。
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-md border bg-card">
-        <header className="flex items-center justify-between gap-2 border-b bg-muted/60 px-3 py-2">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <TerminalSquare className="size-4 text-muted-foreground" />
-            服务器终端
-            {status?.privileged && <span className="rounded-full border border-warning-border bg-warning-muted px-2 py-0.5 text-[11px] text-warning-foreground">root PTY</span>}
-            <ConnectionBadge state={connection} />
-          </div>
-          <div className="flex items-center gap-2">
-            {connection === "connected" ? (
+      <div className={cn("grid min-h-0 flex-1 gap-3", panelHidden ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-[1fr_320px]")}>
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-md border bg-card">
+          <header className="flex items-center justify-between gap-2 border-b bg-muted/60 px-3 py-2">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <TerminalSquare className="size-4 text-muted-foreground" />
+              服务器终端
+              {status?.privileged && <span className="rounded-full border border-warning-border bg-warning-muted px-2 py-0.5 text-[11px] text-warning-foreground">root PTY</span>}
+              <ConnectionBadge state={connection} />
+            </div>
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={disconnect}
-                className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs hover:bg-card"
+                onClick={() => fitRef.current?.fit()}
+                className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-card"
+                title="重新适配窗口尺寸"
               >
-                <Square className="size-3.5" />
-                断开
+                <Maximize2 className="size-3.5" />
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={connect}
-                disabled={connection === "connecting" || !status?.two_factor_verified}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
-              >
-                <Play className="size-3.5" />
-                {connection === "connecting" ? "连接中…" : "连接"}
-              </button>
-            )}
+              {connection === "connected" ? (
+                <button type="button" onClick={disconnect} className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs hover:bg-card">
+                  <Square className="size-3.5" /> 断开
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={connect}
+                  disabled={connection === "connecting" || !status?.two_factor_verified}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                >
+                  <Play className="size-3.5" /> {connection === "connecting" ? "连接中…" : "连接"}
+                </button>
+              )}
+            </div>
+          </header>
+          <div className="relative min-h-0 flex-1 bg-background">
+            <div ref={containerRef} className="absolute inset-0 p-2" />
           </div>
-        </header>
-        <div ref={containerRef} className="h-[480px] w-full bg-background p-2" />
-      </section>
+        </section>
+
+        {!panelHidden && (
+          <aside className="hidden min-h-0 flex-col gap-3 rounded-md border bg-card lg:flex">
+            <div className="overflow-auto p-2">
+              <HostMonitor enabled />
+            </div>
+            <div className="mx-2 border-t" />
+            <div className="min-h-0 flex-1">
+              <FilePanel onNotice={onNotice} />
+            </div>
+          </aside>
+        )}
+      </div>
     </div>
   )
 }
@@ -269,9 +328,9 @@ export function TerminalPage({
 function PageHeader() {
   return (
     <div>
-      <h1 className="text-lg font-semibold">终端（v2）</h1>
+      <h1 className="text-lg font-semibold">终端</h1>
       <p className="mt-0.5 text-sm text-muted-foreground">
-        基于 xterm.js 与服务端 PTY 的浏览器内终端。独立开关、管理员认证、会话上限与审计缺一不可。
+        浏览器内服务器终端，集成系统监控与文件管理；防断连、本地预测回显，弱网下打字无延迟感。
       </p>
     </div>
   )
@@ -294,5 +353,10 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
 function terminalTheme() {
   const styles = getComputedStyle(document.documentElement)
   const color = (name: string) => styles.getPropertyValue(name).trim()
-  return { background: color("--background"), foreground: color("--foreground"), cursor: color("--foreground"), selectionBackground: color("--accent") }
+  return {
+    background: color("--background"),
+    foreground: color("--foreground"),
+    cursor: color("--foreground"),
+    selectionBackground: color("--accent"),
+  }
 }

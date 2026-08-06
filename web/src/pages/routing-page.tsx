@@ -160,20 +160,15 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
 
   async function copyShareLink(format: "v2rayn" | "clash" | "sing-box" | "uri", client: string) {
     if (!listener.share_path) return
-    if (!endpointAddress(listener, publicEndpoint)) {
-      onNotice("请先配置公网端点，不能复制指向 127.0.0.1 的订阅链接", "error")
-      return
-    }
     const ok = await copyText(api.listenerShareURL(listener.share_path, format))
     onNotice(ok ? `${client} 订阅链接已复制` : "复制失败，请手动复制", ok ? "success" : "error")
   }
 
   async function copyEndpoint() {
-    const address = endpointAddress(listener, publicEndpoint)
-    if (!address) {
-      onNotice("请先配置公网端点，不能复制 127.0.0.1 等本机监听地址", "error")
-      return
-    }
+    // 复制入口地址时，公开端点缺省就直接用本机监听地址。
+    // 不少场景（管理员本机、同主机容器等）连接 127.0.0.1 本就是通的，
+    // 不再强制要求公网域名才能复制入口地址。
+    const address = endpointAddress(listener, publicEndpoint) || `${listener.bind_address}:${listener.port}`
     const ok = await copyText(address)
     onNotice(ok ? "入口地址已复制" : "复制失败，请手动复制", ok ? "success" : "error")
   }

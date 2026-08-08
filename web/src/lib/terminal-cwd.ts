@@ -7,6 +7,16 @@
 // helpers are deliberately conservative: anything ambiguous returns null so
 // the panel never jumps to a wrong directory.
 
+/** Parent of an absolute path, mirroring the server's filepath.Dir semantics.
+ * Returns null at the root so callers can disable the "go up" action. */
+export function parentPath(path: string): string | null {
+  const trimmed = path.replace(/\/+$/, "")
+  if (trimmed === "" || trimmed === "/") return null
+  const index = trimmed.lastIndexOf("/")
+  if (index <= 0) return "/"
+  return trimmed.slice(0, index)
+}
+
 /** Collapse duplicate slashes and resolve `.` / `..` lexically. Never returns empty. */
 export function normalizePath(path: string): string {
   const absolute = path.startsWith("/")

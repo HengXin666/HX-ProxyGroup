@@ -3,6 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -300,5 +303,94 @@ func TestSystemResourcesRequiresAuth(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), `"processes"`) {
 		t.Fatalf("system resources missing processes: %q", body)
+	}
+}
+
+func TestTerminalFileErrorClassification(t *testing.T) {
+	tests := []struct {
+		name       string
+		operation  string
+		err        error
+		wantCode   string
+		wantStatus int
+	}{
+		{"permission", "file_list", os.ErrPermission, "file_list_forbidden", http.StatusForbidden},
+		{"missing", "file_list", os.ErrNotExist, "file_list_not_found", http.StatusNotFound},
+		{"generic", "file_upload", errors.New("boom"), "file_upload_failed", http.StatusBadRequest},
+		{"wrapped permission", "remove", fmt.Errorf("remove: %w", os.ErrPermission), "remove_forbidden", http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, status := terminalFileError(tt.operation, tt.err)
+			if code != tt.wantCode {
+				t.Fatalf("code = %q, want %q", code, tt.wantCode)
+			}
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// Listing a missing directory must be a 404 with a stable not-found code so
+// the file panel can render an inline state instead of a generic failure toast.
+func TestTerminalFilesListMissingPath(t *testing.T) {
+	f := newTerminalFixture(t)
+	q := url.Values{"path": {filepath.Join(t.TempDir(), "does-not-exist")}}.Encode()
+	resp, err := f.request(http.MethodGet, "/api/v1/terminal/files?"+q, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "file_list_not_found" {
+		t.Fatalf("code = %q, want file_list_not_found", payload.Error.Code)
+	}
+}
+
+// Listing a directory the control-plane user cannot read must be a 403 with a
+// stable forbidden code so the file panel can render the inline state. Root
+// bypasses DAC checks, so the case is skipped when running as root.
+func TestTerminalFilesListForbidden(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; directory permissions are not enforced")
+	}
+	f := newTerminalFixture(t)
+	locked := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	q := url.Values{"path": {locked}}.Encode()
+	resp, err := f.request(http.MethodGet, "/api/v1/terminal/files?"+q, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "file_list_forbidden" {
+		t.Fatalf("code = %q, want file_list_forbidden", payload.Error.Code)
 	}
 }

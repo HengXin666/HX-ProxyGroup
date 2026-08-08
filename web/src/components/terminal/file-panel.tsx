@@ -13,6 +13,7 @@ import {
 
 import { ApiError, api, type TerminalFileEntry, type TerminalFileList } from "@/lib/api"
 import { FileIcon } from "@/components/terminal/file-icons"
+import { parentPath } from "@/lib/terminal-cwd"
 import { cn, formatBytes } from "@/lib/utils"
 
 export interface FilePanelProps {
@@ -34,6 +35,7 @@ export interface FilePanelProps {
 export function FilePanel({ path, connected, onPathChange, onNotice }: FilePanelProps) {
   const [list, setList] = useState<TerminalFileList | null>(null)
   const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState<{ path: string; message: string } | null>(null)
   const [busyName, setBusyName] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const seqRef = useRef(0)
@@ -46,9 +48,22 @@ export function FilePanel({ path, connected, onPathChange, onNotice }: FilePanel
     try {
       const result = await api.listTerminalFiles(target === "" ? "/" : target)
       if (seqRef.current !== seq) return
+      setFailed(null)
       setList(result)
     } catch (cause) {
       if (seqRef.current !== seq) return
+      // Missing and permission-denied directories are normal shell states (the
+      // root PTY helper starts in /root while the control plane cannot read
+      // it). Render them inline instead of firing a page toast on every sync.
+      if (
+        cause instanceof ApiError &&
+        (cause.code === "file_list_forbidden" || cause.code === "file_list_not_found")
+      ) {
+        setList(null)
+        setFailed({ path: target === "" ? "/" : target, message: cause.message })
+        return
+      }
+      setFailed(null)
       onNotice(cause instanceof ApiError ? cause.message : "读取目录失败", "error")
     } finally {
       if (seqRef.current === seq) setLoading(false)
@@ -76,7 +91,8 @@ export function FilePanel({ path, connected, onPathChange, onNotice }: FilePanel
   }
 
   const goUp = () => {
-    if (list?.parent) onPathChange(list.parent)
+    const target = failed ? parentPath(failed.path) : list?.parent
+    if (target) onPathChange(target)
   }
 
   const currentSegment = path.split("/").filter(Boolean).at(-1)
@@ -129,7 +145,7 @@ export function FilePanel({ path, connected, onPathChange, onNotice }: FilePanel
         <button
           type="button"
           onClick={goUp}
-          disabled={!list?.parent}
+          disabled={!(list?.parent || (failed && parentPath(failed.path)))}
           className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 disabled:opacity-50 hover:bg-muted"
         >
           <ArrowUp className="size-3" /> 上级
@@ -177,7 +193,23 @@ export function FilePanel({ path, connected, onPathChange, onNotice }: FilePanel
             <div className="rounded-md border bg-card px-3 py-2 shadow">松开以上传到 {list?.path ?? path}</div>
           </div>
         )}
-        {!loading && list && list.entries.length === 0 && (
+        {!loading && failed && (
+          <div className="flex h-full min-h-0 flex-col items-center justify-center gap-1.5 px-4 py-10 text-center text-xs">
+            <FolderUp className="size-5 text-muted-foreground" />
+            <div className="font-medium text-foreground">无法读取该目录</div>
+            <div className="break-all font-mono text-muted-foreground">{failed.path}</div>
+            <div className="text-muted-foreground">{failed.message}</div>
+            <button
+              type="button"
+              onClick={goUp}
+              disabled={!parentPath(failed.path)}
+              className="mt-2 inline-flex items-center gap-1 rounded border px-2 py-1 hover:bg-muted disabled:opacity-50"
+            >
+              <ArrowUp className="size-3" /> 返回上级
+            </button>
+          </div>
+        )}
+        {!loading && !failed && list && list.entries.length === 0 && (
           <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">空目录</div>
         )}
         {list?.entries.map((entry) => (

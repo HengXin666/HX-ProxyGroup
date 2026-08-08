@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { detectPwdOutput, normalizePath, parseFirstWord, quoteForShell, resolveCdTarget } from "../src/lib/terminal-cwd.ts"
+import { detectPwdOutput, normalizePath, parentPath, parseFirstWord, quoteForShell, resolveCdTarget } from "../src/lib/terminal-cwd.ts"
 
 test("normalizePath collapses slashes and resolves dot segments", () => {
   assert.equal(normalizePath("//home//user/"), "/home/user")
@@ -48,4 +48,12 @@ test("detectPwdOutput matches a path split across accumulated frames", () => {
 test("quoteForShell wraps paths safely", () => {
   assert.equal(quoteForShell("/home/user"), "'/home/user'")
   assert.equal(quoteForShell("/home/It's"), `'/home/It'\\''s'`)
+})
+
+test("parentPath mirrors server filepath.Dir semantics", () => {
+  assert.equal(parentPath("/"), null)
+  assert.equal(parentPath("/root"), "/")
+  assert.equal(parentPath("/home/user/docs"), "/home/user")
+  assert.equal(parentPath("/home/user/"), "/home")
+  assert.equal(parentPath(""), null)
 })

@@ -32,7 +32,36 @@ const (
 	frameMode   byte = 13
 	frameError  byte = 14
 
+	// Dedicated helper connections for file operations. Each operation uses
+	// one connection: the control plane sends a request frame, the helper
+	// replies with frameFileResult / frameFileData frames, then the
+	// connection closes. Keeping file access on the privileged socket makes
+	// the file manager see the same filesystem the root shell sees (the
+	// control plane runs with ProtectHome=true and cannot read /home or
+	// /root on its own).
+	frameFileList     byte = 21
+	frameFileStat     byte = 22
+	frameFileDownload byte = 23
+	frameFileUpload   byte = 24
+	frameFileMkdir    byte = 25
+	frameFileRemove   byte = 26
+
+	// File-operation responses.
+	frameFileResult byte = 31 // JSON helperFileResult
+	frameFileData   byte = 32 // raw chunk (download to plane, upload to helper)
+
 	maxHelperFrame = 1 << 20
+	// helperFileChunk is the payload size used when streaming file contents
+	// over the helper socket, well below the 1 MiB frame ceiling.
+	helperFileChunk = 256 << 10
+	// helperFileIdleTimeout bounds a single helper file operation.
+	helperFileIdleTimeout = 30 * time.Second
+	// MaxFileListEntries bounds one directory listing so a giant directory
+	// cannot flood a response or the helper frame stream.
+	MaxFileListEntries = 5000
+	// MaxUploadBytes is the hard per-upload cap enforced by both the API and
+	// the privileged helper.
+	MaxUploadBytes = 256 << 20
 )
 
 // HelperConfig configures the root-only PTY helper. The helper is intended to
@@ -219,14 +248,18 @@ func handleHelperConnection(ctx context.Context, connection net.Conn, shell, upd
 	defer close(closeOnContext)
 
 	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
-	kind, _, err := readFrame(connection)
+	kind, payload, err := readFrame(connection)
 	_ = connection.SetReadDeadline(time.Time{})
 	if err != nil {
 		_ = connection.Close()
 		return
 	}
-	if kind == frameUpdate {
+	switch kind {
+	case frameUpdate:
 		handleUpdateRequest(ctx, connection, updaterPath)
+		return
+	case frameFileList, frameFileStat, frameFileDownload, frameFileUpload, frameFileMkdir, frameFileRemove:
+		handleHelperFileRequest(connection, kind, payload)
 		return
 	}
 	if kind != frameOpen {

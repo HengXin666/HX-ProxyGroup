@@ -3,33 +3,19 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
-)
 
-const (
-	terminalMaxUploadBytes = 256 << 20 // 256 MiB hard cap per upload
-	terminalMaxListEntries = 5000      // avoid one listing flooding the response
+	"github.com/HengXin666/HX-ProxyGroup/internal/terminal"
 )
-
-type terminalFileEntry struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Mode     string `json:"mode"`
-	IsDir    bool   `json:"is_dir"`
-	Modified string `json:"modified"`
-}
 
 type terminalFileListResponse struct {
-	Path    string              `json:"path"`
-	Parent  string              `json:"parent"`
-	Entries []terminalFileEntry `json:"entries"`
+	Path    string               `json:"path"`
+	Parent  string               `json:"parent"`
+	Entries []terminal.FileEntry `json:"entries"`
 }
 
 // resolveTerminalPath validates and normalizes a path argument. It must be
@@ -50,24 +36,37 @@ func resolveTerminalPath(raw string) (string, error) {
 	return cleaned, nil
 }
 
-// terminalFileError maps a filesystem error to a stable API code and the most
-// accurate HTTP status for one file-manager operation. The frontend branches
-// on the code, never on the message text: missing and forbidden paths are
-// client-side conditions the file panel can render inline, while everything
-// else stays an unexpected server-side failure.
+// terminalFileError maps a terminal-service failure to a stable API code and
+// the most accurate HTTP status for one file-manager operation. The frontend
+// branches on the code, never on the message text: missing and forbidden paths
+// are client-side conditions the file panel can render inline, while
+// everything else stays an unexpected server-side failure.
 func terminalFileError(operation string, err error) (code string, status int) {
-	switch {
-	case errors.Is(err, os.ErrPermission):
-		return operation + "_forbidden", http.StatusForbidden
-	case errors.Is(err, os.ErrNotExist):
-		return operation + "_not_found", http.StatusNotFound
-	default:
-		return operation + "_failed", http.StatusBadRequest
+	var fileErr *terminal.FileError
+	if errors.As(err, &fileErr) {
+		switch fileErr.Code {
+		case "forbidden":
+			return operation + "_forbidden", http.StatusForbidden
+		case "not_found":
+			return operation + "_not_found", http.StatusNotFound
+		}
 	}
+	return operation + "_failed", http.StatusBadRequest
 }
 
-// handleTerminalFileList lists one directory. The result is bounded by
-// terminalMaxListEntries and entries are sorted (directories first).
+func terminalFileMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var fileErr *terminal.FileError
+	if errors.As(err, &fileErr) {
+		return fileErr.Message
+	}
+	return err.Error()
+}
+
+// handleTerminalFileList lists one directory. The result is bounded by the
+// terminal service and entries are sorted (directories first).
 func (s *Server) handleTerminalFileList(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		methodNotAllowed(writer, request, http.MethodGet)
@@ -79,43 +78,12 @@ func (s *Server) handleTerminalFileList(writer http.ResponseWriter, request *htt
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", err.Error())
 		return
 	}
-	dir, err := os.Open(path)
+	entries, err := s.terminal.ListFiles(request.Context(), path)
 	if err != nil {
 		code, status := terminalFileError("file_list", err)
-		s.writeAPIError(writer, request, status, code, errorText(err))
+		s.writeAPIError(writer, request, status, code, terminalFileMessage(err))
 		return
 	}
-	defer dir.Close()
-	names, err := dir.Readdirnames(0)
-	if err != nil {
-		code, status := terminalFileError("file_list", err)
-		s.writeAPIError(writer, request, status, code, errorText(err))
-		return
-	}
-	if len(names) > terminalMaxListEntries {
-		names = names[:terminalMaxListEntries]
-	}
-	entries := make([]terminalFileEntry, 0, len(names))
-	for _, name := range names {
-		full := filepath.Join(path, name)
-		info, statErr := os.Lstat(full)
-		if statErr != nil {
-			continue
-		}
-		entries = append(entries, terminalFileEntry{
-			Name:     name,
-			Size:     info.Size(),
-			Mode:     info.Mode().String(),
-			IsDir:    info.IsDir(),
-			Modified: info.ModTime().UTC().Format(time.RFC3339),
-		})
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].IsDir != entries[j].IsDir {
-			return entries[i].IsDir
-		}
-		return entries[i].Name < entries[j].Name
-	})
 	parent := filepath.Dir(path)
 	if parent == path {
 		parent = ""
@@ -135,13 +103,13 @@ func (s *Server) handleTerminalFileDownload(writer http.ResponseWriter, request 
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", err.Error())
 		return
 	}
-	info, err := os.Stat(path)
+	info, err := s.terminal.StatFile(request.Context(), path)
 	if err != nil {
 		code, status := terminalFileError("file_download", err)
-		s.writeAPIError(writer, request, status, code, errorText(err))
+		s.writeAPIError(writer, request, status, code, terminalFileMessage(err))
 		return
 	}
-	if info.IsDir() {
+	if info.IsDir {
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", "path is a directory")
 		return
 	}
@@ -151,12 +119,15 @@ func (s *Server) handleTerminalFileDownload(writer http.ResponseWriter, request 
 		encoded = "download"
 	}
 	writer.Header().Set("Content-Disposition", "attachment; filename=\""+encoded+"\"")
-	writer.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
-	http.ServeFile(writer, request, path)
+	writer.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	if _, err := s.terminal.DownloadFile(request.Context(), path, writer); err != nil {
+		// Headers are already sent; the browser sees a truncated download.
+		s.logger.Warn("terminal file download failed", "path", path, "error", err)
+	}
 }
 
 // handleTerminalFileUpload accepts a multipart upload writing into the
-// provided directory. The total upload is bounded by terminalMaxUploadBytes.
+// provided directory. The total upload is bounded by the terminal service.
 func (s *Server) handleTerminalFileUpload(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		methodNotAllowed(writer, request, http.MethodPost)
@@ -167,19 +138,19 @@ func (s *Server) handleTerminalFileUpload(writer http.ResponseWriter, request *h
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", err.Error())
 		return
 	}
-	info, err := os.Stat(dir)
+	info, err := s.terminal.StatFile(request.Context(), dir)
 	if err != nil {
 		code, status := terminalFileError("file_upload", err)
-		s.writeAPIError(writer, request, status, code, errorText(err))
+		s.writeAPIError(writer, request, status, code, terminalFileMessage(err))
 		return
 	}
-	if !info.IsDir() {
+	if !info.IsDir {
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", "path must be a directory")
 		return
 	}
 	// Cap request size at the decoder level so a giant upload is refused early.
-	request.Body = http.MaxBytesReader(writer, request.Body, terminalMaxUploadBytes+1<<20)
-	if err := request.ParseMultipartForm(terminalMaxUploadBytes); err != nil {
+	request.Body = http.MaxBytesReader(writer, request.Body, terminal.MaxUploadBytes+1<<20)
+	if err := request.ParseMultipartForm(terminal.MaxUploadBytes); err != nil {
 		s.writeAPIError(writer, request, http.StatusRequestEntityTooLarge, "upload_too_large", errorText(err))
 		return
 	}
@@ -199,38 +170,14 @@ func (s *Server) handleTerminalFileUpload(writer http.ResponseWriter, request *h
 			src, err := header.Open()
 			if err != nil {
 				code, status := terminalFileError("file_upload", err)
-				s.writeAPIError(writer, request, status, code, errorText(err))
+				s.writeAPIError(writer, request, status, code, terminalFileMessage(err))
 				return
 			}
-			destination := filepath.Join(dir, name)
-			tmp := destination + ".hxpart"
-			out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-			if err != nil {
-				_ = src.Close()
-				code, status := terminalFileError("file_upload", err)
-				s.writeAPIError(writer, request, status, code, errorText(err))
-				return
-			}
-			if _, err := io.Copy(out, src); err != nil {
-				_ = out.Close()
-				_ = src.Close()
-				_ = os.Remove(tmp)
-				code, status := terminalFileError("file_upload", err)
-				s.writeAPIError(writer, request, status, code, errorText(err))
-				return
-			}
-			if err := out.Close(); err != nil {
-				_ = src.Close()
-				_ = os.Remove(tmp)
-				code, status := terminalFileError("file_upload", err)
-				s.writeAPIError(writer, request, status, code, errorText(err))
-				return
-			}
+			uploadErr := s.terminal.UploadFile(request.Context(), dir, name, src, header.Size)
 			_ = src.Close()
-			if err := os.Rename(tmp, destination); err != nil {
-				_ = os.Remove(tmp)
-				code, status := terminalFileError("file_upload", err)
-				s.writeAPIError(writer, request, status, code, errorText(err))
+			if uploadErr != nil {
+				code, status := terminalFileError("file_upload", uploadErr)
+				s.writeAPIError(writer, request, status, code, terminalFileMessage(uploadErr))
 				return
 			}
 			saved = append(saved, name)
@@ -251,18 +198,18 @@ func (s *Server) handleTerminalFileStat(writer http.ResponseWriter, request *htt
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", err.Error())
 		return
 	}
-	info, err := os.Stat(path)
+	info, err := s.terminal.StatFile(request.Context(), path)
 	if err != nil {
 		code, status := terminalFileError("file_stat", err)
-		s.writeAPIError(writer, request, status, code, errorText(err))
+		s.writeAPIError(writer, request, status, code, terminalFileMessage(err))
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"path":     path,
-		"size":     info.Size(),
-		"is_dir":   info.IsDir(),
-		"mode":     info.Mode().String(),
-		"modified": info.ModTime().UTC().Format(time.RFC3339),
+		"size":     info.Size,
+		"is_dir":   info.IsDir,
+		"mode":     info.Mode,
+		"modified": info.Modified.UTC().Format(time.RFC3339),
 	})
 }
 
@@ -284,9 +231,9 @@ func (s *Server) handleTerminalFileMkdir(writer http.ResponseWriter, request *ht
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", err.Error())
 		return
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := s.terminal.Mkdir(request.Context(), path); err != nil {
 		code, status := terminalFileError("mkdir", err)
-		s.writeAPIError(writer, request, status, code, errorText(err))
+		s.writeAPIError(writer, request, status, code, terminalFileMessage(err))
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"path": path})
@@ -310,9 +257,9 @@ func (s *Server) handleTerminalFileRemove(writer http.ResponseWriter, request *h
 		s.writeAPIError(writer, request, http.StatusBadRequest, "validation_failed", err.Error())
 		return
 	}
-	if err := os.Remove(path); err != nil {
+	if err := s.terminal.RemoveFile(request.Context(), path); err != nil {
 		code, status := terminalFileError("remove", err)
-		s.writeAPIError(writer, request, status, code, errorText(err))
+		s.writeAPIError(writer, request, status, code, terminalFileMessage(err))
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"removed": path})
@@ -322,11 +269,9 @@ func errorText(err error) string {
 	if err == nil {
 		return ""
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return "path does not exist"
-	}
-	if errors.Is(err, os.ErrPermission) {
-		return "permission denied"
+	var fileErr *terminal.FileError
+	if errors.As(err, &fileErr) {
+		return fileErr.Message
 	}
 	return err.Error()
 }

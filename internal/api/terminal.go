@@ -17,6 +17,16 @@ type TerminalService interface {
 	Enabled() bool
 	Status() terminal.Status
 	Open(ctx context.Context, actor, remote string) (terminal.Session, error)
+	// File operations share the privilege domain of the shell: they are served
+	// by the root PTY helper when one is configured, so the file manager can
+	// browse directories (e.g. /home, /root) the sandboxed control plane
+	// cannot read.
+	ListFiles(ctx context.Context, path string) ([]terminal.FileEntry, error)
+	StatFile(ctx context.Context, path string) (terminal.FileEntry, error)
+	DownloadFile(ctx context.Context, path string, writer io.Writer) (int64, error)
+	UploadFile(ctx context.Context, dir, name string, reader io.Reader, size int64) error
+	Mkdir(ctx context.Context, path string) error
+	RemoveFile(ctx context.Context, path string) error
 }
 
 func WithTerminal(service TerminalService) Option {

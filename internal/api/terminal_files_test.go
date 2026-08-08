@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -35,6 +34,10 @@ type terminalFixture struct {
 }
 
 func newTerminalFixture(t *testing.T) *terminalFixture {
+	return newTerminalFixtureWithSocket(t, "")
+}
+
+func newTerminalFixtureWithSocket(t *testing.T, socketPath string) *terminalFixture {
 	t.Helper()
 	root := t.TempDir()
 	database, err := store.Open(context.Background(), filepath.Join(root, "terminal-files.db"))
@@ -79,7 +82,11 @@ func newTerminalFixture(t *testing.T) *terminalFixture {
 	if err := authService.VerifyTwoFactor(context.Background(), session.Token, "127.0.0.1", code); err != nil {
 		t.Fatal(err)
 	}
-	terminalService, err := terminalservice.NewService(terminalservice.Config{Enabled: true, Shell: "/bin/sh"}, logger)
+	terminalConfig := terminalservice.Config{Enabled: true, Shell: "/bin/sh"}
+	if socketPath != "" {
+		terminalConfig.PrivilegedSocket = socketPath
+	}
+	terminalService, err := terminalservice.NewService(terminalConfig, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,10 +321,10 @@ func TestTerminalFileErrorClassification(t *testing.T) {
 		wantCode   string
 		wantStatus int
 	}{
-		{"permission", "file_list", os.ErrPermission, "file_list_forbidden", http.StatusForbidden},
-		{"missing", "file_list", os.ErrNotExist, "file_list_not_found", http.StatusNotFound},
-		{"generic", "file_upload", errors.New("boom"), "file_upload_failed", http.StatusBadRequest},
-		{"wrapped permission", "remove", fmt.Errorf("remove: %w", os.ErrPermission), "remove_forbidden", http.StatusForbidden},
+		{"permission", "file_list", &terminalservice.FileError{Code: "forbidden", Message: "permission denied"}, "file_list_forbidden", http.StatusForbidden},
+		{"missing", "file_list", &terminalservice.FileError{Code: "not_found", Message: "path does not exist"}, "file_list_not_found", http.StatusNotFound},
+		{"generic", "file_upload", &terminalservice.FileError{Code: "failed", Message: "boom"}, "file_upload_failed", http.StatusBadRequest},
+		{"wrapped permission", "remove", fmt.Errorf("remove: %w", &terminalservice.FileError{Code: "forbidden", Message: "permission denied"}), "remove_forbidden", http.StatusForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -393,4 +400,144 @@ func TestTerminalFilesListForbidden(t *testing.T) {
 	if payload.Error.Code != "file_list_forbidden" {
 		t.Fatalf("code = %q, want file_list_forbidden", payload.Error.Code)
 	}
+}
+
+// TestTerminalFilesThroughPrivilegedHelper verifies the whole HTTP file-manager
+// surface when the terminal service routes through the privileged helper: the
+// control plane can list/stat/download/upload/mkdir/remove exactly what the
+// helper process can see (root in production, current user in this test).
+func TestTerminalFilesThroughPrivilegedHelper(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "terminal.sock")
+	helperCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	helperDone := make(chan error, 1)
+	go func() {
+		helperDone <- terminalservice.RunHelper(helperCtx, terminalservice.HelperConfig{
+			SocketPath:  socketPath,
+			Shell:       "/bin/sh",
+			MaxSessions: 2,
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-helperDone; err != nil {
+			t.Errorf("stop helper: %v", err)
+		}
+	})
+	waitForSocketFile(t, socketPath)
+
+	f := newTerminalFixtureWithSocket(t, socketPath)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "helper.txt"), []byte("helper sees me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// List through the helper.
+	q := url.Values{"path": {dir}}.Encode()
+	resp, err := f.request(http.MethodGet, "/api/v1/terminal/files?"+q, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list terminalFileListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(list.Entries) != 1 || list.Entries[0].Name != "helper.txt" {
+		t.Fatalf("privileged list failed: status=%d entries=%+v", resp.StatusCode, list.Entries)
+	}
+
+	// Stat through the helper.
+	statQ := url.Values{"path": {filepath.Join(dir, "helper.txt")}, "op": {"stat"}}.Encode()
+	resp, err = f.request(http.MethodGet, "/api/v1/terminal/files?"+statQ, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stat struct {
+		Size  int64 `json:"size"`
+		IsDir bool  `json:"is_dir"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stat); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || stat.Size != int64(len("helper sees me")) || stat.IsDir {
+		t.Fatalf("privileged stat failed: status=%d stat=%+v", resp.StatusCode, stat)
+	}
+
+	// Download through the helper.
+	dlQ := url.Values{"path": {filepath.Join(dir, "helper.txt")}, "op": {"download"}}.Encode()
+	resp, err = f.request(http.MethodGet, "/api/v1/terminal/files?"+dlQ, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != "helper sees me" {
+		t.Fatalf("privileged download failed: status=%d body=%q err=%v", resp.StatusCode, body, err)
+	}
+
+	// Mkdir + upload through the helper.
+	sub := filepath.Join(dir, "nested")
+	mkdirBody := strings.NewReader(`{"path":"` + sub + `"}`)
+	resp, err = f.request(http.MethodPost, "/api/v1/terminal/files/mkdir", mkdirBody, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("privileged mkdir failed: status=%d", resp.StatusCode)
+	}
+	uploadBody := &bytes.Buffer{}
+	writer := multipart.NewWriter(uploadBody)
+	field, err := writer.CreateFormFile("file", "up.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := field.Write([]byte("up via helper")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upQ := url.Values{"path": {sub}}.Encode()
+	resp, err = f.request(http.MethodPost, "/api/v1/terminal/files?"+upQ, uploadBody, writer.FormDataContentType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("privileged upload failed: status=%d", resp.StatusCode)
+	}
+	written, err := os.ReadFile(filepath.Join(sub, "up.txt"))
+	if err != nil || string(written) != "up via helper" {
+		t.Fatalf("privileged upload content mismatch: %v %q", err, written)
+	}
+
+	// Remove through the helper.
+	removeBody := strings.NewReader(`{"path":"` + filepath.Join(sub, "up.txt") + `"}`)
+	resp, err = f.request(http.MethodPost, "/api/v1/terminal/files/remove", removeBody, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("privileged remove failed: status=%d", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(sub, "up.txt")); !os.IsNotExist(err) {
+		t.Fatalf("privileged remove did not delete: %v", err)
+	}
+}
+
+func waitForSocketFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		info, err := os.Stat(path)
+		if err == nil && info.Mode()&os.ModeSocket != 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("helper socket %s did not appear", path)
 }

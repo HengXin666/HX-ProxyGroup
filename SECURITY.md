@@ -70,6 +70,12 @@ successful terminal authentication grants root command execution, not merely
 the `hx-proxygroup` service account. The same helper accepts one separate,
 argument-free update frame and can only schedule the root-owned installer's
 fixed `upgrade` action; browser input cannot supply a command or target version.
+The terminal file manager's list/stat/download/upload/mkdir/remove operations
+are executed by the same helper over the same validated socket, so the panel
+sees the same root filesystem view as the shell (the sandboxed control plane
+cannot read `/home` or `/root` under `ProtectHome=true`). Each operation runs
+in its own connection with a 30s timeout, a 256 MiB upload cap, a 5000-entry
+listing cap, and re-validated absolute paths.
 
 Residual risk remains: an authorized administrator can intentionally damage
 application or system data, execute resource-intensive commands, or start processes that

@@ -86,7 +86,7 @@ systemd
 └── audit.log                   # 可选；默认优先 journald
 ```
 
-控制面和数据面使用同一不可登录系统用户运行。systemd 分别拥有控制面、数据面和终端 helper 三个进程；控制面只通过 Unix Controller 校验和热重载数据面配置，退出时不终止外部 Mihomo。终端 helper 是唯一的 root 进程，只提供控制面用户可访问的本机 PTY Unix Socket，不承载代理流量；控制面本身继续使用 systemd 文件、设备和 capability 沙箱。
+控制面和数据面使用同一不可登录系统用户运行。systemd 分别拥有控制面、数据面和终端 helper 三个进程；控制面只通过 Unix Controller 校验和热重载数据面配置，退出时不终止外部 Mihomo。终端 helper 是唯一的 root 进程，通过控制面用户可访问的本机 Unix Socket 提供 PTY 会话和文件管理操作（列表、上传、下载、新建、删除），让文件面板与 Shell 共享同一 root 文件系统视图；helper 不承载代理流量；控制面本身继续使用 systemd 文件、设备和 capability 沙箱。
 
 ---
 

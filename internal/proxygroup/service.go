@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("proxy group not found")
-	ErrConflict = errors.New("proxy group conflict")
-	ErrInvalid  = errors.New("invalid proxy group")
+	ErrNotFound    = errors.New("proxy group not found")
+	ErrConflict    = errors.New("proxy group conflict")
+	ErrInvalid     = errors.New("invalid proxy group")
+	ErrApplyFailed = errors.New("proxy group apply failed")
 )
 
 const defaultTestURL = "http://cp.cloudflare.com/generate_204"
@@ -137,7 +138,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Group, err
 		return Group{}, mapStoreError(err)
 	}
 	if err := s.reconciler.Apply(ctx); err != nil {
-		return fromRecord(created), fmt.Errorf("proxy group saved but dataplane apply failed: %w", err)
+		return fromRecord(created), fmt.Errorf("%w: %v", ErrApplyFailed, err)
 	}
 	return fromRecord(created), nil
 }
@@ -186,7 +187,7 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 		return Group{}, mapStoreError(err)
 	}
 	if err := s.reconciler.Apply(ctx); err != nil {
-		return fromRecord(updated), fmt.Errorf("proxy group saved but dataplane apply failed: %w", err)
+		return fromRecord(updated), fmt.Errorf("%w: %v", ErrApplyFailed, err)
 	}
 	return fromRecord(updated), nil
 }
@@ -214,7 +215,7 @@ func (s *Service) Delete(ctx context.Context, id string, version int) error {
 		return mapStoreError(err)
 	}
 	if err := s.reconciler.Apply(ctx); err != nil {
-		return fmt.Errorf("proxy group deleted but dataplane apply failed: %w", err)
+		return fmt.Errorf("%w: %v", ErrApplyFailed, err)
 	}
 	return nil
 }

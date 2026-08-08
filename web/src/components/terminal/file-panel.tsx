@@ -12,52 +12,80 @@ import {
 } from "lucide-react"
 
 import { ApiError, api, type TerminalFileEntry, type TerminalFileList } from "@/lib/api"
+import { FileIcon } from "@/components/terminal/file-icons"
 import { cn, formatBytes } from "@/lib/utils"
 
+export interface FilePanelProps {
+  /** Absolute directory shown, owned by the parent (synced with the shell cwd). */
+  path: string
+  /** Only list files while the terminal is connected. */
+  connected: boolean
+  /** Called for every navigation: entering a directory, 上级, breadcrumb. */
+  onPathChange: (path: string) => void
+  onNotice: (message: string, tone?: "success" | "error") => void
+}
+
 // FilePanel renders a FinalShell-style file browser limited to the file
-// system reachable by the control plane process. Drag-and-drop upload and
-// click-to-download are supported. Operations are optimistic-and-refresh to
-// keep the panel responsive on weak networks (download is streamed by the
-// browser, so large files do not block the UI).
-export function FilePanel({ onNotice }: { onNotice: (m: string, tone?: "success" | "error") => void }) {
+// system reachable by the control plane process. The path is controlled by
+// the parent so the panel and the shell stay in sync; every navigation flows
+// through onPathChange. Drag-and-drop upload and click-to-download are
+// supported, and a request sequence number prevents stale responses from
+// racing when navigating quickly.
+export function FilePanel({ path, connected, onPathChange, onNotice }: FilePanelProps) {
   const [list, setList] = useState<TerminalFileList | null>(null)
-  const [path, setPath] = useState<string>("")
   const [loading, setLoading] = useState(false)
   const [busyName, setBusyName] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const seqRef = useRef(0)
+  const lastNavRef = useRef<{ name: string; at: number } | null>(null)
   const [dragOver, setDragOver] = useState(false)
 
   const load = useCallback(async (target: string) => {
+    const seq = ++seqRef.current
     setLoading(true)
     try {
-      const result = target === "" ? await api.listTerminalFiles("/") : await api.listTerminalFiles(target)
+      const result = await api.listTerminalFiles(target === "" ? "/" : target)
+      if (seqRef.current !== seq) return
       setList(result)
-      setPath(result.path)
     } catch (cause) {
+      if (seqRef.current !== seq) return
       onNotice(cause instanceof ApiError ? cause.message : "读取目录失败", "error")
     } finally {
-      setLoading(false)
+      if (seqRef.current === seq) setLoading(false)
     }
   }, [onNotice])
 
   useEffect(() => {
-    void load("")
-  }, [load])
+    if (!connected) return
+    void load(path)
+  }, [connected, path, load])
+
+  if (!connected) return null
 
   const enter = (entry: TerminalFileEntry) => {
-    if (entry.is_dir) void load(`${path}/${entry.name}`.replace(/\/+/g, "/"))
+    const target = `${path}/${entry.name}`.replace(/\/+/g, "/")
+    // The second click of a double-click lands after the first navigation has
+    // re-rendered, so re-entering the SAME entry would compute
+    // `…/user/projects/projects` from the already-navigated path and list a
+    // directory that does not exist. Suppress the same entry within 400ms.
+    const now = Date.now()
+    const last = lastNavRef.current
+    if (last && last.name === entry.name && now - last.at < 400) return
+    lastNavRef.current = { name: entry.name, at: now }
+    onPathChange(target)
   }
 
   const goUp = () => {
-    if (list?.parent) void load(list.parent)
+    if (list?.parent) onPathChange(list.parent)
   }
+
+  const currentSegment = path.split("/").filter(Boolean).at(-1)
 
   async function download(entry: TerminalFileEntry) {
     setBusyName(entry.name)
     try {
       const full = `${path}/${entry.name}`.replace(/\/+/g, "/")
-      const url = api.terminalFileDownloadURL(full)
-      window.location.href = url
+      window.location.href = api.terminalFileDownloadURL(full)
     } finally {
       setTimeout(() => setBusyName(null), 600)
     }
@@ -113,7 +141,7 @@ export function FilePanel({ onNotice }: { onNotice: (m: string, tone?: "success"
               <span key={absolute} className="inline-flex min-w-0 items-center">
                 <button
                   type="button"
-                  onClick={() => void load(absolute)}
+                  onClick={() => onPathChange(absolute)}
                   className="max-w-[6rem] truncate rounded px-1 hover:bg-muted"
                   title={absolute}
                 >
@@ -159,13 +187,18 @@ export function FilePanel({ onNotice }: { onNotice: (m: string, tone?: "success"
           >
             <button
               type="button"
-              onClick={() => !entry.is_dir && void download(entry)}
-              onDoubleClick={() => enter(entry)}
+              onClick={() => entry.is_dir && enter(entry)}
               className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-              title={entry.is_dir ? "双击进入" : "点击下载"}
+              title={entry.is_dir ? "进入目录" : entry.name}
             >
-              <span className={cn("truncate", entry.is_dir ? "font-medium" : "text-muted-foreground")}>
-                {entry.is_dir ? "📁" : "📄"} {entry.name}
+              <FileIcon
+                name={entry.name}
+                isDir={entry.is_dir}
+                open={entry.is_dir && entry.name === currentSegment}
+                className="size-4 shrink-0"
+              />
+              <span className={cn("min-w-0 truncate", entry.is_dir ? "font-medium" : "text-muted-foreground")}>
+                {entry.name}
               </span>
               {!entry.is_dir && (
                 <span className="ml-auto shrink-0 font-mono tabular-nums text-muted-foreground">{formatBytes(entry.size)}</span>

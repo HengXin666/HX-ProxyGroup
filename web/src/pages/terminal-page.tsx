@@ -8,11 +8,25 @@ import { ApiError, api, type TerminalStatus } from "@/lib/api"
 import { FilePanel } from "@/components/terminal/file-panel"
 import { HostMonitor } from "@/components/terminal/host-monitor"
 import { Input } from "@/components/ui/input"
-import { PredictiveEcho, type TerminalMode } from "@/lib/terminal-echo"
+import { detectPwdOutput, parseFirstWord, quoteForShell, resolveCdTarget } from "@/lib/terminal-cwd"
 import { subscribeTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
 type ConnectionState = "idle" | "connecting" | "connected" | "closed"
+
+// Recognize a complete `cd` command line typed at the shell prompt. Returns
+// the raw argument (first word only semantics) or null when the line is not a
+// plain `cd` (chains, redirects and other commands are ignored conservatively).
+function parseTypedCd(line: string): { argument: string | null } | null {
+  const match = line.match(/^\s*cd(?:\s+(.+?))?\s*$/)
+  if (!match) return null
+  const argument = match[1]
+  if (argument === undefined) return { argument: null }
+  // `cd /tmp && ls` or `cd /x; ls`: the shell may run more than one command.
+  // Only a plain `cd <target>` is tracked; anything else is left alone.
+  if (/[;&|<>]/.test(argument)) return null
+  return { argument }
+}
 
 export function TerminalPage({
   onNotice,
@@ -23,13 +37,23 @@ export function TerminalPage({
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
-  const echoRef = useRef(new PredictiveEcho())
   const keepAliveRef = useRef<number | null>(null)
+  const cwdRef = useRef("/")
+  const pwdPendingRef = useRef(false)
+  const pwdDeadlineRef = useRef(0)
+  const pwdBufferRef = useRef("")
+  const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const [status, setStatus] = useState<TerminalStatus | null>(null)
   const [connection, setConnection] = useState<ConnectionState>("idle")
   const [twoFactorCode, setTwoFactorCode] = useState("")
   const [unlocking, setUnlocking] = useState(false)
   const [panelHidden, setPanelHidden] = useState(false)
+  const [cwd, setCwd] = useState("/")
+
+  const updateCwd = useCallback((next: string) => {
+    cwdRef.current = next
+    setCwd(next)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -75,16 +99,13 @@ export function TerminalPage({
   }
 
   // Keep the session synced with server PTY clock even when the browser tab is
-  // hidden: switch tabs must NOT disconnect the user. A lightweight no-op ping
-  // frame every 20s encourages NAT/proxy keepalive and helps the server keep
-  // the session lastActive fresh without sending real input. This is far below
-  // the heavy feeling of genuine round-trip-per-keystroke.
+  // hidden: switching pages must NOT disconnect the user. A lightweight no-op
+  // ping frame every 20s encourages NAT/proxy keepalive and helps the server
+  // keep the session lastActive fresh without sending real input.
   const startKeepalive = useCallback((socket: WebSocket) => {
     if (keepAliveRef.current !== null) window.clearInterval(keepAliveRef.current)
     keepAliveRef.current = window.setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) {
-        // An empty resize frame costs ~40 bytes and keeps the connection warm
-        // without producing terminal output. Server ignores cols/rows==0.
         socket.send(JSON.stringify({ type: "resize", cols: 0, rows: 0 }))
       }
     }, 20_000)
@@ -140,7 +161,10 @@ export function TerminalPage({
     }
     const terminal = terminalRef.current
     const fit = fitRef.current
-    const predictiveEcho = echoRef.current
+    // Reconnecting must not stack onData listeners: each leaked listener
+    // re-sends every keystroke, so a reconnect used to echo `d` as `dd`.
+    inputDisposableRef.current?.dispose()
+    inputDisposableRef.current = null
     let pendingInput = ""
     let inputTimer: number | null = null
     const flushInput = () => {
@@ -152,13 +176,16 @@ export function TerminalPage({
       }
       pendingInput = ""
     }
-    predictiveEcho.reset()
     terminal.reset()
     fit?.fit()
 
     const socket = new WebSocket(api.terminalSocketURL())
     socket.binaryType = "arraybuffer"
     socketRef.current = socket
+
+    // Streaming decoder lets us peek at PTY output for cwd tracking without
+    // touching the raw bytes written to the terminal.
+    const decoder = new TextDecoder()
 
     const sendResize = () => {
       if (socket.readyState === WebSocket.OPEN) {
@@ -172,22 +199,40 @@ export function TerminalPage({
       sendResize()
       terminal.focus()
       startKeepalive(socket)
+      // Ask the shell where it started so the file panel matches immediately.
+      // The probe is time-bounded, not frame-bounded: a slow shell banner may
+      // split the `pwd` echo and result across many frames.
+      pwdPendingRef.current = true
+      pwdDeadlineRef.current = Date.now() + 4000
+      pwdBufferRef.current = ""
+      socket.send(JSON.stringify({ type: "input", data: "pwd\n" }))
+    }
+    // Ask the shell for its current directory again. Used when a `cd` target
+    // cannot be resolved from what the user typed (bare `cd`, `~`, `$VAR`, `-`).
+    const reprobePwd = () => {
+      const socket = socketRef.current
+      if (!socket || socket.readyState !== WebSocket.OPEN || pwdPendingRef.current) return
+      pwdPendingRef.current = true
+      pwdDeadlineRef.current = Date.now() + 4000
+      pwdBufferRef.current = ""
+      socket.send(JSON.stringify({ type: "input", data: "pwd\n" }))
     }
     socket.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        const output = predictiveEcho.consume(new Uint8Array(event.data))
-        if (output.byteLength > 0) terminal.write(output)
-        return
-      }
-      if (typeof event.data === "string") {
-        try {
-          const message = JSON.parse(event.data) as { type?: string } & Partial<TerminalMode>
-          if (message.type === "mode" && typeof message.echo === "boolean" && typeof message.canonical === "boolean") {
-            predictiveEcho.setMode({ echo: message.echo, canonical: message.canonical })
-          }
-        } catch {
-          predictiveEcho.reset()
-        }
+      if (!(event.data instanceof ArrayBuffer)) return
+      const bytes = new Uint8Array(event.data)
+      terminal.write(bytes)
+      const text = decoder.decode(bytes, { stream: true })
+      if (!pwdPendingRef.current) return
+      // The shell may split the `pwd` echo/result across many frames (a slow
+      // banner, the prompt redraw, ...); accumulate until the path line appears
+      // or the time budget runs out.
+      pwdBufferRef.current += text
+      const target = detectPwdOutput(pwdBufferRef.current)
+      if (target) {
+        pwdPendingRef.current = false
+        updateCwd(target)
+      } else if (Date.now() > pwdDeadlineRef.current) {
+        pwdPendingRef.current = false
       }
     }
     socket.onclose = (event) => {
@@ -196,7 +241,8 @@ export function TerminalPage({
         keepAliveRef.current = null
       }
       socketRef.current = null
-      predictiveEcho.reset()
+      pwdPendingRef.current = false
+      pwdBufferRef.current = ""
       setConnection("closed")
       terminal.write(`\r\n\x1b[33m[会话已结束${event.reason ? `：${event.reason}` : ""}]\x1b[0m\r\n`)
       if (event.wasClean === false) {
@@ -209,8 +255,6 @@ export function TerminalPage({
 
     const inputDisposable = terminal.onData((data) => {
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
-      const predicted = predictiveEcho.predict(data)
-      if (predicted) terminal.write(predicted)
       // Collapse safe keystrokes into one frame (≤12ms) so weak round-trips do
       // not make typing feel laggy.
       pendingInput += data
@@ -220,16 +264,65 @@ export function TerminalPage({
       } else if (inputTimer === null) {
         inputTimer = window.setTimeout(flushInput, 12)
       }
+      trackTypedCd(data)
     })
 
-    return () => inputDisposable.dispose()
-  }, [onNotice, startKeepalive, status?.two_factor_verified])
+    // Keep the file panel in sync with what the user types. Detecting `cd`
+    // from the OUTPUT is unreliable (fancy prompts interleave escape
+    // sequences, backspaces and re-echoes with the command), so track the
+    // INPUT stream instead: accumulate the current line, and when Enter is
+    // pressed resolve a leading `cd` against the known cwd.
+    let typedLine = ""
+    const trackTypedCd = (data: string) => {
+      for (const ch of data) {
+        if (ch === "\r") {
+          const line = typedLine
+          typedLine = ""
+          const cd = parseTypedCd(line)
+          if (!cd) continue
+          if (cd.argument === null) {
+            reprobePwd() // bare `cd` -> the shell moved to $HOME
+            continue
+          }
+          const argument = parseFirstWord(cd.argument)
+          const target = argument === null || argument === "" ? null : resolveCdTarget(cwdRef.current, argument)
+          if (target) updateCwd(target)
+          else reprobePwd() // `cd ~/...`, `cd $VAR`, `cd -` ...
+        } else if (ch === "\x7f") {
+          typedLine = typedLine.slice(0, -1)
+        } else if (ch === "\x1b" || /[\x00-\x1f]/.test(ch)) {
+          typedLine = "" // navigation / search / completion: reset the guess
+        } else {
+          typedLine += ch
+          // Drop lines that cannot possibly become a `cd` command (`ls`,
+          // `QQQQcd /x`, …) so a later Enter cannot misread them.
+          if (!/^c(?:d(?:\s.*)?)?$/.test(typedLine)) typedLine = ""
+        }
+      }
+    }
+
+    inputDisposableRef.current = inputDisposable
+  }, [onNotice, startKeepalive, status?.two_factor_verified, updateCwd])
+
+  // Navigate from the file panel: update the shared cwd and drive the shell.
+  const handlePanelPath = useCallback((next: string) => {
+    // Ignore duplicate navigations (e.g. the second click of a double-click);
+    // the shell already is where the panel wants to go.
+    if (next === cwdRef.current) return
+    updateCwd(next)
+    const socket = socketRef.current
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "input", data: `cd ${quoteForShell(next)}\n` }))
+    }
+  }, [updateCwd])
 
   useEffect(() => {
     return () => {
       if (keepAliveRef.current !== null) window.clearInterval(keepAliveRef.current)
       socketRef.current?.close(1000, "unmount")
       socketRef.current = null
+      inputDisposableRef.current?.dispose()
+      inputDisposableRef.current = null
       terminalRef.current?.dispose()
       terminalRef.current = null
     }
@@ -311,13 +404,23 @@ export function TerminalPage({
 
         {!panelHidden && (
           <aside className="hidden min-h-0 flex-col gap-3 rounded-md border bg-card lg:flex">
-            <div className="overflow-auto p-2">
-              <HostMonitor enabled />
-            </div>
-            <div className="mx-2 border-t" />
-            <div className="min-h-0 flex-1">
-              <FilePanel onNotice={onNotice} />
-            </div>
+            {connection === "connected" ? (
+              <>
+                <div className="overflow-auto p-2">
+                  <HostMonitor enabled />
+                </div>
+                <div className="mx-2 border-t" />
+                <div className="min-h-0 flex-1">
+                  <FilePanel path={cwd} connected onPathChange={handlePanelPath} onNotice={onNotice} />
+                </div>
+              </>
+            ) : (
+              <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-1.5 p-4 text-center text-xs text-muted-foreground">
+                <TerminalSquare className="size-5 opacity-60" />
+                <div className="font-medium">连接后查看服务器数据</div>
+                <div className="text-[11px] opacity-70">系统监控与文件管理将在终端连接后显示</div>
+              </div>
+            )}
           </aside>
         )}
       </div>
@@ -330,7 +433,7 @@ function PageHeader() {
     <div>
       <h1 className="text-lg font-semibold">终端</h1>
       <p className="mt-0.5 text-sm text-muted-foreground">
-        浏览器内服务器终端，集成系统监控与文件管理；防断连、本地预测回显，弱网下打字无延迟感。
+        浏览器内服务器终端，切换页面不断连，集成系统监控与文件管理；文件目录与 Shell 实时同步。
       </p>
     </div>
   )

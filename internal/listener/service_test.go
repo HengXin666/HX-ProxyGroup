@@ -202,3 +202,82 @@ func TestLoopbackListenerCanRunWithoutAuthentication(t *testing.T) {
 		t.Fatal("loopback listener unexpectedly requires authentication")
 	}
 }
+
+type failingReconciler struct {
+	err error
+}
+
+func (reconciler *failingReconciler) Apply(context.Context) error {
+	return reconciler.err
+}
+
+func TestUpdateRestoresDatabaseRecordWhenApplyFails(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	box, err := secret.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := database.CreateProxyGroup(ctx, store.ProxyGroupRecord{
+		ID:               "group-atomic",
+		Name:             "atomic",
+		Strategy:         "manual",
+		SourceSpecJSON:   `{"node_ids":[],"include_direct":true}`,
+		RulePipelineJSON: "{}",
+		Enabled:          true,
+		EmptyBehavior:    "fail-closed",
+		Version:          1,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reconciler := &failingReconciler{}
+	service, err := NewService(database, box, reconciler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(ctx, CreateRequest{
+		Name:         "local",
+		Kind:         "http",
+		BindAddress:  "127.0.0.1",
+		Port:         18082,
+		ProxyGroupID: "group-atomic",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	reconciler.err = errors.New("mihomo apply failed")
+	_, err = service.Update(ctx, created.ID, UpdateRequest{
+		Version:      created.Version,
+		Name:         "local",
+		Kind:         "http",
+		BindAddress:  "0.0.0.0",
+		Port:         18082,
+		ProxyGroupID: "group-atomic",
+		Enabled:      true,
+		Auth:         &Auth{Username: "operator", Password: "secret-9f0e"},
+	})
+	if !errors.Is(err, ErrApplyFailed) {
+		t.Fatalf("Update() error = %v, want ErrApplyFailed", err)
+	}
+
+	// The database must be restored to the previous record, not left ahead of
+	// the data plane: a retry with the same version must not hit a conflict.
+	stored, err := database.GetListener(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.BindAddress != "127.0.0.1" || stored.Port != 18082 {
+		t.Fatalf("listener was not restored: bind = %s:%d, want 127.0.0.1:18082", stored.BindAddress, stored.Port)
+	}
+	if stored.Version <= created.Version {
+		t.Fatalf("restored listener version = %d, want > %d", stored.Version, created.Version)
+	}
+}

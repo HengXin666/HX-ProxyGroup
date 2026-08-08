@@ -358,6 +358,30 @@ export interface CreateProxyServiceRequest {
   listener: Omit<CreateListenerRequest, "proxy_group_id">
 }
 
+export interface UpdateProxyServiceRequest {
+  group_id: string
+  group_version: number
+  name: string
+  strategy: ProxyGroupStrategy
+  source_spec: ProxyGroupSourceSpec
+  empty_behavior: "fail-closed" | "direct"
+  enabled?: boolean
+  fallback_target_id?: string
+  listener_id: string
+  listener_version: number
+  listener: {
+    name: string
+    kind: ListenerKind
+    bind_address: string
+    port: number
+    auth?: { username: string; password: string }
+    clear_auth?: boolean
+    transport?: ListenerTransport
+    public_endpoint?: ListenerPublicEndpoint
+    enabled?: boolean
+  }
+}
+
 export interface ProxyServiceRecord {
   group: ProxyGroup
   listener: ListenerRecord

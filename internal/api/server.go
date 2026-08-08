@@ -101,6 +101,7 @@ type UpdaterService interface {
 
 type ProxyServiceService interface {
 	Create(context.Context, proxyservice.CreateRequest) (proxyservice.ServiceRecord, error)
+	Update(context.Context, proxyservice.UpdateRequest) (proxyservice.ServiceRecord, error)
 }
 
 type TrafficService interface {
@@ -424,6 +425,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
+		mux.HandleFunc("/api/v1/proxy-services/", s.handleProxyService)
 	}
 	if s.residential != nil {
 		mux.HandleFunc("/api/v1/residential/presets", s.handleResidentialPresets)
@@ -727,6 +729,8 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, node.ErrCheckUnavailable), errors.Is(err, mihomo.ErrNotRunning):
 		s.writeAPIError(writer, request, http.StatusServiceUnavailable, "node_check_unavailable", "node quality check is unavailable")
+	case errors.Is(err, proxygroup.ErrApplyFailed), errors.Is(err, listener.ErrApplyFailed):
+		s.writeAPIError(writer, request, http.StatusBadGateway, "dataplane_apply_failed", err.Error())
 	case errors.Is(err, proxygroup.ErrConflict), errors.Is(err, listener.ErrConflict):
 		s.writeAPIError(writer, request, http.StatusConflict, "conflict", "resource changed or conflicts with existing configuration")
 	case errors.Is(err, mihomo.ErrUnavailable):

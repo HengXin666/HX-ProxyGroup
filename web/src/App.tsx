@@ -52,7 +52,7 @@ const pages: Array<{
   { id: "settings", label: "全局配置", description: "测速、DNS 与性能", icon: Settings2 },
   { id: "alerts", label: "告警", description: "状态与邮件通知", icon: BellRing },
   { id: "artifacts", label: "备份", description: "Backup 与 Export", icon: Archive },
-  { id: "terminal", label: "终端", description: "v2 · 服务器 Shell", icon: TerminalSquare },
+  { id: "terminal", label: "终端", description: "服务器 Shell", icon: TerminalSquare },
   { id: "about", label: "关于", description: "版本、GitHub 与更新", icon: Info },
 ]
 
@@ -267,7 +267,7 @@ export default function App() {
           </nav>
         </header>
 
-        <main key={page} className={cn("page-enter mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7", (page === "routing" || page === "terminal") && "lg:h-full lg:max-w-none lg:overflow-hidden")}>
+        <main className={cn("mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7", (page === "routing" || page === "terminal") && "lg:h-full lg:max-w-none lg:overflow-hidden")}>
           {healthy === false && (
             <div className="mb-4 flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
               <CircleX className="mt-0.5 size-4 shrink-0" />
@@ -280,16 +280,22 @@ export default function App() {
             </div>
           )}
 
-          {page === "overview" && <OverviewPage onNotice={showNotice} />}
-          {page === "subscriptions" && <InventoryPage initialView={window.location.hash.includes("nodes") ? "nodes" : "subscriptions"} onNotice={showNotice} />}
-          {page === "routing" && <RoutingPage onNotice={showNotice} />}
-          {page === "residential" && <ResidentialPage onNotice={showNotice} />}
-          {page === "rules" && <RulesPage onNotice={showNotice} />}
-          {page === "settings" && <SettingsPage onNotice={showNotice} username={authGate.username} onSignedOut={requireLogin} />}
-          {page === "alerts" && <AlertsPage onNotice={showNotice} />}
-          {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
-          {page === "terminal" && <TerminalPage onNotice={showNotice} />}
-          {page === "about" && <AboutPage onNotice={showNotice} />}
+          {page !== "terminal" && (
+            <div key={page} className={cn("page-enter", page === "routing" && "lg:h-full")}>
+              {page === "overview" && <OverviewPage onNotice={showNotice} />}
+              {page === "subscriptions" && <InventoryPage initialView={window.location.hash.includes("nodes") ? "nodes" : "subscriptions"} onNotice={showNotice} />}
+              {page === "routing" && <RoutingPage onNotice={showNotice} />}
+              {page === "residential" && <ResidentialPage onNotice={showNotice} />}
+              {page === "rules" && <RulesPage onNotice={showNotice} />}
+              {page === "settings" && <SettingsPage onNotice={showNotice} username={authGate.username} onSignedOut={requireLogin} />}
+              {page === "alerts" && <AlertsPage onNotice={showNotice} />}
+              {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
+              {page === "about" && <AboutPage onNotice={showNotice} />}
+            </div>
+          )}
+          {/* TerminalPage stays mounted across page switches so the WebSocket
+              session survives: switching sidebar tabs only hides it. */}
+          <div className={page === "terminal" ? "contents" : "hidden"}><TerminalPage onNotice={showNotice} /></div>
         </main>
       </div>
 

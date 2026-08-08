@@ -43,6 +43,7 @@ import type {
   TrafficSummaryList,
   UpdateListenerRequest,
   UpdateProxyGroupRequest,
+  UpdateProxyServiceRequest,
   VerifyResult,
 } from "@/lib/types"
 
@@ -574,6 +575,13 @@ export const api = {
   createProxyService(payload: CreateProxyServiceRequest): Promise<ProxyServiceRecord> {
     return request("/api/v1/proxy-services", {
       method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  updateProxyService(payload: UpdateProxyServiceRequest): Promise<ProxyServiceRecord> {
+    return request(`/api/v1/proxy-services/${encodeURIComponent(payload.group_id)}`, {
+      method: "PUT",
       body: JSON.stringify(payload),
     })
   },

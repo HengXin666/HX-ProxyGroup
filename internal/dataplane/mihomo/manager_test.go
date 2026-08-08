@@ -48,6 +48,36 @@ func TestValidateEndpointAvailabilityRejectsPortOwnedByAnotherProcess(t *testing
 	}
 }
 
+func TestValidateEndpointAvailabilityAllowsSamePortBindChange(t *testing.T) {
+	// The occupied port is owned by the manager's own current config, so a
+	// same-port bind-address transition (127.0.0.1 -> 0.0.0.0) must not be
+	// blocked by the availability probe: the old listener is released during
+	// the reload.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	manager := &Manager{
+		lastCompiled: Compiled{Endpoints: []Endpoint{{BindAddress: "127.0.0.1", Port: port}}},
+		process:      &process{command: &exec.Cmd{}},
+	}
+	err = manager.validateEndpointAvailabilityLocked([]Endpoint{{BindAddress: "0.0.0.0", Port: port}})
+	if err != nil {
+		t.Fatalf("same-port bind change was blocked: %v", err)
+	}
+
+	// A port NOT owned by the manager is still probed and rejected when
+	// another process holds it.
+	manager = &Manager{process: &process{command: &exec.Cmd{}}}
+	err = manager.validateEndpointAvailabilityLocked([]Endpoint{{BindAddress: "127.0.0.1", Port: port}})
+	if err == nil {
+		t.Fatal("validateEndpointAvailabilityLocked() succeeded for a foreign occupied port")
+	}
+}
+
 func TestManagerRunsDirectMixedListener(t *testing.T) {
 	binary, err := exec.LookPath("mihomo")
 	if err != nil {

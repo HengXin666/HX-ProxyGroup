@@ -56,6 +56,14 @@
     <td><img src="docs/screenshots/proxy-services-expanded-desktop.png" alt="代理服务页面"></td>
     <td><img src="docs/screenshots/settings-dark-desktop.png" alt="深色模式全局配置页面"></td>
   </tr>
+  <tr>
+    <td><strong>浏览器终端</strong><br><sub>本机 PTY Shell、系统监控、文件管理（vscode-icons 图标，目录与 Shell 实时同步）。</sub></td>
+    <td><strong>住宅代理</strong><br><sub>动态住宅 IP 渠道、会话轮换、渠道订阅与控制 URL。</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/terminal-file-panel-desktop.png" alt="浏览器终端与文件面板"></td>
+    <td><img src="docs/screenshots/residential-channel-protocol-desktop.png" alt="住宅代理页面"></td>
+  </tr>
 </table>
 
 管理面支持明亮、黑夜、跟随系统和自定义主题色；桌面侧栏可折叠为图标模式，移动端使用紧凑顶部导航。关键页面均有 Playwright 横向溢出与响应式回归测试。
@@ -97,7 +105,7 @@
 - 近 24 小时一分钟、2-7 天五分钟、8-30 天一小时分层聚合。
 - 订阅、空快照、空代理组和数据面异常告警，支持 SMTP、冷却、确认和恢复通知。
 - SQLite Online Backup、Portable Export、SHA-256 完整性校验与敏感灾难备份。
-- 浏览器本机 Shell：PTY + WebSocket + xterm.js，默认开启；必须完成管理员登录和 TOTP 2FA 解锁，无空闲断开、无会话寿命上限，保留并发与审计限制，集成系统资源监控与文件管理面板。
+- 浏览器本机 Shell：PTY + WebSocket + xterm.js，默认开启；必须完成管理员登录和 TOTP 2FA 解锁，无空闲断开、无会话寿命上限，保留并发与审计限制，集成系统资源监控与文件管理面板（文件树采用 vscode-icons 图标，目录与 Shell 实时同步）；切换页面不断连，服务器数据仅连接后显示。
 
 ### 安全与可靠性
 
@@ -394,15 +402,15 @@ HX_PROXYGROUP_MIHOMO_EGRESS_INTERFACE=off bash run.sh
 
 ### 浏览器终端
 
-浏览器本机 Shell 属于 v2 能力，默认开启。需要紧急关闭时：
+浏览器本机 Shell 默认开启。需要紧急关闭时：
 
 ```bash
 HX_PROXYGROUP_TERMINAL=0 bash run.sh
 ```
 
-首次登录后进入「全局配置 -> 账号安全」，生成并启用 TOTP 2FA；终端连接前需要输入验证器当前的 6 位验证码。解锁状态对当前管理员 Session 有效 15 分钟。终端不因空闲自动断开、无会话寿命上限、最多 2 个并发会话，并记录建立、关闭、来源、操作者、时长和原因。面板集成系统资源监控（CPU/内存/负载/上行下行）与文件管理（目录浏览、拖拽上传、点击下载）；切换标签页不会断开连接，弱网下打字因本地预测回显无延迟感。它不是远程 SSH 跳板。
+首次登录后进入「全局配置 -> 账号安全」，生成并启用 TOTP 2FA；终端连接前需要输入验证器当前的 6 位验证码。解锁状态对当前管理员 Session 有效 15 分钟。终端不因空闲自动断开、无会话寿命上限、最多 2 个并发会话，并记录建立、关闭、来源、操作者、时长和原因。面板集成系统资源监控（CPU/内存/负载/上行下行）与文件管理（目录浏览、拖拽上传、点击下载，文件树采用 vscode-icons 图标）；切换标签页不会断开连接，系统监控与文件面板仅在终端连接后显示，文件面板目录与 Shell 当前目录实时同步。它不是远程 SSH 跳板。
 
-这是 HX-ProxyGroup 所在服务器的本机 PTY Shell。普通命令行模式下，前端读取服务端 PTY 的 `ECHO` / `ICANON` 状态，只对可打印字符做有界预测回显，因此网络较慢时键入内容仍会立即出现在本地；真实命令结果仍取决于网络和服务器响应。密码提示、控制键、未知状态及 vim/top 等 raw/full-screen 程序不会预测回显。
+这是 HX-ProxyGroup 所在服务器的本机 PTY Shell。输入与输出直接经 WebSocket 由服务端 PTY 回显，前端不做本地预测回显，避免重连后出现重复输入；vim/top 等 raw/full-screen 程序可正常显示。
 
 WebSocket 只接受同源连接，并在会话存续期间周期性复核数据库中的管理员 Session；退出全部会话、修改账号或密码、Session 过期都会关闭已连接终端。生产安装使用 root PTY helper，但控制面本身仍以 `hx-proxygroup` 运行；helper 只监听权限为 `0660` 的本机 Unix Socket，并校验对端 UID。通过管理员登录和 2FA 后，终端可以直接使用 `su`、`sudo` 及完整 root 环境，因此应把它视为 root 管理入口，日常运维仍优先使用带密钥和系统级审计的 SSH。`run.sh` 本地模式没有 root helper，只提供当前运行用户的 PTY。完整威胁模型与漏洞报告方式见 [安全策略](SECURITY.md)。
 

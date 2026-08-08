@@ -484,12 +484,21 @@ func (m *Manager) waitReadyLocked(ctx context.Context, endpoints []Endpoint, pro
 // validateEndpointAvailabilityLocked catches a port owned by another process
 // before publishing a configuration that Mihomo cannot fully bind. Existing
 // endpoints from the currently managed configuration are exempt so a normal
-// reload can keep them in place.
+// reload can keep them in place, and ports already owned by OUR managed
+// config at any bind address are exempt too: changing a listener from
+// 127.0.0.1:32822 to 0.0.0.0:32822 releases the old address during the
+// upcoming reload, so probing the new address while the old listener is still
+// bound would spuriously fail. The reload itself still enforces the bind and
+// rolls back on failure.
 func (m *Manager) validateEndpointAvailabilityLocked(endpoints []Endpoint) error {
 	reserved := m.currentEndpointKeysLocked()
+	managedPorts := m.currentManagedPortsLocked()
 	for _, endpoint := range endpoints {
 		key := endpointKey(endpoint.BindAddress, endpoint.Port)
 		if _, alreadyManaged := reserved[key]; alreadyManaged {
+			continue
+		}
+		if _, ours := managedPorts[endpoint.Port]; ours {
 			continue
 		}
 		address := net.JoinHostPort(strings.TrimSpace(endpoint.BindAddress), strconv.Itoa(endpoint.Port))
@@ -500,6 +509,44 @@ func (m *Manager) validateEndpointAvailabilityLocked(endpoints []Endpoint) error
 		_ = probe.Close()
 	}
 	return nil
+}
+
+// currentManagedPortsLocked returns the ports currently expected to be owned
+// by our own data plane (from the last compiled config and, for an external
+// process, the last active file). Used by validateEndpointAvailabilityLocked
+// to allow same-port bind-address transitions.
+func (m *Manager) currentManagedPortsLocked() map[int]struct{} {
+	ports := make(map[int]struct{})
+	add := func(bindAddress string, port int) {
+		if port > 0 {
+			ports[port] = struct{}{}
+		}
+	}
+	if m.isRunningLocked() {
+		for _, endpoint := range m.lastCompiled.Endpoints {
+			add(endpoint.BindAddress, endpoint.Port)
+		}
+	}
+	if !m.externalProcess {
+		return ports
+	}
+	contents, err := os.ReadFile(m.activePath)
+	if err != nil {
+		return ports
+	}
+	var document struct {
+		Listeners []struct {
+			BindAddress string `yaml:"listen"`
+			Port        int    `yaml:"port"`
+		} `yaml:"listeners"`
+	}
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return ports
+	}
+	for _, listener := range document.Listeners {
+		add(listener.BindAddress, listener.Port)
+	}
+	return ports
 }
 
 func (m *Manager) currentEndpointKeysLocked() map[string]struct{} {

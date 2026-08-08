@@ -305,11 +305,11 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
   const [limit, setLimit] = useState(5)
   const [maxLatency, setMaxLatency] = useState(2000)
   const [kind, setKind] = useState<ListenerKind>("mixed")
-  const [bindAddress, setBindAddress] = useState("127.0.0.1")
+  const [bindAddress, setBindAddress] = useState("0.0.0.0")
   const [port, setPort] = useState(7890)
-  const [authEnabled, setAuthEnabled] = useState(false)
-  const [username, setUsername] = useState("")
-  const [password, setPassword] = useState("")
+  const [authEnabled, setAuthEnabled] = useState(true)
+  const [username, setUsername] = useState("hx-user")
+  const [password, setPassword] = useState<string>(crypto.randomUUID())
   const [publicHost, setPublicHost] = useState("")
   const [publicPort, setPublicPort] = useState("")
   const [publicTLS, setPublicTLS] = useState(false)
@@ -324,6 +324,11 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    const nonLoopback = bindAddress.trim() !== "" && !["127.0.0.1", "::1", "localhost"].includes(bindAddress.trim())
+    if (nonLoopback && !authEnabled) {
+      onNotice("非环回监听地址（如 0.0.0.0）必须启用用户名密码认证", "error")
+      return
+    }
     setSubmitting(true)
     try {
       await api.createProxyService({
@@ -349,6 +354,7 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
 
   const validSource = sourceMode === "direct" || (sourceMode === "rule" ? selectedSubscriptions.length > 0 : selectedNodes.length > 0)
   const advanced = kind === "vless" || kind === "vmess" || kind === "trojan"
+  const nonLoopback = bindAddress.trim() !== "" && !["127.0.0.1", "::1", "localhost"].includes(bindAddress.trim())
   function changeKind(next: ListenerKind) {
     setKind(next)
     const nextAdvanced = next === "vless" || next === "vmess" || next === "trojan"
@@ -376,8 +382,8 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
           <div className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Gauge className="size-4 text-info" />当前指标预计命中 {estimated} 个节点</div>
         </> : <Field label={`固定节点（已选 ${selectedNodes.length}）`}><CheckList items={nodes.map((item) => ({ id: item.id, label: `${item.display_name} · ${item.last_latency_ms == null ? "未测试" : `${item.last_latency_ms}ms`}` }))} selected={selectedNodes} onChange={setSelectedNodes} empty="暂无活动节点" /></Field>}
         <Field label="出站策略"><ChipSet values={strategies} current={strategy} onChange={setStrategy} /></Field>
-        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} required /></Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path（固定前缀 /__hx-proxy__/）"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/__hx-proxy__/hx-proxy" required /></Field></div>}{!advanced && <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="公网主机名 / IP（可选）"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="VPS 公网地址" /></Field><Field label="公网端口"><Input type="number" min={1} max={65535} value={publicPort} onChange={(event) => setPublicPort(event.target.value)} placeholder={String(port)} /></Field></div>}{!advanced && publicHost.trim() && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={publicTLS} onCheckedChange={(value) => setPublicTLS(value === true)} />公网 HTTP 端点使用 TLS</label>}{!advanced && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={authEnabled} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用用户名密码认证</label>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
-        <Button type="submit" disabled={submitting || !name.trim() || !validSource || (authEnabled && (!username.trim() || !password)) || (advanced && (!publicHost.trim() || !wsPath.startsWith("/")))} className="w-full">{submitting ? <LoaderCircle className="animate-spin" /> : <Plus />}创建并启动</Button>
+        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} required />{!advanced && nonLoopback && !authEnabled && <span className="block text-xs text-destructive">非环回监听地址（如 0.0.0.0）必须启用用户名密码认证</span>}{!advanced && nonLoopback && authEnabled && <span className="block text-xs text-muted-foreground">监听 0.0.0.0 供内网 / Docker 容器访问，公网由防火墙保护</span>}</Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path（固定前缀 /__hx-proxy__/）"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/__hx-proxy__/hx-proxy" required /></Field></div>}{!advanced && <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="公网主机名 / IP（可选）"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="VPS 公网地址" /></Field><Field label="公网端口"><Input type="number" min={1} max={65535} value={publicPort} onChange={(event) => setPublicPort(event.target.value)} placeholder={String(port)} /></Field></div>}{!advanced && publicHost.trim() && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={publicTLS} onCheckedChange={(value) => setPublicTLS(value === true)} />公网 HTTP 端点使用 TLS</label>}{!advanced && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={authEnabled} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用用户名密码认证</label>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
+        <Button type="submit" disabled={submitting || !name.trim() || !validSource || (nonLoopback && !authEnabled) || (authEnabled && (!username.trim() || !password)) || (advanced && (!publicHost.trim() || !wsPath.startsWith("/")))} className="w-full">{submitting ? <LoaderCircle className="animate-spin" /> : <Plus />}创建并启动</Button>
       </div>
     </form>
   )

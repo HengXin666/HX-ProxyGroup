@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("listener not found")
-	ErrConflict = errors.New("listener conflict")
-	ErrInvalid  = errors.New("invalid listener")
+	ErrNotFound    = errors.New("listener not found")
+	ErrConflict    = errors.New("listener conflict")
+	ErrInvalid     = errors.New("invalid listener")
+	ErrApplyFailed = errors.New("listener apply failed")
 )
 
 type Repository interface {
@@ -165,7 +166,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Listener, 
 		return Listener{}, mapStoreError(err)
 	}
 	if err := s.reconciler.Apply(ctx); err != nil {
-		return fromRecord(created), fmt.Errorf("listener saved but dataplane apply failed: %w", err)
+		return fromRecord(created), fmt.Errorf("%w: %v", ErrApplyFailed, err)
 	}
 	return fromRecord(created), nil
 }
@@ -206,6 +207,12 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	if err != nil {
 		return Listener{}, err
 	}
+	// Capture the pre-update record (with a defensive copy of the auth
+	// ciphertext slice) so a data plane apply failure can restore it.
+	original := existing
+	original.AuthConfigEncrypted = append([]byte(nil), existing.AuthConfigEncrypted...)
+	original.UpdatedAt = existing.UpdatedAt
+
 	existing.Name = normalized.Name
 	existing.Kind = normalized.Kind
 	existing.BindAddress = normalized.BindAddress
@@ -222,7 +229,15 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 		return Listener{}, mapStoreError(err)
 	}
 	if err := s.reconciler.Apply(ctx); err != nil {
-		return fromRecord(updated), fmt.Errorf("listener saved but dataplane apply failed: %w", err)
+		// Do not leave the database ahead of the data plane: an apply failure
+		// must not be followed by a retry that hits an optimistic-lock
+		// conflict or by a reconcile that recompiles a config Mihomo already
+		// refused. Restore the previous record so the edit is rejected
+		// atomically.
+		if _, rollbackErr := s.repository.UpdateListener(ctx, original, updated.Version); rollbackErr != nil {
+			return fromRecord(updated), fmt.Errorf("%w: %v; restoring the previous listener record also failed: %v", ErrApplyFailed, err, rollbackErr)
+		}
+		return Listener{}, fmt.Errorf("%w: %v (database restored to the previous listener configuration)", ErrApplyFailed, err)
 	}
 	return fromRecord(updated), nil
 }
@@ -235,7 +250,7 @@ func (s *Service) Delete(ctx context.Context, id string, version int) error {
 		return mapStoreError(err)
 	}
 	if err := s.reconciler.Apply(ctx); err != nil {
-		return fmt.Errorf("listener deleted but dataplane apply failed: %w", err)
+		return fmt.Errorf("%w: %v", ErrApplyFailed, err)
 	}
 	return nil
 }

@@ -26,6 +26,7 @@ type AuthService interface {
 	EnableTwoFactor(ctx context.Context, code string) error
 	DisableTwoFactor(ctx context.Context, code string) error
 	VerifyTwoFactor(ctx context.Context, token, clientKey, code string) error
+	RenewTwoFactorVerification(ctx context.Context, token string) error
 }
 
 func WithAuth(service AuthService) Option {

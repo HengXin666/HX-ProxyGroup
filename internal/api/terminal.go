@@ -207,6 +207,11 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 					twoFactor, twoFactorErr := s.auth.TwoFactorStatus(checkCtx, token)
 					if twoFactorErr != nil || !twoFactor.Enabled || !twoFactor.Verified {
 						authErr = errors.New("administrator two-factor verification is no longer valid")
+					} else if renewErr := s.auth.RenewTwoFactorVerification(checkCtx, token); renewErr != nil {
+						// Renewal fails only when the window lapsed between the
+						// status check and the write; treat it like an expired
+						// verification so the session is closed cleanly.
+						authErr = errors.New("administrator two-factor verification is no longer valid")
 					}
 				}
 				checkCancel()

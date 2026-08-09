@@ -150,6 +150,23 @@ func (s *Service) VerifyTwoFactor(ctx context.Context, token, clientKey, code st
 	return s.repository.SetAdminSessionTwoFactorVerifiedAt(ctx, hashToken(token), &now)
 }
 
+// RenewTwoFactorVerification slides the two-factor verification window of an
+// already-verified session forward. Privileged long-lived channels (the
+// browser terminal) call this periodically so an actively used session is not
+// cut off when the original code reaches its TTL. The window still lapses when
+// renewal stops, and a session whose window already lapsed cannot renew.
+func (s *Service) RenewTwoFactorVerification(ctx context.Context, token string) error {
+	session, err := s.Authenticate(ctx, token)
+	if err != nil {
+		return err
+	}
+	if session.TwoFactorVerifiedAt == nil {
+		return ErrTwoFactorVerificationExpired
+	}
+	now := s.now().UTC()
+	return s.repository.SetAdminSessionTwoFactorVerifiedAt(ctx, hashToken(token), &now)
+}
+
 func (s *Service) loadTwoFactorSecret(ctx context.Context, requireSecretBox bool) (store.AdminTwoFactorRecord, string, error) {
 	if requireSecretBox && s.twoFactorBox == nil {
 		return store.AdminTwoFactorRecord{}, "", ErrTwoFactorUnavailable

@@ -45,6 +45,7 @@ func (*systemUpdateAuth) DisableTwoFactor(context.Context, string) error { retur
 func (*systemUpdateAuth) VerifyTwoFactor(context.Context, string, string, string) error {
 	return nil
 }
+func (*systemUpdateAuth) RenewTwoFactorVerification(context.Context, string) error { return nil }
 
 type systemUpdateService struct{ calls int }
 

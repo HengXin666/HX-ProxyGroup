@@ -141,6 +141,25 @@ func TestTerminalWebSocketRejectsCrossOriginAndTracksStepUpRevocation(t *testing
 		t.Fatal("terminal session did not become active")
 	}
 
+	// The sliding 2FA window must keep an open terminal alive: the socket
+	// revalidation renews the verification timestamp instead of letting the
+	// 15-minute TTL lapse mid-session.
+	verifiedBefore, err := authService.Authenticate(context.Background(), authSession.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifiedBefore.TwoFactorVerifiedAt == nil {
+		t.Fatal("open terminal session must keep two-factor verification")
+	}
+	time.Sleep(80 * time.Millisecond)
+	verifiedAfter, err := authService.Authenticate(context.Background(), authSession.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifiedAfter.TwoFactorVerifiedAt == nil || !verifiedAfter.TwoFactorVerifiedAt.After(*verifiedBefore.TwoFactorVerifiedAt) {
+		t.Fatal("terminal revalidation must slide the two-factor verification window forward")
+	}
+
 	if err := authService.DisableTwoFactor(context.Background(), twoFactorCode); err != nil {
 		t.Fatal(err)
 	}

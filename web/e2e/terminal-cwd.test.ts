@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { detectPwdOutput, normalizePath, parentPath, parseFirstWord, quoteForShell, resolveCdTarget } from "../src/lib/terminal-cwd.ts"
+import { createTypedCdTracker, detectPwdOutput, normalizePath, parentPath, parseFirstWord, quoteForShell, resolveCdTarget } from "../src/lib/terminal-cwd.ts"
 
 test("normalizePath collapses slashes and resolves dot segments", () => {
   assert.equal(normalizePath("//home//user/"), "/home/user")
@@ -56,4 +56,68 @@ test("parentPath mirrors server filepath.Dir semantics", () => {
   assert.equal(parentPath("/home/user/docs"), "/home/user")
   assert.equal(parentPath("/home/user/"), "/home")
   assert.equal(parentPath(""), null)
+})
+
+test("typed cd tracker resolves plain cd lines", () => {
+  let cwd = "/root"
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  assert.deepEqual(tracker.feed("c"), { type: "none" })
+  assert.deepEqual(tracker.feed("d"), { type: "none" })
+  assert.deepEqual(tracker.feed(" /tmp"), { type: "none" })
+  const action = tracker.feed("\r")
+  assert.deepEqual(action, { type: "cd", target: "/tmp" })
+  cwd = action.type === "cd" ? action.target : cwd
+
+  assert.deepEqual(tracker.feed("cd docs\r"), { type: "cd", target: "/tmp/docs" })
+  assert.deepEqual(tracker.feed("cd /var/www\r"), { type: "cd", target: "/var/www" })
+})
+
+test("typed cd tracker probes for ambiguous targets", () => {
+  let cwd = "/root"
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  assert.deepEqual(tracker.feed("cd\r"), { type: "probe" })
+  assert.deepEqual(tracker.feed("cd ~/docs\r"), { type: "probe" })
+  assert.deepEqual(tracker.feed("cd $HOME\r"), { type: "probe" })
+  assert.deepEqual(tracker.feed("cd -\r"), { type: "probe" })
+  assert.deepEqual(tracker.feed("cd /tmp && ls\r"), { type: "probe" })
+})
+
+test("typed cd tracker probes when readline rewrote the line", () => {
+  let cwd = "/root"
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  // Tab completion: the shell rewrites `cd /va` to the completed path.
+  assert.deepEqual(tracker.feed("cd /va\t\r"), { type: "probe" })
+  // Arrow-key autosuggestion acceptance followed by Enter.
+  assert.deepEqual(tracker.feed("cd /va\x1b[C\r"), { type: "probe" })
+  // Bracketed paste (xterm wraps pastes when readline enables it).
+  assert.deepEqual(tracker.feed("\x1b[200~cd /tmp\x1b[201~\r"), { type: "cd", target: "/tmp" })
+  // Paste with Enter inside the wrapper.
+  assert.deepEqual(tracker.feed("\x1b[200~cd /var\r\x1b[201~"), { type: "cd", target: "/var" })
+  // Multi-line paste reports the final line.
+  assert.deepEqual(tracker.feed("ls -la\ncd /opt\n"), { type: "cd", target: "/opt" })
+})
+
+test("typed cd tracker ignores non-cd commands", () => {
+  const tracker = createTypedCdTracker({ currentCwd: () => "/root", atPrompt: () => true })
+  assert.deepEqual(tracker.feed("ls\r"), { type: "none" })
+  assert.deepEqual(tracker.feed("vim /tmp/a.txt\r"), { type: "none" })
+  assert.deepEqual(tracker.feed("QQQQcd /x\r"), { type: "none" })
+})
+
+test("typed cd tracker only probes at a prompt", () => {
+  // Inside vim/less (raw mode, canonical=false) the tracker must never emit a
+  // probe: sending `pwd\n` there would type into the application.
+  const tracker = createTypedCdTracker({ currentCwd: () => "/root", atPrompt: () => false })
+  assert.deepEqual(tracker.feed("cd /va\t\r"), { type: "none" })
+  assert.deepEqual(tracker.feed("cd ~\r"), { type: "none" })
+  assert.deepEqual(tracker.feed("cd\r"), { type: "none" })
+})
+
+test("typed cd tracker handles backspace editing", () => {
+  let cwd = "/root"
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  assert.deepEqual(tracker.feed("cd /tmp\x7f\x7f\r"), { type: "cd", target: "/t" })
+  // Backspacing down to a lone `c` still looks like a possible cd prefix, so
+  // the tracker probes instead of guessing.
+  assert.deepEqual(tracker.feed("cd /x\x7f\x7f\x7f\r"), { type: "probe" })
 })

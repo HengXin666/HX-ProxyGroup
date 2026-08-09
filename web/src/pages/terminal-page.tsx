@@ -8,25 +8,11 @@ import { ApiError, api, type TerminalStatus } from "@/lib/api"
 import { FilePanel } from "@/components/terminal/file-panel"
 import { HostMonitor } from "@/components/terminal/host-monitor"
 import { Input } from "@/components/ui/input"
-import { detectPwdOutput, parseFirstWord, quoteForShell, resolveCdTarget } from "@/lib/terminal-cwd"
+import { createTypedCdTracker, detectPwdOutput, quoteForShell } from "@/lib/terminal-cwd"
 import { subscribeTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
 type ConnectionState = "idle" | "connecting" | "connected" | "closed"
-
-// Recognize a complete `cd` command line typed at the shell prompt. Returns
-// the raw argument (first word only semantics) or null when the line is not a
-// plain `cd` (chains, redirects and other commands are ignored conservatively).
-function parseTypedCd(line: string): { argument: string | null } | null {
-  const match = line.match(/^\s*cd(?:\s+(.+?))?\s*$/)
-  if (!match) return null
-  const argument = match[1]
-  if (argument === undefined) return { argument: null }
-  // `cd /tmp && ls` or `cd /x; ls`: the shell may run more than one command.
-  // Only a plain `cd <target>` is tracked; anything else is left alone.
-  if (/[;&|<>]/.test(argument)) return null
-  return { argument }
-}
 
 export function TerminalPage({
   onNotice,
@@ -39,6 +25,10 @@ export function TerminalPage({
   const socketRef = useRef<WebSocket | null>(null)
   const keepAliveRef = useRef<number | null>(null)
   const cwdRef = useRef("/")
+  // Canonical PTY mode tracked from server `mode` frames. Probes that ask the
+  // shell for its directory must never fire while a raw-mode application
+  // (vim/less/htop) owns the screen, so the typed-cd tracker gates on this.
+  const modeRef = useRef({ canonical: true })
   const pwdPendingRef = useRef(false)
   const pwdDeadlineRef = useRef(0)
   const pwdBufferRef = useRef("")
@@ -80,6 +70,28 @@ export function TerminalPage({
     setConnection("closed")
   }, [])
 
+  // Keep the 2FA/session state fresh while the page stays open. After the
+  // 15-minute verification window lapses (e.g. the terminal is disconnected
+  // but the page is still mounted), the UI must switch back to the 2FA unlock
+  // prompt instead of failing to connect against stale status.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      api
+        .terminalStatus()
+        .then((result) => {
+          setStatus(result)
+          if (!result.two_factor_verified && socketRef.current?.readyState === WebSocket.OPEN) {
+            // The server revokes an open socket on its next revalidation;
+            // close it client-side so the unlock prompt is not shown while a
+            // dead session lingers.
+            disconnect()
+          }
+        })
+        .catch(() => {})
+    }, 30_000)
+    return () => window.clearInterval(interval)
+  }, [disconnect])
+
   async function unlockTerminal() {
     if (!/^\d{6}$/.test(twoFactorCode.trim())) {
       onNotice("请输入 6 位 2FA 验证码", "error")
@@ -90,7 +102,7 @@ export function TerminalPage({
       await api.verifyTwoFactor(twoFactorCode.trim())
       setTwoFactorCode("")
       setStatus(await api.terminalStatus())
-      onNotice("终端已解锁，15 分钟内可建立终端会话")
+      onNotice("终端已解锁，连接期间 2FA 验证会自动续期")
     } catch (cause) {
       onNotice(cause instanceof Error ? cause.message : "2FA 验证失败", "error")
     } finally {
@@ -142,7 +154,13 @@ export function TerminalPage({
   }, [])
 
   const connect = useCallback(() => {
-    if (!containerRef.current || socketRef.current || !status?.two_factor_verified) return
+    if (!containerRef.current || socketRef.current) return
+    if (!status?.two_factor_verified) {
+      // The cached status may be stale if the 2FA window lapsed while the page
+      // stayed open; refresh once so the unlock prompt appears immediately.
+      api.terminalStatus().then((result) => setStatus(result)).catch(() => {})
+      return
+    }
     setConnection("connecting")
 
     if (!terminalRef.current) {
@@ -182,6 +200,7 @@ export function TerminalPage({
     const socket = new WebSocket(api.terminalSocketURL())
     socket.binaryType = "arraybuffer"
     socketRef.current = socket
+    let opened = false
 
     // Streaming decoder lets us peek at PTY output for cwd tracking without
     // touching the raw bytes written to the terminal.
@@ -194,6 +213,7 @@ export function TerminalPage({
     }
 
     socket.onopen = () => {
+      opened = true
       setConnection("connected")
       fit?.fit()
       sendResize()
@@ -218,21 +238,36 @@ export function TerminalPage({
       socket.send(JSON.stringify({ type: "input", data: "pwd\n" }))
     }
     socket.onmessage = (event) => {
-      if (!(event.data instanceof ArrayBuffer)) return
-      const bytes = new Uint8Array(event.data)
-      terminal.write(bytes)
-      const text = decoder.decode(bytes, { stream: true })
-      if (!pwdPendingRef.current) return
-      // The shell may split the `pwd` echo/result across many frames (a slow
-      // banner, the prompt redraw, ...); accumulate until the path line appears
-      // or the time budget runs out.
-      pwdBufferRef.current += text
-      const target = detectPwdOutput(pwdBufferRef.current)
-      if (target) {
-        pwdPendingRef.current = false
-        updateCwd(target)
-      } else if (Date.now() > pwdDeadlineRef.current) {
-        pwdPendingRef.current = false
+      if (event.data instanceof ArrayBuffer) {
+        const bytes = new Uint8Array(event.data)
+        terminal.write(bytes)
+        const text = decoder.decode(bytes, { stream: true })
+        if (!pwdPendingRef.current) return
+        // The shell may split the `pwd` echo/result across many frames (a slow
+        // banner, the prompt redraw, ...); accumulate until the path line appears
+        // or the time budget runs out.
+        pwdBufferRef.current += text
+        const target = detectPwdOutput(pwdBufferRef.current)
+        if (target) {
+          pwdPendingRef.current = false
+          updateCwd(target)
+        } else if (Date.now() > pwdDeadlineRef.current) {
+          pwdPendingRef.current = false
+        }
+        return
+      }
+      if (typeof event.data === "string") {
+        // Control frames from the server; only the PTY `mode` frame matters
+        // here (the typed-cd tracker must know when a raw-mode application
+        // owns the screen before it sends any pwd probe).
+        try {
+          const message = JSON.parse(event.data) as { type?: string; canonical?: boolean }
+          if (message.type === "mode" && typeof message.canonical === "boolean") {
+            modeRef.current = { canonical: message.canonical }
+          }
+        } catch {
+          // Ignore non-JSON frames.
+        }
       }
     }
     socket.onclose = (event) => {
@@ -245,14 +280,30 @@ export function TerminalPage({
       pwdBufferRef.current = ""
       setConnection("closed")
       terminal.write(`\r\n\x1b[33m[会话已结束${event.reason ? `：${event.reason}` : ""}]\x1b[0m\r\n`)
-      if (event.wasClean === false) {
+      // Refresh 2FA/session state: when the server revoked the session (2FA
+      // window lapsed, logout-all, ...) the UI must switch back to the unlock
+      // prompt instead of letting the user retry against stale state.
+      api.terminalStatus().then((result) => setStatus(result)).catch(() => {})
+      if (event.code === 1008) {
+        onNotice("会话验证已失效，请重新验证后连接", "error")
+      } else if (event.wasClean === false && opened) {
         onNotice("终端连接被中断，请确认网络稳定后重连", "error")
       }
     }
     socket.onerror = () => {
+      // A failed WebSocket handshake (e.g. stale 2FA state) surfaces here; the
+      // status refresh switches the page to the 2FA unlock prompt.
+      api.terminalStatus().then((result) => setStatus(result)).catch(() => {})
       onNotice("终端连接失败，请确认已登录并完成 2FA 解锁", "error")
     }
 
+    // Track typed `cd` commands from the INPUT stream. The tracker resolves
+    // plain `cd <target>` lines directly and asks the shell for its directory
+    // (pwd probe) when completion / paste / line editing hid the real target.
+    const typedCd = createTypedCdTracker({
+      currentCwd: () => cwdRef.current,
+      atPrompt: () => modeRef.current.canonical,
+    })
     const inputDisposable = terminal.onData((data) => {
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
       // Collapse safe keystrokes into one frame (≤12ms) so weak round-trips do
@@ -264,42 +315,10 @@ export function TerminalPage({
       } else if (inputTimer === null) {
         inputTimer = window.setTimeout(flushInput, 12)
       }
-      trackTypedCd(data)
+      const action = typedCd.feed(data)
+      if (action.type === "cd") updateCwd(action.target)
+      else if (action.type === "probe") reprobePwd()
     })
-
-    // Keep the file panel in sync with what the user types. Detecting `cd`
-    // from the OUTPUT is unreliable (fancy prompts interleave escape
-    // sequences, backspaces and re-echoes with the command), so track the
-    // INPUT stream instead: accumulate the current line, and when Enter is
-    // pressed resolve a leading `cd` against the known cwd.
-    let typedLine = ""
-    const trackTypedCd = (data: string) => {
-      for (const ch of data) {
-        if (ch === "\r") {
-          const line = typedLine
-          typedLine = ""
-          const cd = parseTypedCd(line)
-          if (!cd) continue
-          if (cd.argument === null) {
-            reprobePwd() // bare `cd` -> the shell moved to $HOME
-            continue
-          }
-          const argument = parseFirstWord(cd.argument)
-          const target = argument === null || argument === "" ? null : resolveCdTarget(cwdRef.current, argument)
-          if (target) updateCwd(target)
-          else reprobePwd() // `cd ~/...`, `cd $VAR`, `cd -` ...
-        } else if (ch === "\x7f") {
-          typedLine = typedLine.slice(0, -1)
-        } else if (ch === "\x1b" || /[\x00-\x1f]/.test(ch)) {
-          typedLine = "" // navigation / search / completion: reset the guess
-        } else {
-          typedLine += ch
-          // Drop lines that cannot possibly become a `cd` command (`ls`,
-          // `QQQQcd /x`, …) so a later Enter cannot misread them.
-          if (!/^c(?:d(?:\s.*)?)?$/.test(typedLine)) typedLine = ""
-        }
-      }
-    }
 
     inputDisposableRef.current = inputDisposable
   }, [onNotice, startKeepalive, status?.two_factor_verified, updateCwd])
@@ -334,7 +353,7 @@ export function TerminalPage({
         <PageHeader />
         <section className="rounded-md border bg-card p-4">
           <div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />验证 2FA 后解锁终端</div>
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">输入验证器当前显示的 6 位验证码。验证成功后，当前登录会话可在 {Math.round(status.two_factor_verification_ttl_seconds / 60)} 分钟内建立终端连接。</p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">输入验证器当前显示的 6 位验证码。验证成功后，当前登录会话可在 {Math.round(status.two_factor_verification_ttl_seconds / 60)} 分钟内建立终端连接；连接期间验证会自动续期，不会因验证超时中断。</p>
           <div className="mt-4 flex items-end gap-2"><label className="block min-w-0 flex-1 text-xs font-medium">一次性验证码<Input aria-label="终端 2FA 验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-1 font-mono tracking-[0.25em]" /></label><button type="button" onClick={() => void unlockTerminal()} disabled={unlocking} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60">{unlocking ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}解锁</button></div>
         </section>
       </div>

@@ -133,3 +133,135 @@ export function parseFirstWord(line: string): string | null {
   }
   return out
 }
+
+// Recognize a complete `cd` command line typed at the shell prompt. Returns
+// the raw argument (first word only semantics) or null when the line is not a
+// plain `cd` (chains, redirects and other commands are ignored conservatively).
+export function parseTypedCd(line: string): { argument: string | null } | null {
+  const match = line.match(/^\s*cd(?:\s+(.+?))?\s*$/)
+  if (!match) return null
+  const argument = match[1]
+  if (argument === undefined) return { argument: null }
+  // `cd /tmp && ls` or `cd /x; ls`: the shell may run more than one command.
+  // Only a plain `cd <target>` is tracked; anything else is left alone.
+  if (/[;&|<>]/.test(argument)) return null
+  return { argument }
+}
+
+/** Action produced when the typed-cd tracker closes a command line. */
+export type TypedCdAction =
+  | { type: "cd"; target: string }
+  | { type: "probe" }
+  | { type: "none" }
+
+export interface TypedCdTrackerOptions {
+  /** Current absolute shell cwd, read lazily when a line is submitted. */
+  currentCwd: () => string
+  /**
+   * Whether the shell is currently at a line-editing prompt (canonical
+   * terminal mode). `pwd` probes are only emitted at a prompt so they are
+   * never typed into vim/less/htop or another raw-mode application.
+   */
+  atPrompt: () => boolean
+}
+
+// A line that can still become a plain `cd` command. The regex is anchored so
+// `QQQQcd /x`, `ls cd /x`, ... can never match: the tracker keeps the raw line
+// and only arms cd tracking when the whole line still starts with `c`/`cd`.
+const cdLinePrefix = /^c(?:d(?:\s.*)?)?$/
+
+/**
+ * Stateful tracker for the INPUT stream that keeps the file panel in sync
+ * with the shell cwd. The PTY echo is not scanned (fancy prompts interleave
+ * escape sequences and re-echoes with the command), so the tracker follows
+ * what the user actually types and asks the shell with a `pwd` probe whenever
+ * it cannot resolve the final directory confidently.
+ *
+ * Enter handling:
+ * - a plain `cd <target>` line resolves lexically against the current cwd;
+ * - bare `cd`, `~` / `$VAR` / `-` targets and `cd` chains return `probe`;
+ * - when the line was rewritten by readline (Tab completion, bracketed paste
+ *   wrappers, arrow-key history/autosuggestion) after the user typed a `cd`
+ *   prefix, the tracker returns `probe` so the shell's real directory wins.
+ */
+export function createTypedCdTracker(options: TypedCdTrackerOptions) {
+  let typedLine = ""
+  let sawCdPrefix = false
+  let escSeq: string | null = null
+
+  const probeIfAtPrompt = (): TypedCdAction => (options.atPrompt() ? { type: "probe" } : { type: "none" })
+
+  const finishLine = (line: string, mayBeCd: boolean): TypedCdAction => {
+    const cd = parseTypedCd(line)
+    if (cd) {
+      if (cd.argument === null) return probeIfAtPrompt()
+      const argument = parseFirstWord(cd.argument)
+      const target = argument === null || argument === "" ? null : resolveCdTarget(options.currentCwd(), argument)
+      return target ? { type: "cd", target } : probeIfAtPrompt()
+    }
+    return mayBeCd ? probeIfAtPrompt() : { type: "none" }
+  }
+
+  return {
+    /**
+     * Feed one raw xterm.js onData chunk. Returns the action for the command
+     * line closed by an Enter inside this chunk (a multi-line paste only
+     * reports its last line, which is the final panel destination).
+     */
+    feed(data: string): TypedCdAction {
+      let action: TypedCdAction = { type: "none" }
+      for (const ch of data) {
+        if (ch === "\r" || ch === "\n") {
+          const line = typedLine
+          const mayBeCd = sawCdPrefix
+          typedLine = ""
+          sawCdPrefix = false
+          escSeq = null
+          action = finishLine(line, mayBeCd)
+          continue
+        }
+        if (ch === "\x1b") {
+          escSeq = "\x1b"
+          continue
+        }
+        if (escSeq !== null) {
+          escSeq += ch
+          // A CSI sequence ends on the first byte in 0x40-0x7E after the
+          // introducer: arrow keys, home/end and the bracketed-paste markers
+          // `\x1b[200~` / `\x1b[201~`.
+          if (escSeq.length > 2 && ch >= "@" && ch <= "~") {
+            if (escSeq !== "\x1b[200~" && escSeq !== "\x1b[201~") {
+              // readline navigation rewrote the visible line (history,
+              // autosuggestion); the completed command may still be a cd.
+              sawCdPrefix = sawCdPrefix || cdLinePrefix.test(typedLine)
+              typedLine = ""
+            }
+            escSeq = null
+          }
+          continue
+        }
+        if (ch === "\x7f") {
+          typedLine = typedLine.slice(0, -1)
+          sawCdPrefix = cdLinePrefix.test(typedLine)
+          continue
+        }
+        if (/[\x00-\x1f]/.test(ch)) {
+          // Tab completion, Ctrl+U/A/E, ...: readline rewrites the line, so
+          // the visible command is no longer what the tracker accumulated.
+          sawCdPrefix = sawCdPrefix || cdLinePrefix.test(typedLine)
+          typedLine = ""
+          continue
+        }
+        typedLine += ch
+        if (typedLine.length > 8192) {
+          // A single line far beyond any shell/path limit: stop tracking it.
+          typedLine = ""
+          sawCdPrefix = false
+          continue
+        }
+        sawCdPrefix = cdLinePrefix.test(typedLine)
+      }
+      return action
+    },
+  }
+}

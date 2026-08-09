@@ -248,6 +248,7 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 		}
 	}
 	cancel()
+	shell.Close("connection closed")
 	<-outputDone
 	<-authDone
 	_ = connection.Close(websocket.StatusNormalClosure, "bye")

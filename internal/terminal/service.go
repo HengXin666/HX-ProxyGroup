@@ -56,6 +56,10 @@ type Config struct {
 	// helper. When set, terminal sessions are created by that helper so the
 	// administrator can use su/sudo without running the control plane as root.
 	PrivilegedSocket string
+	// PersistHistory keeps shell command history across sessions (bash
+	// ~/.bash_history, zsh ~/.zsh_history) instead of pointing HISTFILE at
+	// /dev/null. Enabled by default; disable for a no-history lockdown.
+	PersistHistory bool
 	// UpdaterPath enables the fixed-command privileged update request. The
 	// helper validates this root-owned executable before scheduling it.
 	UpdaterPath string
@@ -194,7 +198,7 @@ func (s *Service) Open(ctx context.Context, actor, remote string) (Session, erro
 	} else {
 		var ptyFile *os.File
 		var command *exec.Cmd
-		ptyFile, command, err = startShell(s.config.Shell, os.Environ())
+		ptyFile, command, err = startShell(s.config.Shell, os.Environ(), s.config.PersistHistory)
 		if err == nil {
 			base = newPTYSession(ptyFile, command)
 			shellName = command.Path

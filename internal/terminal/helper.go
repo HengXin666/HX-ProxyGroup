@@ -67,12 +67,13 @@ const (
 // HelperConfig configures the root-only PTY helper. The helper is intended to
 // be started by systemd and reached only through a mode-0660 Unix socket.
 type HelperConfig struct {
-	SocketPath  string
-	SocketGroup string
-	AllowedUser string
-	Shell       string
-	MaxSessions int
-	UpdaterPath string
+	SocketPath     string
+	SocketGroup    string
+	AllowedUser    string
+	Shell          string
+	MaxSessions    int
+	UpdaterPath    string
+	PersistHistory bool
 }
 
 // RunHelper serves root PTYs until ctx is cancelled. It is deliberately kept
@@ -159,7 +160,7 @@ func RunHelper(ctx context.Context, config HelperConfig, logger *slog.Logger) er
 		go func() {
 			defer waitGroup.Done()
 			defer func() { <-semaphore }()
-			handleHelperConnection(ctx, connection, config.Shell, config.UpdaterPath)
+			handleHelperConnection(ctx, connection, config.Shell, config.UpdaterPath, config.PersistHistory)
 		}()
 	}
 }
@@ -236,7 +237,7 @@ func unixPeerCredentials(fd int) (int, error) {
 	return int(credentials.Uid), nil
 }
 
-func handleHelperConnection(ctx context.Context, connection net.Conn, shell, updaterPath string) {
+func handleHelperConnection(ctx context.Context, connection net.Conn, shell, updaterPath string, persistHistory bool) {
 	closeOnContext := make(chan struct{})
 	go func() {
 		select {
@@ -266,7 +267,7 @@ func handleHelperConnection(ctx context.Context, connection net.Conn, shell, upd
 		_ = connection.Close()
 		return
 	}
-	ptyFile, command, err := startShell(shell, os.Environ())
+	ptyFile, command, err := startShell(shell, os.Environ(), persistHistory)
 	if err != nil {
 		_ = writeFrame(connection, frameError, []byte("start privileged terminal: "+err.Error()))
 		_ = connection.Close()

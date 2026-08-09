@@ -25,10 +25,10 @@ export function TerminalPage({
   const socketRef = useRef<WebSocket | null>(null)
   const keepAliveRef = useRef<number | null>(null)
   const cwdRef = useRef("/")
-  // Canonical PTY mode tracked from server `mode` frames. Probes that ask the
-  // shell for its directory must never fire while a raw-mode application
-  // (vim/less/htop) owns the screen, so the typed-cd tracker gates on this.
-  const modeRef = useRef({ canonical: true })
+  // Tracked by the typed-cd tracker to unblock probes after a raw-mode
+  // application (vim/less/htop) exits — the tracker clears its internal
+  // blocked flag when this method is called.
+  const typedCdRef = useRef<{ clearBlocked: () => void } | null>(null)
   const pwdPendingRef = useRef(false)
   const pwdDeadlineRef = useRef(0)
   const pwdBufferRef = useRef("")
@@ -257,13 +257,13 @@ export function TerminalPage({
         return
       }
       if (typeof event.data === "string") {
-        // Control frames from the server; only the PTY `mode` frame matters
-        // here (the typed-cd tracker must know when a raw-mode application
-        // owns the screen before it sends any pwd probe).
+        // Control frames from the server; unblock the typed-cd tracker when
+        // a canonical-mode frame arrives (a full-screen app restored the
+        // terminal line discipline, so the shell is back at a prompt).
         try {
           const message = JSON.parse(event.data) as { type?: string; canonical?: boolean }
-          if (message.type === "mode" && typeof message.canonical === "boolean") {
-            modeRef.current = { canonical: message.canonical }
+          if (message.type === "mode" && message.canonical === true) {
+            typedCdRef.current?.clearBlocked()
           }
         } catch {
           // Ignore non-JSON frames.
@@ -299,11 +299,11 @@ export function TerminalPage({
 
     // Track typed `cd` commands from the INPUT stream. The tracker resolves
     // plain `cd <target>` lines directly and asks the shell for its directory
-    // (pwd probe) when completion / paste / line editing hid the real target.
+    // (pwd probe) when the directory may have changed.
     const typedCd = createTypedCdTracker({
       currentCwd: () => cwdRef.current,
-      atPrompt: () => modeRef.current.canonical,
     })
+    typedCdRef.current = typedCd
     const inputDisposable = terminal.onData((data) => {
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
       // Collapse safe keystrokes into one frame (≤12ms) so weak round-trips do
@@ -316,8 +316,15 @@ export function TerminalPage({
         inputTimer = window.setTimeout(flushInput, 12)
       }
       const action = typedCd.feed(data)
-      if (action.type === "cd") updateCwd(action.target)
-      else if (action.type === "probe") reprobePwd()
+      if (action.type === "cd") {
+        // Optimistically follow the typed target, then let the shell confirm:
+        // the probe corrects symlinks, failed cds and every other case where
+        // the lexical resolve differs from the shell's real directory.
+        updateCwd(action.target)
+        reprobePwd()
+      } else if (action.type === "probe") {
+        reprobePwd()
+      }
     })
 
     inputDisposableRef.current = inputDisposable

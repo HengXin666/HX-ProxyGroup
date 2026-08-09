@@ -188,7 +188,7 @@ func TestSafeShellEnvironmentDropsApplicationSecrets(t *testing.T) {
 		"HX_PROXYGROUP_MASTER_KEY=must-not-leak",
 		"DATABASE_URL=sqlite-secret",
 		"AUTHORIZATION=Bearer-secret",
-	}, "/bin/sh")
+	}, "/bin/sh", false)
 	joined := strings.Join(environment, "\n")
 	for _, secret := range []string{"must-not-leak", "sqlite-secret", "Bearer-secret", "HX_PROXYGROUP_MASTER_KEY", "DATABASE_URL", "AUTHORIZATION"} {
 		if strings.Contains(joined, secret) {
@@ -199,5 +199,33 @@ func TestSafeShellEnvironmentDropsApplicationSecrets(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("safe environment missing %q: %s", expected, joined)
 		}
+	}
+}
+
+func TestSafeShellEnvironmentPersistsHistory(t *testing.T) {
+	base := []string{
+		"HOME=/srv/hx",
+		"USER=hx-proxygroup",
+		"PATH=/usr/bin:/bin",
+	}
+	// Bash keeps its default ~/.bash_history when history is enabled.
+	joined := strings.Join(safeShellEnvironment(base, "/bin/bash", true), "\n")
+	if strings.Contains(joined, "HISTFILE=/dev/null") {
+		t.Fatalf("enabled history must not point HISTFILE at /dev/null: %s", joined)
+	}
+	// zsh needs an explicit HISTFILE plus SAVEHIST to persist history.
+	joined = strings.Join(safeShellEnvironment(base, "/bin/zsh", true), "\n")
+	for _, expected := range []string{"HISTFILE=/srv/hx/.zsh_history", "SAVEHIST=10000", "HISTSIZE=2000"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("zsh history environment missing %q: %s", expected, joined)
+		}
+	}
+	// The no-history lockdown is preserved when explicitly disabled.
+	joined = strings.Join(safeShellEnvironment(base, "/bin/zsh", false), "\n")
+	if !strings.Contains(joined, "HISTFILE=/dev/null") {
+		t.Fatalf("disabled history must keep HISTFILE=/dev/null: %s", joined)
+	}
+	if strings.Contains(joined, "SAVEHIST") {
+		t.Fatalf("disabled history must not set zsh save variables: %s", joined)
 	}
 }

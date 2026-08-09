@@ -60,7 +60,7 @@ test("parentPath mirrors server filepath.Dir semantics", () => {
 
 test("typed cd tracker resolves plain cd lines", () => {
   let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
   assert.deepEqual(tracker.feed("c"), { type: "none" })
   assert.deepEqual(tracker.feed("d"), { type: "none" })
   assert.deepEqual(tracker.feed(" /tmp"), { type: "none" })
@@ -74,7 +74,7 @@ test("typed cd tracker resolves plain cd lines", () => {
 
 test("typed cd tracker probes for ambiguous targets", () => {
   let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
   assert.deepEqual(tracker.feed("cd\r"), { type: "probe" })
   assert.deepEqual(tracker.feed("cd ~/docs\r"), { type: "probe" })
   assert.deepEqual(tracker.feed("cd $HOME\r"), { type: "probe" })
@@ -84,7 +84,7 @@ test("typed cd tracker probes for ambiguous targets", () => {
 
 test("typed cd tracker probes when readline rewrote the line", () => {
   let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
   // Tab completion: the shell rewrites `cd /va` to the completed path.
   assert.deepEqual(tracker.feed("cd /va\t\r"), { type: "probe" })
   // Arrow-key autosuggestion acceptance followed by Enter.
@@ -98,24 +98,43 @@ test("typed cd tracker probes when readline rewrote the line", () => {
 })
 
 test("typed cd tracker ignores non-cd commands", () => {
-  const tracker = createTypedCdTracker({ currentCwd: () => "/root", atPrompt: () => true })
+  const tracker = createTypedCdTracker({ currentCwd: () => "/root" })
   assert.deepEqual(tracker.feed("ls\r"), { type: "none" })
   assert.deepEqual(tracker.feed("vim /tmp/a.txt\r"), { type: "none" })
-  assert.deepEqual(tracker.feed("QQQQcd /x\r"), { type: "none" })
+  assert.deepEqual(tracker.feed("ls -la /var\r"), { type: "none" })
+  assert.deepEqual(tracker.feed("\r"), { type: "none" }) // empty line: nothing ran
 })
 
-test("typed cd tracker only probes at a prompt", () => {
-  // Inside vim/less (raw mode, canonical=false) the tracker must never emit a
-  // probe: sending `pwd\n` there would type into the application.
-  const tracker = createTypedCdTracker({ currentCwd: () => "/root", atPrompt: () => false })
+test("typed cd tracker probes unknown and directory-changing commands", () => {
+  const tracker = createTypedCdTracker({ currentCwd: () => "/root" })
+  assert.deepEqual(tracker.feed("z foo\r"), { type: "probe" })
+  assert.deepEqual(tracker.feed("pushd /opt\r"), { type: "probe" })
+  assert.deepEqual(tracker.feed("popd\r"), { type: "probe" })
+  assert.deepEqual(tracker.feed("QQQQcd /x\r"), { type: "probe" })
+  // A line rewritten by completion probes even for a safe command.
+  assert.deepEqual(tracker.feed("ls\t\r"), { type: "probe" })
+})
+
+test("typed cd tracker blocks probes after a raw-mode command", () => {
+  // Inside vim/less the tracker must never emit a probe: sending pwd would
+  // type into the application.  The blocked flag is set on Enter of a
+  // raw-app command (vim/less/top/htop/...) and cleared by clearBlocked().
+  const tracker = createTypedCdTracker({ currentCwd: () => "/root" })
+  // Start vim (raw-app command sets blocked).
+  assert.deepEqual(tracker.feed("vim foo\r"), { type: "none" })
+  // Now blocked: ambiguous cd targets should NOT probe.
   assert.deepEqual(tracker.feed("cd /va\t\r"), { type: "none" })
   assert.deepEqual(tracker.feed("cd ~\r"), { type: "none" })
   assert.deepEqual(tracker.feed("cd\r"), { type: "none" })
+  // Unblock (vim exited).
+  tracker.clearBlocked()
+  // Now probes fire again.
+  assert.deepEqual(tracker.feed("cd /tmp\r"), { type: "cd", target: "/tmp" })
+  assert.deepEqual(tracker.feed("cd ~\r"), { type: "probe" })
 })
-
 test("typed cd tracker handles backspace editing", () => {
   let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd, atPrompt: () => true })
+  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
   assert.deepEqual(tracker.feed("cd /tmp\x7f\x7f\r"), { type: "cd", target: "/t" })
   // Backspacing down to a lone `c` still looks like a possible cd prefix, so
   // the tracker probes instead of guessing.

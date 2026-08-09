@@ -37,6 +37,11 @@ type Config struct {
 	// TerminalPrivilegedSocket selects the local root PTY helper used by the
 	// production systemd unit. Empty keeps local development unprivileged.
 	TerminalPrivilegedSocket string
+	// TerminalHistory persists shell command history between terminal sessions
+	// (bash ~/.bash_history, zsh ~/.zsh_history). Enabled by default for the
+	// sole administrator; set HX_PROXYGROUP_TERMINAL_HISTORY=0 to restore the
+	// no-history lockdown.
+	TerminalHistory bool
 }
 
 func Default() Config {
@@ -62,6 +67,7 @@ func Default() Config {
 		TerminalEnabled:          envOrDefault("HX_PROXYGROUP_TERMINAL", "1") != "0",
 		TerminalShell:            envOrDefault("HX_PROXYGROUP_TERMINAL_SHELL", ""),
 		TerminalPrivilegedSocket: envOrDefault("HX_PROXYGROUP_TERMINAL_SOCKET", ""),
+		TerminalHistory:          envOrDefault("HX_PROXYGROUP_TERMINAL_HISTORY", "1") != "0",
 	}
 }
 

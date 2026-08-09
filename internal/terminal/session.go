@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,7 @@ func (s *trackedSession) Close(cause string) {
 }
 
 // startShell launches the login shell inside a new PTY.
-func startShell(shell string, environment []string) (*os.File, *exec.Cmd, error) {
+func startShell(shell string, environment []string, persistHistory bool) (*os.File, *exec.Cmd, error) {
 	shell = strings.TrimSpace(shell)
 	if shell == "" {
 		shell = os.Getenv("SHELL")
@@ -88,7 +89,7 @@ func startShell(shell string, environment []string) (*os.File, *exec.Cmd, error)
 		shell = "/bin/sh"
 	}
 	command := exec.Command(shell)
-	command.Env = safeShellEnvironment(environment, shell)
+	command.Env = safeShellEnvironment(environment, shell, persistHistory)
 	if home := environmentValue(environment, "HOME"); home != "" {
 		if info, err := os.Stat(home); err == nil && info.IsDir() {
 			command.Dir = home
@@ -108,7 +109,7 @@ func newPTYSession(ptyFile *os.File, command *exec.Cmd) *ptySession {
 // safeShellEnvironment prevents application credentials or deployment
 // controls from leaking into an interactive shell. It receives only
 // conventional locale and identity values, regardless of the PTY backend.
-func safeShellEnvironment(environment []string, shell string) []string {
+func safeShellEnvironment(environment []string, shell string, persistHistory bool) []string {
 	allowed := map[string]struct{}{
 		"HOME": {}, "USER": {}, "LOGNAME": {}, "PATH": {}, "LANG": {}, "TZ": {},
 	}
@@ -125,9 +126,22 @@ func safeShellEnvironment(environment []string, shell string) []string {
 	values["TERM"] = "xterm-256color"
 	values["COLORTERM"] = "truecolor"
 	values["SHELL"] = shell
-	values["HISTFILE"] = "/dev/null"
+	if persistHistory {
+		if strings.Contains(shell, "zsh") {
+			if home := environmentValue(environment, "HOME"); home != "" {
+				values["HISTFILE"] = filepath.Join(home, ".zsh_history")
+				values["SAVEHIST"] = "10000"
+				values["HISTSIZE"] = "2000"
+			}
+		}
+		// Other shells (bash, sh) keep their built-in history defaults: bash
+		// writes ~/.bash_history whenever HOME is set, so no HISTFILE override
+		// is needed and the user's own rc settings still apply.
+	} else {
+		values["HISTFILE"] = "/dev/null"
+	}
 	result := make([]string, 0, len(values))
-	for _, name := range []string{"HOME", "USER", "LOGNAME", "PATH", "LANG", "TZ", "TERM", "COLORTERM", "SHELL", "HISTFILE"} {
+	for _, name := range []string{"HOME", "USER", "LOGNAME", "PATH", "LANG", "TZ", "TERM", "COLORTERM", "SHELL", "HISTFILE", "SAVEHIST", "HISTSIZE"} {
 		if value, ok := values[name]; ok {
 			result = append(result, name+"="+value)
 			delete(values, name)
@@ -181,8 +195,13 @@ func (s *ptySession) Resize(columns, rows int) error {
 }
 
 // Close terminates the shell and the PTY. It is idempotent; the first cause
-// wins and is reported to the audit hook.
+// wins and is reported to the audit hook. The shell is asked to exit
+// gracefully first so bash/zsh can persist their history file, then killed
+// after a short grace period so teardown stays bounded.  Interactive bash
+// ignores SIGTERM, so SIGHUP is used instead: bash writes history on
+// SIGHUP then exits cleanly.
 func (s *ptySession) Close(_ string) {
+	const waitGrace = 1200 * time.Millisecond
 	s.mutex.Lock()
 	if s.closed {
 		s.mutex.Unlock()
@@ -192,10 +211,19 @@ func (s *ptySession) Close(_ string) {
 	s.mutex.Unlock()
 
 	_ = s.pty.Close()
-	if s.command.Process != nil {
-		_ = s.command.Process.Kill()
+	if s.command.Process == nil {
+		return
 	}
-	_ = s.command.Wait()
+	_ = s.command.Process.Signal(unix.SIGHUP)
+	done := make(chan struct{})
+	go func() { _ = s.command.Wait(); close(done) }()
+	select {
+	case <-done:
+		// Normal exit — shell saved history.
+	case <-time.After(waitGrace):
+		_ = s.command.Process.Kill()
+		<-done
+	}
 }
 
 func (s *trackedSession) touch() {

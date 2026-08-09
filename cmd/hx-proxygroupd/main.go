@@ -288,6 +288,7 @@ func run(logger *slog.Logger) error {
 		Shell:            cfg.TerminalShell,
 		PrivilegedSocket: cfg.TerminalPrivilegedSocket,
 		UpdaterPath:      "/usr/local/sbin/hx-proxygroup-install",
+		PersistHistory:   cfg.TerminalHistory,
 	}, logger)
 	if err != nil {
 		return err
@@ -492,6 +493,7 @@ func runTerminalHelper(logger *slog.Logger, arguments []string) error {
 	flags.StringVar(&config.Shell, "terminal-shell", "", "shell executable")
 	flags.IntVar(&config.MaxSessions, "terminal-max-sessions", 2, "maximum helper sessions")
 	flags.StringVar(&config.UpdaterPath, "updater", "/usr/local/sbin/hx-proxygroup-install", "fixed automatic updater executable")
+	flags.BoolVar(&config.PersistHistory, "terminal-persist-history", true, "persist shell command history between sessions")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}

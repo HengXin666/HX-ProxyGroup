@@ -154,55 +154,117 @@ export type TypedCdAction =
   | { type: "probe" }
   | { type: "none" }
 
+// Commands that assume full-screen ownership of the terminal.  When the user
+// presses Enter on such a command, the tracker sets an internal blocked flag:
+// subsequent probes are suppressed until the app exits (detected via mode
+// frames re-entering canonical/echo).  This prevents `pwd` probes from being
+// typed into vim/less/htop/top etc.
+const rawAppCommands = new Set([
+  "vim", "vi", "nano", "emacs",
+  "less", "more", "man", "info", "tldr",
+  "top", "htop", "btop", "gotop", "glances",
+  "python", "python3", "ipython", "ipython3", "node",
+  "ssh", "sftp", "telnet", "nc", "nmap",
+  "mysql", "psql", "sqlite3", "redis-cli", "mongosh",
+  "screen", "tmux", "ranger", "mc", "midnight-commander",
+  "lazygit", "lazydocker", "ctop", "k9s", "kubie", "stern",
+  "fzf", "fzy", "skim", "peco",
+  "mutt", "neomutt", "alpine",
+  "htop", "iftop", "nethogs", "bmon",
+  "git", "docker", "kubectl", "helm",
+  "journalctl", "systemctl",
+])
+
+/** Options for createTypedCdTracker. */
 export interface TypedCdTrackerOptions {
   /** Current absolute shell cwd, read lazily when a line is submitted. */
   currentCwd: () => string
-  /**
-   * Whether the shell is currently at a line-editing prompt (canonical
-   * terminal mode). `pwd` probes are only emitted at a prompt so they are
-   * never typed into vim/less/htop or another raw-mode application.
-   */
-  atPrompt: () => boolean
 }
 
-// A line that can still become a plain `cd` command. The regex is anchored so
-// `QQQQcd /x`, `ls cd /x`, ... can never match: the tracker keeps the raw line
-// and only arms cd tracking when the whole line still starts with `c`/`cd`.
-const cdLinePrefix = /^c(?:d(?:\s.*)?)?$/
+// Commands that never change the shell's current directory. A fully typed
+// line starting with one of these is the only case where the tracker skips
+// the pwd probe, keeping the terminal output quiet for routine commands.
+// Everything else (cd, pushd, popd, z, autojump, aliases, unknown tools) is
+// probed so the file panel always follows the shell's real directory.
+const safeCommands = new Set([
+  "ls", "dir", "cat", "tac", "head", "tail", "less", "more", "grep", "rg",
+  "sed", "awk", "cut", "sort", "uniq", "wc", "echo", "printf", "clear", "pwd",
+  "whoami", "id", "uname", "date", "cal", "hostname", "uptime", "free", "df",
+  "du", "ps", "top", "htop", "env", "history", "man", "info", "which",
+  "whereis", "find", "tree", "stat", "file", "readlink", "xxd", "hexdump",
+  "basename", "dirname", "realpath", "tar", "gzip", "gunzip", "zip", "unzip",
+  "xz", "bzip2", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "chmod", "chown",
+  "chgrp", "ln", "mount", "umount", "systemctl", "journalctl", "service",
+  "docker", "kubectl", "git", "make", "cmake", "go", "cargo", "npm", "pnpm",
+  "yarn", "npx", "node", "python", "python3", "pip", "pip3", "ruby", "gem",
+  "php", "composer", "java", "mvn", "gradle", "rustc", "gcc", "clang", "cc",
+  "ssh", "scp", "sftp", "rsync", "wget", "curl", "ping", "traceroute",
+  "nslookup", "dig", "nc", "nmap", "ip", "ifconfig", "ss", "netstat", "route",
+  "iptables", "nft", "vim", "vi", "nano", "emacs", "code", "subl", "screen",
+  "tmux", "sleep", "kill", "pkill", "killall", "nohup",
+])
 
 /**
  * Stateful tracker for the INPUT stream that keeps the file panel in sync
  * with the shell cwd. The PTY echo is not scanned (fancy prompts interleave
  * escape sequences and re-echoes with the command), so the tracker follows
- * what the user actually types and asks the shell with a `pwd` probe whenever
- * it cannot resolve the final directory confidently.
+ * what the user actually types and asks the shell with a `pwd` probe on Enter
+ * whenever the directory may have changed.
  *
  * Enter handling:
- * - a plain `cd <target>` line resolves lexically against the current cwd;
- * - bare `cd`, `~` / `$VAR` / `-` targets and `cd` chains return `probe`;
- * - when the line was rewritten by readline (Tab completion, bracketed paste
- *   wrappers, arrow-key history/autosuggestion) after the user typed a `cd`
- *   prefix, the tracker returns `probe` so the shell's real directory wins.
+ * - a plain `cd <target>` line resolves lexically against the current cwd and
+ *   still asks for a confirming probe;
+ * - bare `cd`, `~` / `$VAR` / `-` targets, cd chains and lines rewritten by
+ *   readline (Tab completion, arrow-key history/autosuggestion) return probe;
+ * - a fully typed line whose first word is a known non-dir-change command
+ *   (see safeCommands) returns none;
+ * - anything else (pushd/popd, z, aliases, unknown tools) returns probe so the
+ *   shell's real directory always wins.
  */
 export function createTypedCdTracker(options: TypedCdTrackerOptions) {
   let typedLine = ""
-  let sawCdPrefix = false
+  let lineRewritten = false
   let escSeq: string | null = null
+  // blocked prevents probes inside a raw-mode application (vim/less/htop).
+  // It is set on Enter of a rawAppCommand and cleared by clearBlocked(),
+  // which the page calls when a mode frame with canonical=true arrives.
+  let blocked = false
 
-  const probeIfAtPrompt = (): TypedCdAction => (options.atPrompt() ? { type: "probe" } : { type: "none" })
-
-  const finishLine = (line: string, mayBeCd: boolean): TypedCdAction => {
+  const finishLine = (line: string, rewritten: boolean): TypedCdAction => {
+    // Detect a raw-mode app entering: suppress probes for this and subsequent
+    // lines until a canonical mode frame clears the flag.
+    const firstWord = parseFirstWord(line)
+    if (firstWord !== null && rawAppCommands.has(firstWord)) {
+      blocked = true
+    }
+    if (blocked) {
+      // When blocked, only a plain resolvable `cd <target>` is accepted
+      // (optimistic update).  Ambiguous targets and probes are suppressed
+      // until clearBlocked() is called — the shell may still be inside a
+      // raw-mode application.
+      const cd = parseTypedCd(line)
+      if (cd && cd.argument !== null) {
+        const argument = parseFirstWord(cd.argument)
+        const target = argument === null || argument === "" ? null : resolveCdTarget(options.currentCwd(), argument)
+        if (target) return { type: "cd", target }
+      }
+      return { type: "none" }
+    }
     const cd = parseTypedCd(line)
     if (cd) {
-      if (cd.argument === null) return probeIfAtPrompt()
+      if (cd.argument === null) return { type: "probe" }
       const argument = parseFirstWord(cd.argument)
       const target = argument === null || argument === "" ? null : resolveCdTarget(options.currentCwd(), argument)
-      return target ? { type: "cd", target } : probeIfAtPrompt()
+      return target ? { type: "cd", target } : { type: "probe" }
     }
-    return mayBeCd ? probeIfAtPrompt() : { type: "none" }
+    if (rewritten) return { type: "probe" }
+    if (firstWord === "") return { type: "none" } // empty line: nothing ran
+    if (firstWord !== null && safeCommands.has(firstWord)) return { type: "none" }
+    return { type: "probe" }
   }
 
   return {
+    clearBlocked() { blocked = false },
     /**
      * Feed one raw xterm.js onData chunk. Returns the action for the command
      * line closed by an Enter inside this chunk (a multi-line paste only
@@ -213,11 +275,11 @@ export function createTypedCdTracker(options: TypedCdTrackerOptions) {
       for (const ch of data) {
         if (ch === "\r" || ch === "\n") {
           const line = typedLine
-          const mayBeCd = sawCdPrefix
+          const rewritten = lineRewritten
           typedLine = ""
-          sawCdPrefix = false
+          lineRewritten = false
           escSeq = null
-          action = finishLine(line, mayBeCd)
+          action = finishLine(line, rewritten)
           continue
         }
         if (ch === "\x1b") {
@@ -232,8 +294,9 @@ export function createTypedCdTracker(options: TypedCdTrackerOptions) {
           if (escSeq.length > 2 && ch >= "@" && ch <= "~") {
             if (escSeq !== "\x1b[200~" && escSeq !== "\x1b[201~") {
               // readline navigation rewrote the visible line (history,
-              // autosuggestion); the completed command may still be a cd.
-              sawCdPrefix = sawCdPrefix || cdLinePrefix.test(typedLine)
+              // autosuggestion); the executed command is no longer what the
+              // tracker accumulated, so Enter must probe.
+              lineRewritten = true
               typedLine = ""
             }
             escSeq = null
@@ -242,13 +305,12 @@ export function createTypedCdTracker(options: TypedCdTrackerOptions) {
         }
         if (ch === "\x7f") {
           typedLine = typedLine.slice(0, -1)
-          sawCdPrefix = cdLinePrefix.test(typedLine)
           continue
         }
         if (/[\x00-\x1f]/.test(ch)) {
           // Tab completion, Ctrl+U/A/E, ...: readline rewrites the line, so
-          // the visible command is no longer what the tracker accumulated.
-          sawCdPrefix = sawCdPrefix || cdLinePrefix.test(typedLine)
+          // the executed command is no longer what the tracker accumulated.
+          lineRewritten = true
           typedLine = ""
           continue
         }
@@ -256,10 +318,8 @@ export function createTypedCdTracker(options: TypedCdTrackerOptions) {
         if (typedLine.length > 8192) {
           // A single line far beyond any shell/path limit: stop tracking it.
           typedLine = ""
-          sawCdPrefix = false
           continue
         }
-        sawCdPrefix = cdLinePrefix.test(typedLine)
       }
       return action
     },

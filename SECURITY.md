@@ -54,7 +54,9 @@ The terminal is enabled by default, can be disabled with
   and expiry terminate existing sessions;
 - bounded WebSocket frames and PTY window dimensions;
 - a minimized Shell environment that excludes control-plane environment
-  variables and sets `HISTFILE=/dev/null`;
+  variables; command history is persisted by default (bash `~/.bash_history`,
+  zsh `~/.zsh_history`) for the single administrator and can be restored to a
+  no-history lockdown with `HX_PROXYGROUP_TERMINAL_HISTORY=0`;
 - structured open/close audit records without command contents or secrets.
 
 Predictive local echo is enabled only when the server reads both `ECHO` and

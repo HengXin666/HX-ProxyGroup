@@ -127,3 +127,32 @@ func TestCompileListenerWithoutClientRoutesKeepsForcedProxy(t *testing.T) {
 		t.Fatalf("listener proxy = %v, want residential-group", config["proxy"])
 	}
 }
+
+func TestCompileResidentialClientRulesToleratesMissingPoolSlot(t *testing.T) {
+	t.Parallel()
+	nodes := map[string]compiledNode{
+		"node-a": {Name: "hx-node-0123456789abcdef"},
+	}
+	rules, err := compileResidentialClientRules([]store.ResidentialClientRouteRecord{
+		// s01 points at a slot that no longer has a compiled node. The rule must
+		// be dropped (listener fallback takes over) instead of failing the
+		// entire configuration apply and bricking unrelated changes.
+		{ResidentialClientSessionRecord: store.ResidentialClientSessionRecord{
+			SessionID: "s01", AuthUsername: "hx-session-one", RouteMode: "residential",
+			NodeFingerprint: "ffffffffffffffff9999",
+		}, ListenerID: "listener-channel-a", ChannelEnabled: true},
+		{ResidentialClientSessionRecord: store.ResidentialClientSessionRecord{
+			SessionID: "s02", AuthUsername: "hx-session-two", RouteMode: "residential",
+			NodeFingerprint: "0123456789abcdef9999",
+		}, ListenerID: "listener-channel-a", ChannelEnabled: true},
+	}, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %v, want only the session with a live slot", rules)
+	}
+	if rules[0] != "AND,((IN-NAME,hx-in-channel-a),(IN-USER,hx-session-two)),hx-node-0123456789abcdef" {
+		t.Fatalf("rule = %q", rules[0])
+	}
+}

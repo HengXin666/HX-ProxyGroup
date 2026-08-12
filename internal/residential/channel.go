@@ -2,6 +2,7 @@ package residential
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,6 +29,13 @@ const (
 func (s *Service) CreateChannel(ctx context.Context, request CreateChannelRequest) (Channel, error) {
 	s.channelCreateMutex.Lock()
 	defer s.channelCreateMutex.Unlock()
+
+	// A stale residential session reference from any existing channel must not
+	// poison the configuration publish this create triggers (see
+	// repairAllDanglingClientSessionAllocations).
+	if err := s.repairAllDanglingClientSessionAllocations(ctx); err != nil {
+		return Channel{}, err
+	}
 
 	providerRecord, err := s.repository.GetResidentialProvider(ctx, strings.TrimSpace(request.ProviderID))
 	if errors.Is(err, store.ErrNotFound) {
@@ -249,6 +257,12 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	if request.Version < 1 {
 		return Channel{}, fmt.Errorf("%w: version must be positive", ErrInvalid)
 	}
+	// Repair stale session slots before the edit publishes a new configuration
+	// so a dangling reference cannot fail the apply and leave the channel
+	// halfway through the edit.
+	if err := s.repairAllDanglingClientSessionAllocations(ctx); err != nil {
+		return Channel{}, err
+	}
 	existing, err := s.repository.GetResidentialChannel(ctx, id)
 	if err != nil {
 		return Channel{}, mapStoreError(err)
@@ -314,6 +328,7 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 		}
 		existing.ControlToken = controlToken
 	}
+	previousEnabled := existing.Enabled
 	previousSessionCount := existing.SessionCount
 	previousDirectListenerID := existing.DirectListenerID
 	existing.Name = name
@@ -322,9 +337,31 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	existing.RandomRegions = marshalRegionList(regionSelection.RandomRegions)
 	existing.Enabled = request.Enabled
 	existing.UpdatedAt = s.now().UTC()
-	var currentListener listener.Listener
+	if request.ClearDirect {
+		existing.DirectListenerID = ""
+	}
+
+	updated, err := s.repository.UpdateResidentialChannel(ctx, existing, request.Version)
+	if err != nil {
+		return Channel{}, mapStoreError(err)
+	}
+	// Disabling a channel must also take its managed group and entry listener
+	// out of the data plane; otherwise the listener stays live while its
+	// per-session rules have been filtered out. Enabling restores both.
+	if request.Enabled != previousEnabled {
+		if err := s.setChannelEnabledState(ctx, updated, request.Enabled); err != nil {
+			return Channel{}, err
+		}
+	}
+	if request.ClearDirect && previousDirectListenerID != "" {
+		if current, getErr := s.listeners.Get(ctx, previousDirectListenerID); getErr == nil {
+			if err := s.listeners.Delete(ctx, current.ID, current.Version); err != nil {
+				return Channel{}, fmt.Errorf("remove direct listener: %w", err)
+			}
+		}
+	}
 	if request.PublicEndpoint != nil {
-		currentListener, err = s.listeners.Get(ctx, existing.ListenerID)
+		currentListener, err := s.listeners.Get(ctx, updated.ListenerID)
 		if err != nil {
 			return Channel{}, err
 		}
@@ -336,23 +373,6 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 		if err := listener.ValidatePublicEndpoint(*request.PublicEndpoint, currentListener.Port); err != nil {
 			return Channel{}, err
 		}
-	}
-	if request.ClearDirect {
-		existing.DirectListenerID = ""
-	}
-
-	updated, err := s.repository.UpdateResidentialChannel(ctx, existing, request.Version)
-	if err != nil {
-		return Channel{}, mapStoreError(err)
-	}
-	if request.ClearDirect && previousDirectListenerID != "" {
-		if current, getErr := s.listeners.Get(ctx, previousDirectListenerID); getErr == nil {
-			if err := s.listeners.Delete(ctx, current.ID, current.Version); err != nil {
-				return Channel{}, fmt.Errorf("remove direct listener: %w", err)
-			}
-		}
-	}
-	if request.PublicEndpoint != nil {
 		if _, err := s.listeners.Update(ctx, currentListener.ID, listener.UpdateRequest{
 			Version:        currentListener.Version,
 			Name:           currentListener.Name,
@@ -362,7 +382,7 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 			ProxyGroupID:   currentListener.ProxyGroupID,
 			Transport:      currentListener.Transport,
 			PublicEndpoint: *request.PublicEndpoint,
-			Enabled:        currentListener.Enabled,
+			Enabled:        request.Enabled,
 		}); err != nil {
 			return Channel{}, fmt.Errorf("update residential public endpoint: %w", err)
 		}
@@ -381,6 +401,65 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 	// Existing client allocations retain their current vendor session. The new
 	// region is used only by subsequent allocation or rotation requests.
 	return s.channelFromRecord(ctx, updated, s.providerFromRecord(providerRecord))
+}
+
+// setChannelEnabledState aligns the channel's managed proxy group and entry
+// listener with the channel record. Disabling a channel therefore removes its
+// entry point from the data plane, and re-enabling restores both without
+// touching client credentials or session allocations.
+func (s *Service) setChannelEnabledState(ctx context.Context, channel store.ResidentialChannelRecord, enabled bool) error {
+	updateGroup := func() error {
+		groupRecord, err := s.repository.GetProxyGroup(ctx, channel.ProxyGroupID)
+		if err != nil {
+			return mapStoreError(err)
+		}
+		var spec proxygroup.SourceSpec
+		if err := json.Unmarshal([]byte(groupRecord.SourceSpecJSON), &spec); err != nil {
+			return fmt.Errorf("decode channel proxy group %q source spec: %w", groupRecord.Name, err)
+		}
+		_, err = s.groups.Update(ctx, groupRecord.ID, proxygroup.UpdateRequest{
+			Version:        groupRecord.Version,
+			Name:           groupRecord.Name,
+			Strategy:       groupRecord.Strategy,
+			SourceSpec:     spec,
+			Enabled:        enabled,
+			EmptyBehavior:  groupRecord.EmptyBehavior,
+			FallbackTarget: groupRecord.FallbackTargetID,
+		})
+		return err
+	}
+	updateListener := func() error {
+		current, err := s.listeners.Get(ctx, channel.ListenerID)
+		if err != nil {
+			return err
+		}
+		_, err = s.listeners.Update(ctx, current.ID, listener.UpdateRequest{
+			Version:        current.Version,
+			Name:           current.Name,
+			Kind:           current.Kind,
+			BindAddress:    current.BindAddress,
+			Port:           current.Port,
+			ProxyGroupID:   current.ProxyGroupID,
+			Transport:      current.Transport,
+			PublicEndpoint: current.PublicEndpoint,
+			Enabled:        enabled,
+		})
+		return err
+	}
+	if enabled {
+		// The listener service rejects a listener whose proxy group is
+		// disabled, so enable the group before the listener.
+		if err := updateGroup(); err != nil {
+			return err
+		}
+		return updateListener()
+	}
+	// Disable the listener first while its group is still enabled, then take
+	// the group down.
+	if err := updateListener(); err != nil {
+		return err
+	}
+	return updateGroup()
 }
 
 // DeleteChannel removes the channel and everything it provisioned, in reverse

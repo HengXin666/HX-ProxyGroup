@@ -5,6 +5,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Settings2,
   Trash2,
   Wrench,
 } from "lucide-react"
@@ -41,6 +42,7 @@ import type {
   ResidentialProtocol,
   ResidentialRegionMode,
   ResidentialRotationMode,
+  UpdateResidentialChannelRequest,
   ResidentialSessionExpiryPolicy,
   ResidentialTestResult,
   ProxyGroup,
@@ -136,6 +138,7 @@ export function ResidentialPage({
   const [endpointChannel, setEndpointChannel] = useState<ResidentialChannel | null>(null)
   const [sessionChannel, setSessionChannel] = useState<ResidentialChannel | null>(null)
   const [editingProvider, setEditingProvider] = useState<ResidentialProvider | null>(null)
+  const [editingChannel, setEditingChannel] = useState<ResidentialChannel | null>(null)
   const [testResult, setTestResult] = useState<ResidentialTestResult | null>(null)
 
   const reload = useCallback(async () => {
@@ -205,7 +208,7 @@ export function ResidentialPage({
 
         <TabsContent value="channels" className="space-y-4">
           <div className="flex items-center justify-end">
-            <Button size="sm" onClick={() => setChannelDialogOpen(true)}>
+            <Button size="sm" onClick={() => { setEditingChannel(null); setChannelDialogOpen(true) }}>
               <Plus className="mr-1 size-3.5" />
               新建渠道
             </Button>
@@ -292,6 +295,14 @@ export function ResidentialPage({
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              title="编辑渠道"
+                              onClick={() => { setEditingChannel(channel); setChannelDialogOpen(true) }}
+                              className="inline-flex size-7 items-center justify-center rounded-md border hover:bg-muted"
+                            >
+                              <Settings2 className="size-3.5" />
+                            </button>
                             <button
                               type="button"
                               title={isResidentialWebSocketKind(channel.endpoint.kind) ? "配置公网域名" : "旧版入口只读"}
@@ -451,10 +462,11 @@ export function ResidentialPage({
       {channelDialogOpen && (
         <ChannelDialog
           providers={providers}
+          initial={editingChannel ?? undefined}
           onClose={() => setChannelDialogOpen(false)}
           onSaved={async () => {
             setChannelDialogOpen(false)
-            onNotice("渠道已创建，客户端入口可用")
+            onNotice(editingChannel ? "渠道已更新" : "渠道已创建，客户端入口可用")
             await reload()
           }}
           onNotice={onNotice}
@@ -852,16 +864,33 @@ function ProviderDialog({
 
 function ChannelDialog({
   providers,
+  initial,
   onClose,
   onSaved,
   onNotice,
 }: {
   providers: ResidentialProvider[]
+  initial?: ResidentialChannel
   onClose: () => void
   onSaved: () => Promise<void>
   onNotice: (message: string, tone?: "success" | "error") => void
 }) {
   const [form, setForm] = useState<ChannelForm>(() => {
+    if (initial) {
+      return {
+        name: initial.name,
+        providerID: initial.provider_id,
+        mode: initial.mode,
+        protocol: (isResidentialWebSocketKind(initial.endpoint.kind) ? initial.endpoint.kind : "vless") as ChannelForm["protocol"],
+        regionMode: initial.region_mode ?? "fixed",
+        region: initial.region ?? "",
+        randomRegions: (initial.random_regions ?? []).join(", "),
+        publicHost: initial.public_endpoint?.host ?? "",
+        sessionCount: String(initial.session_count ?? 0),
+        idleReleaseSeconds: String(initial.idle_release_seconds ?? 0),
+        enabled: initial.enabled,
+      }
+    }
     const provider = providers.find((item) => item.enabled) ?? providers[0]
     return {
       ...emptyChannelForm,
@@ -894,25 +923,47 @@ function ChannelDialog({
       onNotice("请先选择供应商", "error")
       return
     }
+    if (form.mode === "sticky" && Number(form.sessionCount) < 1) {
+      onNotice("粘滞渠道至少需要 1 个客户端节点", "error")
+      return
+    }
     setSaving(true)
     try {
-      const payload: CreateResidentialChannelRequest = {
-        name: form.name.trim(),
-        provider_id: form.providerID,
-        mode: form.mode,
-        protocol: form.protocol,
-        region_mode: form.regionMode,
-        region: form.regionMode === "fixed" ? form.region.trim() || undefined : undefined,
-        random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
-        session_count: form.mode === "sticky" ? Number(form.sessionCount) : 0,
-        idle_release_seconds: form.mode === "sticky" ? Number(form.idleReleaseSeconds) : 0,
-        public_endpoint: { host: form.publicHost.trim(), port: 443, tls: true },
-        enabled: form.enabled,
+      // A WebSocket channel always publishes through the reverse proxy, so its
+      // public host is required. A legacy direct channel may keep the endpoint
+      // it already has when the field is left blank.
+      const publicEndpoint = form.publicHost.trim()
+        ? { host: form.publicHost.trim(), port: 443, tls: true }
+        : undefined
+      if (initial) {
+        const payload: UpdateResidentialChannelRequest = {
+          version: initial.version,
+          name: form.name.trim(),
+          region_mode: form.regionMode,
+          region: form.regionMode === "fixed" ? form.region.trim() || undefined : undefined,
+          random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
+          session_count: initial.mode === "sticky" ? Number(form.sessionCount) : undefined,
+          idle_release_seconds: initial.mode === "sticky" ? Number(form.idleReleaseSeconds) : undefined,
+          public_endpoint: publicEndpoint,
+          enabled: form.enabled,
+        }
+        await api.updateResidentialChannel(initial.id, payload)
+      } else {
+        const payload: CreateResidentialChannelRequest = {
+          name: form.name.trim(),
+          provider_id: form.providerID,
+          mode: form.mode,
+          protocol: form.protocol,
+          region_mode: form.regionMode,
+          region: form.regionMode === "fixed" ? form.region.trim() || undefined : undefined,
+          random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
+          session_count: form.mode === "sticky" ? Number(form.sessionCount) : 0,
+          idle_release_seconds: form.mode === "sticky" ? Number(form.idleReleaseSeconds) : 0,
+          public_endpoint: publicEndpoint ?? { host: form.publicHost.trim(), port: 443, tls: true },
+          enabled: form.enabled,
+        }
+        await api.createResidentialChannel(payload)
       }
-      if (form.mode === "sticky" && Number(form.sessionCount) < 1) {
-        throw new Error("粘滞渠道至少需要 1 个客户端节点")
-      }
-      await api.createResidentialChannel(payload)
       await onSaved()
     } catch (cause) {
       if (cause instanceof ApiError) onNotice(cause.message, "error")
@@ -922,13 +973,19 @@ function ChannelDialog({
     }
   }
 
+  const editing = Boolean(initial)
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-2xl">
         <form onSubmit={(event) => void submit(event)}>
           <DialogHeader>
-            <DialogTitle>新建渠道</DialogTitle>
-            <DialogDescription>粘滞渠道发布固定客户端节点；出口 IP 由服务端按 TTL、空闲策略和 next 请求轮换。</DialogDescription>
+            <DialogTitle>{editing ? "编辑渠道" : "新建渠道"}</DialogTitle>
+            <DialogDescription>
+              {editing
+                ? "修改渠道的地区、节点数量或空闲释放策略；节点凭据与已分配出口保持不变。"
+                : "粘滞渠道发布固定客户端节点；出口 IP 由服务端按 TTL、空闲策略和 next 请求轮换。"}
+            </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-3 px-5 py-4 sm:grid-cols-2">
@@ -938,18 +995,22 @@ function ChannelDialog({
             </label>
             <label className="grid gap-1 text-xs">
               供应商
-              <Select value={form.providerID} onValueChange={selectProvider}>
-                <SelectTrigger><SelectValue placeholder="选择供应商" /></SelectTrigger>
-                <SelectContent>
-                  {providers.map((provider) => (
-                    <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {editing ? (
+                <Input value={initial?.provider_name ?? form.providerID} disabled readOnly />
+              ) : (
+                <Select value={form.providerID} onValueChange={selectProvider}>
+                  <SelectTrigger><SelectValue placeholder="选择供应商" /></SelectTrigger>
+                  <SelectContent>
+                    {providers.map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </label>
             <label className="grid gap-1 text-xs">
               模式
-              <Select value={form.mode} onValueChange={(value) => update("mode", value as ResidentialChannelMode)}>
+              <Select value={form.mode} disabled={editing} onValueChange={(value) => update("mode", value as ResidentialChannelMode)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="sticky">粘滞（可轮换 IP）</SelectItem>
@@ -959,7 +1020,7 @@ function ChannelDialog({
             </label>
             <label className="grid gap-1 text-xs">
               客户端协议
-              <Select value={form.protocol} onValueChange={(value) => update("protocol", value as ChannelForm["protocol"])}>
+              <Select value={form.protocol} disabled={editing} onValueChange={(value) => update("protocol", value as ChannelForm["protocol"])}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="vless">VLESS over WebSocket</SelectItem>
@@ -973,7 +1034,7 @@ function ChannelDialog({
                 <label className="grid gap-1 text-xs">
                   节点数量
                   <Input value={form.sessionCount} onChange={(event) => update("sessionCount", event.target.value)} inputMode="numeric" min={1} required />
-                  <span className="text-[11px] text-muted-foreground">每个逻辑节点拥有独立且稳定的客户端凭据。</span>
+                  <span className="text-[11px] text-muted-foreground">每个逻辑节点拥有独立且稳定的客户端凭据；减少数量会从尾部释放，已有节点凭据保持不变。</span>
                 </label>
                 <label className="grid gap-1 text-xs">
                   空闲释放（秒）
@@ -1009,14 +1070,29 @@ function ChannelDialog({
             </div>
             <label className="grid gap-1 text-xs sm:col-span-2">
               Cloudflare / 雷池域名
-              <Input value={form.publicHost} onChange={(event) => update("publicHost", event.target.value)} placeholder="proxy.example.com" required />
+              <Input
+                value={form.publicHost}
+                onChange={(event) => update("publicHost", event.target.value)}
+                placeholder="proxy.example.com"
+                required={!editing || isResidentialWebSocketKind(initial?.endpoint.kind ?? "")}
+              />
               <span className="text-[11px] text-muted-foreground">渠道订阅只发布该 HTTPS 443 域名；源站内部端口不会进入 API 或客户端配置。</span>
+            </label>
+            <label className="grid gap-1 text-xs sm:col-span-2">
+              启用
+              <Select value={form.enabled ? "enabled" : "disabled"} onValueChange={(value) => update("enabled", value === "enabled")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="enabled">启用</SelectItem>
+                  <SelectItem value="disabled">停用</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
           </div>
 
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
-            <Button type="submit" disabled={saving}><Wrench className="mr-1 size-3.5" />{saving ? "创建中…" : "创建"}</Button>
+            <Button type="submit" disabled={saving}><Wrench className="mr-1 size-3.5" />{saving ? "保存中…" : editing ? "保存修改" : "创建"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

@@ -140,6 +140,33 @@ func (s *Service) clearMissingClientSessionAllocations(
 	return repaired, nil
 }
 
+// repairAllDanglingClientSessionAllocations clears every sticky channel's
+// session references to pool slots that no longer resolve to a node. One stale
+// reference (from an interrupted rotation, an older release, or a manually
+// disabled/retired node) would otherwise poison the next configuration apply,
+// because the Mihomo compiler drops those per-session rules rather than
+// failing, but the stale reference stays in the database and would keep every
+// later apply fighting the same data.
+//
+// It is idempotent and only rewrites runtime allocation fields; credentials and
+// node identity are untouched. Callers run it before a channel create or edit
+// triggers a full configuration publish.
+func (s *Service) repairAllDanglingClientSessionAllocations(ctx context.Context) error {
+	channels, err := s.repository.ListResidentialChannels(ctx)
+	if err != nil {
+		return err
+	}
+	for _, channel := range channels {
+		if channel.Mode != ModeSticky {
+			continue
+		}
+		if _, err := s.clearMissingClientSessionAllocations(ctx, channel); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) replaceClientSessionAllocation(ctx context.Context, channel store.ResidentialChannelRecord, provider store.ResidentialProviderRecord, previous store.ResidentialClientSessionRecord, rotated bool) (store.ResidentialClientSessionRecord, error) {
 	if _, err := s.clearMissingClientSessionAllocations(ctx, channel); err != nil {
 		return store.ResidentialClientSessionRecord{}, err

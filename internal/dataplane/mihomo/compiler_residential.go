@@ -143,13 +143,18 @@ func compileResidentialClientRules(
 			if len(key) > 16 {
 				key = key[:16]
 			}
-			var exists bool
+			exists := false
 			action, exists = nodeNames[key]
-			if !exists || fingerprint == "" {
-				return nil, fmt.Errorf(
-					"residential client session %q references a missing pool slot",
-					route.SessionID,
-				)
+			if !exists {
+				// A session may be left pointing at a pool slot whose node was
+				// retired, disabled or replaced (for example by an interrupted
+				// rotation or a channel edit). One stale reference must not
+				// block the whole configuration apply: drop the per-session rule
+				// and let the listener fallback route send the session to the
+				// channel's fail-closed group, exactly like an unallocated lazy
+				// session. The residential service clears these references when
+				// it next touches the channel.
+				continue
 			}
 		case "upstream":
 			action = strings.TrimSpace(route.UpstreamGroup)

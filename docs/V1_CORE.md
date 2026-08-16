@@ -230,6 +230,9 @@ v1 将用户提出的会话需求映射为可组合策略：
   `crypto/rand`，并在 API 提取请求前覆盖供应商地区参数。
 - [x] API 提取住宅节点可通过高权限 control token 下发当前 IP:port 和节点级鉴权，由客户端本机
   Mihomo 直接承载业务流量；普通订阅、管理列表和账密网关不暴露该字段。
+- [x] 住宅供应商支持 CF Worker 面板（BPB-Worker-Panel）：管理员只填一个面板/raw 订阅链接到
+  `worker_url`，控制面经可选出口代理拉取并解析 VLESS/Trojan WebSocket 节点，客户端主动
+  `next` 才重新拉取并轮换出口地址，TTL 强制 0 不自动刷新。
 
 ### 5.4 监听端口
 

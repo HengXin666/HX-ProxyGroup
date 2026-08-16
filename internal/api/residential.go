@@ -21,12 +21,13 @@ func (s *Server) handleResidentialPresets(writer http.ResponseWriter, request *h
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"items":           residential.Presets(),
-		"placeholders":    residential.SupportedPlaceholders(),
-		"protocols":       residential.SupportedProtocols(),
-		"rotation_modes":  residential.SupportedRotationModes(),
-		"region_modes":    residential.SupportedRegionModes(),
-		"exit_ip_default": residential.DefaultExitIPEndpoint,
+		"items":            residential.Presets(),
+		"placeholders":     residential.SupportedPlaceholders(),
+		"protocols":        residential.SupportedProtocols(),
+		"worker_protocols": residential.SupportedWorkerProtocols(),
+		"rotation_modes":   residential.SupportedRotationModes(),
+		"region_modes":     residential.SupportedRegionModes(),
+		"exit_ip_default":  residential.DefaultExitIPEndpoint,
 	})
 }
 

@@ -111,6 +111,7 @@ type Service struct {
 	sessionRouter       SessionRouter
 	fetchNodes          NodeFetcher
 	fetchNodesWithProxy func(context.Context, string, string) ([]FetchedNode, error)
+	fetchWorker         WorkerConfigFetcher
 	now                 func() time.Time
 
 	// rotateLimiter bounds how often each channel may rotate. Rotation is
@@ -190,6 +191,18 @@ func WithNodeFetcher(fetcher NodeFetcher) Option {
 	}
 }
 
+// WithWorkerFetcher overrides how cf-worker providers fetch their node lists
+// from a Cloudflare Worker panel subscription link. The default performs one
+// bounded HTTPS GET (optionally through the configured exit proxy) per pool
+// render.
+func WithWorkerFetcher(fetcher WorkerConfigFetcher) Option {
+	return func(service *Service) {
+		if fetcher != nil {
+			service.fetchWorker = fetcher
+		}
+	}
+}
+
 func NewService(
 	repository Repository,
 	cipher Cipher,
@@ -213,6 +226,7 @@ func NewService(
 		listeners:           listeners,
 		fetchNodes:          fetchNodesFromAPI,
 		fetchNodesWithProxy: fetchNodesFromAPIWithProxy,
+		fetchWorker:         fetchWorkerConfig,
 		now:                 time.Now,
 		rotateLimiter:       newRotateLimiter(defaultRotateInterval),
 	}
@@ -242,6 +256,22 @@ func (s *Service) providerSessions(
 	region, err := chooseRegion(regionSelection)
 	if err != nil {
 		return nil, err
+	}
+	if provider.RotationMode == RotationCloudflareWorker {
+		if strings.TrimSpace(provider.WorkerURL) == "" {
+			return nil, fmt.Errorf("%w: cf-worker provider has no worker_url", ErrInvalid)
+		}
+		// BPB panel links carry no region parameter, so the selected region is
+		// intentionally not applied to the fetch URL.
+		nodes, err := s.fetchWorker(ctx, provider.WorkerURL, provider.APIProxyURL)
+		if err != nil {
+			return nil, err
+		}
+		sessions := workerSessions(nodes, provider.Protocol, size)
+		if len(sessions) == 0 {
+			return nil, fmt.Errorf("%w: cf-worker endpoint returned no nodes", ErrInvalid)
+		}
+		return sessions, nil
 	}
 	if provider.RotationMode == RotationAPIList {
 		if strings.TrimSpace(provider.APIURL) == "" {

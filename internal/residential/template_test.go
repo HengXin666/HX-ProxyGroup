@@ -118,9 +118,10 @@ func TestValidateTemplateAcceptsRegisteredPresets(t *testing.T) {
 	t.Parallel()
 
 	for _, preset := range Presets() {
-		// api-list presets have no username template: their endpoints come from
-		// an extraction API instead of a gateway login.
-		if preset.RotationMode != RotationAPIList {
+		// api-list and cf-worker presets have no username template: their
+		// endpoints come from an extraction API or a Cloudflare Worker panel
+		// subscription link instead of a gateway login.
+		if preset.RotationMode != RotationAPIList && preset.RotationMode != RotationCloudflareWorker {
 			if err := ValidateTemplate(preset.UsernameTemplate); err != nil {
 				t.Errorf("preset %q template %q is invalid: %v", preset.Vendor, preset.UsernameTemplate, err)
 			}
@@ -128,7 +129,7 @@ func TestValidateTemplateAcceptsRegisteredPresets(t *testing.T) {
 		if preset.RotationMode == RotationSessionTemplate && !TemplateUsesSession(preset.UsernameTemplate) {
 			t.Errorf("preset %q claims session rotation but omits {session}", preset.Vendor)
 		}
-		if !slicesContains(SupportedProtocols(), preset.Protocol) {
+		if !slicesContains(SupportedProtocols(), preset.Protocol) && !slicesContains(SupportedWorkerProtocols(), preset.Protocol) {
 			t.Errorf("preset %q uses unsupported protocol %q", preset.Vendor, preset.Protocol)
 		}
 		if !slicesContains(SupportedRotationModes(), preset.RotationMode) {

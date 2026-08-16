@@ -60,6 +60,7 @@ type ProviderForm = {
   upstreamProxyGroupID: string
   apiProxyURL: string
   apiURL: string
+  workerURL: string
   username: string
   password: string
   usernameTemplate: string
@@ -82,6 +83,7 @@ const emptyProviderForm: ProviderForm = {
   upstreamProxyGroupID: "",
   apiProxyURL: "",
   apiURL: "",
+  workerURL: "",
   username: "",
   password: "",
   usernameTemplate: "{user}-session-{session}",
@@ -130,6 +132,7 @@ export function ResidentialPage({
   const [providers, setProviders] = useState<ResidentialProvider[]>([])
   const [channels, setChannels] = useState<ResidentialChannel[]>([])
   const [presets, setPresets] = useState<ResidentialPreset[]>([])
+  const [workerProtocols, setWorkerProtocols] = useState<ResidentialProtocol[]>([])
   const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([])
   const [traffic, setTraffic] = useState<Map<string, TrafficSummary>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -154,6 +157,7 @@ export function ResidentialPage({
       setProviders(providerList.items)
       setChannels(channelList.items)
       setPresets(catalog.items)
+      setWorkerProtocols(catalog.worker_protocols ?? [])
       setProxyGroups(groupList.items)
       setTraffic(new Map(trafficList.items.map((item) => [item.resource_id, item])))
       setSessionChannel((current) => current
@@ -383,7 +387,14 @@ export function ResidentialPage({
                             : ""}
                         </td>
                         <td className="px-3 py-2">
-                          {provider.rotation_mode === "api-list" ? (
+                          {provider.rotation_mode === "cf-worker" ? (
+                            <div className="space-y-1">
+                              <code className="rounded bg-muted px-1.5 py-0.5">
+                                {provider.worker_url_configured ? "CF Worker 已配置（不会回显）" : "CF Worker 未配置"}
+                              </code>
+                              {provider.api_proxy_configured && <div className="text-[11px] text-muted-foreground">API 上游代理已配置</div>}
+                            </div>
+                          ) : provider.rotation_mode === "api-list" ? (
                             <div className="space-y-1">
                               <code className="rounded bg-muted px-1.5 py-0.5">
                                 {provider.api_url_configured ? "API 已配置（不会回显）" : "API 未配置"}
@@ -446,6 +457,7 @@ export function ResidentialPage({
       {providerDialogOpen && (
         <ProviderDialog
           presets={presets}
+          workerProtocols={workerProtocols}
           proxyGroups={proxyGroups}
           initial={editingProvider ?? undefined}
           onClose={() => setProviderDialogOpen(false)}
@@ -504,8 +516,9 @@ export function ResidentialPage({
             <div className="px-5 py-4 text-sm">
               {testResult.success ? (
                 <div className="space-y-1.5">
-                  <div className="flex items-center gap-2 text-success"><Badge>可用</Badge>出口 IP <code className="font-mono">{testResult.exit_ip}</code></div>
+                  <div className="flex items-center gap-2 text-success"><Badge>可用</Badge>出口 IP <code className="font-mono">{testResult.exit_ip || "由渠道数据面验证"}</code></div>
                   <div className="text-xs text-muted-foreground">延迟 {testResult.latency_ms} ms</div>
+                  {testResult.detail && <div className="text-xs text-muted-foreground">{testResult.detail}</div>}
                 </div>
               ) : (
                 <div className="space-y-1.5 text-destructive">
@@ -532,6 +545,8 @@ function rotationModeLabel(mode: string) {
       return "每请求轮换"
     case "api-list":
       return "API 提取（刷新节点）"
+    case "cf-worker":
+      return "CF Worker 面板（主动刷新）"
     default:
       return mode
   }
@@ -559,6 +574,7 @@ async function testProvider(
 
 function ProviderDialog({
   presets,
+  workerProtocols,
   proxyGroups,
   initial,
   onClose,
@@ -566,6 +582,7 @@ function ProviderDialog({
   onNotice,
 }: {
   presets: ResidentialPreset[]
+  workerProtocols: ResidentialProtocol[]
   proxyGroups: ProxyGroup[]
   initial?: ResidentialProvider
   onClose: () => void
@@ -586,6 +603,9 @@ function ProviderDialog({
           // Extraction URLs may contain an app_key and are write-only. An
           // empty value on update tells the backend to keep the current URL.
           apiURL: "",
+          // Cloudflare Worker panel links are write-only too: an empty value
+          // on update keeps the configured link on the backend.
+          workerURL: "",
           username: "",
           password: "",
           usernameTemplate: initial.username_template,
@@ -623,8 +643,11 @@ function ProviderDialog({
       vendor: preset.vendor,
       protocol: preset.protocol,
       rotationMode: preset.rotation_mode,
-      gatewayHost: preset.gateway_host || "proxy.bestproxy.com",
-      gatewayPort: String(preset.gateway_port || 2312),
+      // cf-worker presets carry no gateway login: the panel subscription
+      // link is the only secret. Other presets fall back to the BestProxy
+      // gateway defaults as before.
+      gatewayHost: preset.rotation_mode === "cf-worker" ? preset.gateway_host : (preset.gateway_host || "proxy.bestproxy.com"),
+      gatewayPort: String(preset.gateway_port || (preset.rotation_mode === "cf-worker" ? 1 : 2312)),
       upstreamProxyGroupID: "",
       apiProxyURL: "",
       usernameTemplate: preset.username_template,
@@ -645,16 +668,22 @@ function ProviderDialog({
     event.preventDefault()
     setSaving(true)
     try {
+      // api-list and cf-worker providers are fetched by the control plane:
+      // their gateway columns hold placeholders and no gateway login exists.
+      const fetchMode = form.rotationMode === "api-list" || form.rotationMode === "cf-worker"
       const base = {
         name: form.name.trim(),
         vendor: form.vendor.trim() || "custom",
         protocol: form.protocol,
-        gateway_host: form.rotationMode === "api-list" ? "api-list.invalid" : form.gatewayHost.trim(),
-        gateway_port: form.rotationMode === "api-list" ? 1 : Number(form.gatewayPort),
+        gateway_host: fetchMode
+          ? (form.rotationMode === "api-list" ? "api-list.invalid" : "cf-worker.invalid")
+          : form.gatewayHost.trim(),
+        gateway_port: fetchMode ? 1 : Number(form.gatewayPort),
         upstream_proxy_group_id: form.upstreamProxyGroupID === "none" ? undefined : form.upstreamProxyGroupID || undefined,
         api_url: form.rotationMode === "api-list" ? form.apiURL.trim() : undefined,
+        worker_url: form.rotationMode === "cf-worker" ? form.workerURL.trim() : undefined,
         api_proxy_url: form.apiProxyURL.trim() || undefined,
-        username_template: form.rotationMode === "api-list" ? "" : form.usernameTemplate.trim(),
+        username_template: fetchMode ? "" : form.usernameTemplate.trim(),
         rotation_mode: form.rotationMode,
         session_ttl_seconds: Number(form.sessionTTL),
         max_concurrent_sessions: Number(form.maxSessions),
@@ -667,7 +696,7 @@ function ProviderDialog({
         enabled: form.enabled,
       }
       const credentials = form.username && form.password ? { username: form.username, password: form.password } : undefined
-      if (!credentials && form.rotationMode !== "api-list" && !initial) {
+      if (!credentials && !fetchMode && !initial) {
         throw new Error("账密网关模式需要填写用户名和密码")
       }
       if (initial) {
@@ -722,6 +751,7 @@ function ProviderDialog({
                   <SelectItem value="session-template">粘滞会话（会话 ID 轮换）</SelectItem>
                   <SelectItem value="per-request">每请求轮换</SelectItem>
                   <SelectItem value="api-list">API 提取（获取/刷新节点）</SelectItem>
+                  <SelectItem value="cf-worker">CF Worker 面板（BPB）</SelectItem>
                 </SelectContent>
               </Select>
             </label>
@@ -730,12 +760,20 @@ function ProviderDialog({
               <Select value={form.protocol} onValueChange={(value) => update("protocol", value as ResidentialProtocol)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="http">HTTP</SelectItem>
-                  <SelectItem value="socks5">SOCKS5</SelectItem>
-                  <SelectItem value="https">HTTPS</SelectItem>
+                  {form.rotationMode === "cf-worker" ? (
+                    workerProtocols.map((protocol) => (
+                      <SelectItem key={protocol} value={protocol}>{protocol.toUpperCase()}</SelectItem>
+                    ))
+                  ) : (
+                    <>
+                      <SelectItem value="http">HTTP</SelectItem>
+                      <SelectItem value="socks5">SOCKS5</SelectItem>
+                      <SelectItem value="https">HTTPS</SelectItem>
+                    </>
+                  )}
                 </SelectContent>
               </Select>
-              {(form.vendor === "bestproxy" || form.vendor === "bestproxy-api") && form.protocol !== "http" && (
+              {form.rotationMode !== "cf-worker" && (form.vendor === "bestproxy" || form.vendor === "bestproxy-api") && form.protocol !== "http" && (
                 <span className="text-[11px] text-amber-600">BestProxy 出口节点按 HTTP 代理使用，请选回 HTTP</span>
               )}
             </label>
@@ -754,6 +792,21 @@ function ProviderDialog({
                   <span className="text-[11px] text-muted-foreground">
                   把供应商面板的完整 API 链接粘贴到这里；服务端会加密保存，不会在列表或响应中回显。客户端建立会话或换 IP 时才实时请求新的 IP:port 节点。
                   </span>
+              </label>
+            ) : form.rotationMode === "cf-worker" ? (
+              <label className="grid gap-1 text-xs sm:col-span-2">
+                CF Worker 面板链接（只写入，不回显）
+                <Input
+                  value={form.workerURL}
+                  onChange={(event) => update("workerURL", event.target.value)}
+                  placeholder={initial?.worker_url_configured
+                    ? "已配置，留空保持当前链接；粘贴新链接可替换"
+                    : "https://<worker-domain>/<securePath>/sub/raw?app=xray"}
+                  required={!initial?.worker_url_configured}
+                />
+                <span className="text-[11px] text-muted-foreground">
+                  把 BPB-Worker-Panel 部署后的面板链接或 raw 订阅链接粘贴到这里；服务端会加密保存，不会回显。客户端主动 next 时才重新请求该链接并轮换出口地址（TTL 为 0，不自动刷新）。
+                </span>
               </label>
             ) : (
               <>

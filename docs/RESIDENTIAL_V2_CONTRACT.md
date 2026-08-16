@@ -9,6 +9,11 @@ HX-ProxyGroup 控制面只维护 Desired State、生成配置、调用数据面�
 `session_count: N` 后，发布 N 个名字和凭据稳定的逻辑节点，并拥有自己的订阅 share token 和
 自动化 control token。不存在跨普通 Listener、跨供应商或跨渠道的全局统一客户端订阅。
 
+CF Worker 面板（BPB-Worker-Panel）是另一种供应商形态：管理员只填一个面板链接或
+`sub/raw` 订阅链接到 `worker_url`，控制面经可选的出口代理拉取并解析返回的
+VLESS/Trojan WebSocket 节点；客户端主动 `next` 才重新拉取并轮换 Cloudflare 出口地址，
+TTL 强制为 0，不自动刷新。
+
 ```text
 住宅供应商
   └── 住宅渠道
@@ -129,7 +134,8 @@ Content-Type: application/json
 
 `residential_endpoint` 仅由 API 提取供应商在节点已分配后返回，并且只存在于高权限 `/ctl/`
 响应。客户端可用它在本机直接落地住宅 `IP:port`，使 VPS 只负责申请节点。账密网关不下发供应商
-主凭据；`/sub/`、管理员列表和请求日志都不包含该字段。
+主凭据；`/sub/`、管理员列表和请求日志都不包含该字段。CF Worker 面板供应商同样不返回该字段：
+其住宅节点是 VLESS/Trojan WebSocket URI，客户端应使用 `endpoints[]` 经本机 Mihomo 落地。
 
 OutlookRegister 的推荐配置是：
 

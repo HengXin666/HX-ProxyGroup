@@ -196,17 +196,22 @@ Proxy Group。实际数据面链路为：
 住宅节点配置中的上游组使用稳定 ID 保存，Mihomo 编译时解析为当前组名并输出
 `dialer-proxy`。上游组缺失、禁用或与住宅渠道形成循环时，配置会拒绝应用。
 
-- **供应商**：两种接入方式。
+- **供应商**：三种接入方式。
   - 账密网关（粘滞会话）：填网关地址、子用户账号密码，用户名模板自动拼
     `账号_area-国家_life-分钟_session-会话ID`；同一会话 ID 出口 IP 不变，换 ID 即换 IP。
   - API 提取：粘贴厂商面板的完整提取链接到 `api_url`，客户端会话建立或换 IP 时
     实时请求新的 `IP:port` 节点，无需网关账号密码（BestProxy API 提取已内置预设）。
     提取链接可能包含 `app_key`，服务端使用 AEAD 加密保存，管理 API 只返回“已配置”状态。
+  - CF Worker 面板（BPB-Worker-Panel）：把 BPB 面板链接或其 `sub/raw` 订阅链接粘贴到
+    `worker_url`。控制面经可选出口代理（`api_proxy_url`）请求该链接，解析返回的
+    VLESS/Trojan WebSocket 节点作为住宅出口；每次用户主动 `next` 才重新请求该链接并
+    轮换 Cloudflare 出口地址，TTL 强制为 0，不自动刷新。
   - 地区策略：地区选项支持固定地区和“应用层随机地区”。随机模式要求手动填写候选地区，
     控制面每次实际获取住宅 IP 前使用 `crypto/rand` 选择一个候选值，并覆盖提取链接中的
     `cc`、`country`、`region` 或 `area` 参数；不会依赖供应商自称的随机地区。
   - 控制面 API 上游代理：可选填写 `http://`、`https://` 或 `socks5://` 代理，
-    仅用于 BestProxy API 提取和服务端测试连接；它不转发客户端业务流量，地址和代理认证信息均加密保存。
+    用于 BestProxy API 提取、CF Worker 面板拉取和服务端测试连接；它不转发客户端业务流量，
+    地址和代理认证信息均加密保存。
 - **渠道**：sticky 渠道设置 `session_count` 后发布 N 个名称和认证稳定的逻辑节点。创建时选择
   VLESS、VMess 或 Trojan over WebSocket；内部环回端口、WS 路径和引导凭据由控制面分配，
   不进入管理表单或订阅。渠道支持随时编辑名称、地区策略、节点数量、空闲释放、启停和公网
@@ -258,7 +263,9 @@ BestProxy 的 `life` 按分钟计算，API 提取链接中的 `life` 参数优�
 
 「测试连接」是控制面的单次供应商诊断；配置了上游 Proxy Group 后，最终链路仍应从
 渠道 Listener 发起一次真实 HTTPS 请求验证，因为控制面诊断不会代替 Mihomo 的
-`dialer-proxy` 数据面路径。
+`dialer-proxy` 数据面路径。对于 CF Worker 面板（BPB）供应商，控制面测试只验证
+面板链接可拉取、节点可解析以及首个端点 TCP 可达；由于控制面不实现 VLESS/Trojan
+协议，真实住宅出口 IP 由渠道数据面验证。
 
 链式住宅代理的配置顺序必须是：先导入并刷新海外订阅，再用该订阅创建一个已启用的
 Proxy Group，最后在住宅供应商编辑框的「上游海外 Proxy Group」中选择它。保存后检查

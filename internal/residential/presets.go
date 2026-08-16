@@ -13,6 +13,12 @@ const (
 	// RotationAPIList means exit endpoints are fetched from a vendor HTTP API
 	// rather than derived from a username.
 	RotationAPIList = "api-list"
+	// RotationCloudflareWorker means exit endpoints are fetched from a
+	// Cloudflare Worker panel (BPB-Worker-Panel) subscription link. The panel
+	// answers with base64-encoded VLESS/Trojan share URIs; each refresh of the
+	// link resolves fresh Cloudflare edge addresses, so the exit only changes
+	// when the consumer explicitly asks for a new node.
+	RotationCloudflareWorker = "cf-worker"
 )
 
 // Preset is a vendor-specific starting point for a provider configuration.
@@ -128,6 +134,22 @@ var presets = []Preset{
 			"完整粘贴到 api_url。客户端建立会话或换 IP 时实时请求新的 IP:port 节点。" +
 			"该模式无需网关账号密码；请把本机公网出口 IP 加入 BestProxy 白名单。",
 	},
+	{
+		Vendor:            "bpb-panel",
+		Label:             "BPB-Worker-Panel · Cloudflare Worker",
+		Protocol:          "vless",
+		GatewayHost:       "",
+		GatewayPort:       0,
+		UsernameTemplate:  "",
+		RotationMode:      RotationCloudflareWorker,
+		SessionTTLSeconds: 0,
+		PoolSize:          4,
+		Verified:          true,
+		DocURL:            "https://github.com/bia-pain-bache/BPB-Worker-Panel",
+		Notes: "把 BPB-Worker-Panel 部署后的面板链接或 raw 订阅链接粘贴到 worker_url。" +
+			"控制面经配置的出口代理（api_proxy_url）请求该链接，解析返回的 VLESS/Trojan 节点。" +
+			"每次用户主动 next 才重新请求并轮换出口地址；TTL 为 0 时不自动刷新。",
+	},
 }
 
 // Presets returns a copy of the registered vendor presets.
@@ -152,7 +174,15 @@ func SupportedProtocols() []string {
 	return []string{"http", "https", "socks5"}
 }
 
+// SupportedWorkerProtocols lists the proxy protocols that a Cloudflare Worker
+// panel (BPB-Worker-Panel) subscription can emit. They are full Mihomo outbound
+// types with their own transport; the control plane only carries the canonical
+// config through, it never implements the protocol itself.
+func SupportedWorkerProtocols() []string {
+	return []string{"vless", "trojan"}
+}
+
 // SupportedRotationModes lists the accepted rotation modes.
 func SupportedRotationModes() []string {
-	return []string{RotationSessionTemplate, RotationPerRequest, RotationAPIList}
+	return []string{RotationSessionTemplate, RotationPerRequest, RotationAPIList, RotationCloudflareWorker}
 }

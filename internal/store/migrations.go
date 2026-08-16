@@ -11,6 +11,12 @@ type migration struct {
 	version int
 	name    string
 	sql     string
+	// disableForeignKeys marks migrations that rebuild a table referenced by
+	// foreign keys. Such rebuilds must run with PRAGMA foreign_keys = OFF
+	// (a no-op inside a transaction), so they take a dedicated execution path
+	// that pins one connection, disables enforcement, runs the migration in a
+	// transaction, re-enables enforcement, and verifies foreign_key_check.
+	disableForeignKeys bool
 }
 
 var migrations = []migration{
@@ -681,6 +687,54 @@ END;
 DELETE FROM system_metadata WHERE key = 'client_subscription_token';
 `,
 	},
+	{
+		version:            27,
+		name:               "residential_cf_worker_protocols",
+		disableForeignKeys: true,
+		sql: `
+CREATE TABLE residential_providers_v27 (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    vendor TEXT NOT NULL,
+    protocol TEXT NOT NULL CHECK (protocol IN ('http', 'https', 'socks5', 'vless', 'trojan')),
+    gateway_host TEXT NOT NULL,
+    gateway_port INTEGER NOT NULL CHECK (gateway_port BETWEEN 1 AND 65535),
+    credentials_encrypted BLOB NOT NULL,
+    username_template TEXT NOT NULL,
+    rotation_mode TEXT NOT NULL CHECK (rotation_mode IN ('session-template', 'per-request', 'api-list', 'cf-worker')),
+    session_ttl_seconds INTEGER NOT NULL DEFAULT 600 CHECK (session_ttl_seconds >= 0),
+    pool_size INTEGER NOT NULL DEFAULT 8 CHECK (pool_size BETWEEN 1 AND 64),
+    default_region TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    api_url TEXT NOT NULL DEFAULT '',
+    upstream_proxy_group_id TEXT REFERENCES proxy_groups(id) ON DELETE RESTRICT,
+    session_expiry_policy TEXT NOT NULL DEFAULT 'rotate'
+        CHECK (session_expiry_policy IN ('expire', 'rotate')),
+    default_region_mode TEXT NOT NULL DEFAULT 'fixed'
+        CHECK (default_region_mode IN ('fixed', 'application-random')),
+    default_random_regions TEXT NOT NULL DEFAULT '[]'
+) STRICT;
+
+INSERT INTO residential_providers_v27 (
+    id, name, vendor, protocol, gateway_host, gateway_port, credentials_encrypted,
+    username_template, rotation_mode, session_ttl_seconds, pool_size, default_region,
+    enabled, version, created_at, updated_at, api_url, upstream_proxy_group_id,
+    session_expiry_policy, default_region_mode, default_random_regions
+)
+SELECT
+    id, name, vendor, protocol, gateway_host, gateway_port, credentials_encrypted,
+    username_template, rotation_mode, session_ttl_seconds, pool_size, default_region,
+    enabled, version, created_at, updated_at, api_url, upstream_proxy_group_id,
+    session_expiry_policy, default_region_mode, default_random_regions
+FROM residential_providers;
+
+DROP TABLE residential_providers;
+ALTER TABLE residential_providers_v27 RENAME TO residential_providers;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -715,6 +769,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 }
 
 func (s *Store) applyMigration(ctx context.Context, migration migration) error {
+	if migration.disableForeignKeys {
+		return s.applyMigrationWithoutForeignKeys(ctx, migration)
+	}
 	transaction, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin migration %d: %w", migration.version, err)
@@ -742,5 +799,67 @@ VALUES (?, ?, ?)
 		return fmt.Errorf("commit migration %d: %w", migration.version, err)
 	}
 	committed = true
+	return nil
+}
+
+// applyMigrationWithoutForeignKeys runs a migration that rebuilds a table
+// referenced by foreign keys. PRAGMA foreign_keys is connection-scoped and a
+// no-op inside a transaction, so this path pins one connection, disables
+// enforcement before starting the transaction, runs the migration SQL plus
+// the schema_migrations/user_version bookkeeping, commits, re-enables
+// enforcement, and finally verifies that no referential integrity violation
+// was introduced by the rebuild.
+func (s *Store) applyMigrationWithoutForeignKeys(ctx context.Context, migration migration) error {
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migration %d connection: %w", migration.version, err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys for migration %d: %w", migration.version, err)
+	}
+	// Restore enforcement on every path; re-enabling twice is harmless.
+	defer func() {
+		_, _ = connection.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+	}()
+
+	transaction, err := connection.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin migration %d: %w", migration.version, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = transaction.Rollback()
+		}
+	}()
+
+	if _, err := transaction.ExecContext(ctx, migration.sql); err != nil {
+		return fmt.Errorf("apply migration %d (%s): %w", migration.version, migration.name, err)
+	}
+	if _, err := transaction.ExecContext(ctx, `
+INSERT INTO schema_migrations(version, name, applied_at)
+VALUES (?, ?, ?)
+`, migration.version, migration.name, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record migration %d: %w", migration.version, err)
+	}
+	if _, err := transaction.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", migration.version)); err != nil {
+		return fmt.Errorf("set sqlite user_version %d: %w", migration.version, err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit migration %d: %w", migration.version, err)
+	}
+	committed = true
+
+	if _, err := connection.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("re-enable foreign keys after migration %d: %w", migration.version, err)
+	}
+	var violations int
+	if err := connection.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
+		return fmt.Errorf("check foreign keys after migration %d: %w", migration.version, err)
+	}
+	if violations != 0 {
+		return fmt.Errorf("migration %d left %d foreign key violations", migration.version, violations)
+	}
 	return nil
 }

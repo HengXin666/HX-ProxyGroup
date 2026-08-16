@@ -493,8 +493,8 @@ export interface ApiErrorPayload {
   }
 }
 
-export type ResidentialProtocol = "http" | "https" | "socks5"
-export type ResidentialRotationMode = "session-template" | "per-request" | "api-list"
+export type ResidentialProtocol = "http" | "https" | "socks5" | "vless" | "trojan"
+export type ResidentialRotationMode = "session-template" | "per-request" | "api-list" | "cf-worker"
 export type ResidentialChannelMode = "passthrough" | "sticky"
 export type ResidentialSessionExpiryPolicy = "expire" | "rotate"
 export type ResidentialRegionMode = "fixed" | "application-random"
@@ -518,6 +518,7 @@ export interface ResidentialPresetCatalog {
   items: ResidentialPreset[]
   placeholders: string[]
   protocols: ResidentialProtocol[]
+  worker_protocols: ResidentialProtocol[]
   rotation_modes: ResidentialRotationMode[]
   region_modes: ResidentialRegionMode[]
   exit_ip_default: string
@@ -532,6 +533,7 @@ export interface ResidentialProvider {
   gateway_port: number
   upstream_proxy_group_id?: string
   api_url_configured: boolean
+  worker_url_configured: boolean
   api_proxy_configured: boolean
   username_template: string
   rotation_mode: ResidentialRotationMode
@@ -563,6 +565,7 @@ export interface CreateResidentialProviderRequest {
   gateway_port: number
   upstream_proxy_group_id?: string
   api_url?: string
+  worker_url?: string
   api_proxy_url?: string
   credentials?: ResidentialCredentials
   username_template: string
@@ -585,6 +588,7 @@ export interface UpdateResidentialProviderRequest {
   gateway_port: number
   upstream_proxy_group_id?: string
   api_url?: string
+  worker_url?: string
   api_proxy_url?: string
   credentials?: ResidentialCredentials
   username_template: string
@@ -603,6 +607,7 @@ export interface ResidentialTestResult {
   exit_ip?: string
   rendered_username_preview?: string
   latency_ms?: number
+  detail?: string
   error?: string
 }
 

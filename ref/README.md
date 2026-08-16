@@ -2,6 +2,27 @@
 
 参考项目默认放在本目录，但不作为 HX-ProxyGroup 源码的一部分提交。
 
+## BPB-Worker-Panel
+
+- 仓库：`https://github.com/bia-pain-bache/BPB-Worker-Panel`
+- 目标目录：`ref/BPB-Worker-Panel`（已加入 `.gitignore`，需手动克隆：`git clone --depth 1 https://github.com/bia-pain-bache/BPB-Worker-Panel ref/BPB-Worker-Panel`）
+- 许可证：GPL-3.0（研究参考仅阅读，不复制其源码；集成模型为本项目自有架构）。
+
+### 值得参考的能力
+
+BPB-Worker-Panel 是一个部署在 Cloudflare Workers / Pages 上的 VLESS/Trojan WebSocket 代理面板，主要包含：
+
+- `/<securePath>/sub/raw?app=xray` 返回 Base64 编码的 VLESS/Trojan 分享 URI 列表。
+- 每次请求通过 DoH 实时解析 Cloudflare 地址（`getConfigAddresses`），因此每次刷新得到不同出口地址。
+- 分享 URI 携带 `host`、`type=ws`、`security=tls|none`、`path`（含 `?ed=2560`）、`sni`、`fp`、`alpn` 参数。
+- WebSocket 入口按路径首段路由到 `vl` / `tr` 处理器。
+
+### HX-ProxyGroup 复用与差异
+
+- 仅复用其「面板链接 / `sub/raw` 订阅链接的解析约定」：住宅供应商预设 `bpb-panel`（`cf-worker` 轮换模式）把链接填入 `worker_url`，控制面经可选出口代理拉取并用现有订阅解析器解析 VLESS/Trojan 分享 URI。
+- 住宅集成模型（Provider/Channel/Session、声明节点、control token、`dialer-proxy`、AEAD 加密信封、TTL 强制 0、用户主动 `next` 才轮换）为本项目自身架构，未复制其源码。
+- 差异记录：`docs/RESIDENTIAL_V2_PROGRESS.md` 2.5 节。
+
 ## easy-proxies
 
 - 仓库：`https://github.com/daimon3332/easy-proxies`

@@ -80,6 +80,11 @@ type Session struct {
 	// Password is only populated for API-list endpoints that include their own
 	// credentials. Gateway sessions use the provider credential envelope.
 	Password string `json:"-"`
+	// Canonical carries a complete node configuration for cf-worker sessions
+	// (VLESS/Trojan over WebSocket parsed from the Cloudflare Worker panel).
+	// When set, canonicalNodeConfig renders it verbatim instead of building a
+	// gateway http/socks5 shape.
+	Canonical map[string]any `json:"-"`
 }
 
 // newSessionID returns an opaque sticky-session identifier. It is 12 hex
@@ -142,6 +147,18 @@ func buildSessions(provider Provider, credentials Credentials, region string, si
 // residential gateways are plain HTTP/SOCKS5 proxies with credentials, so no new
 // protocol support is required.
 func canonicalNodeConfig(provider Provider, session Session, password, displayName string) map[string]any {
+	if len(session.Canonical) > 0 {
+		// cf-worker sessions carry a complete VLESS/Trojan WebSocket config
+		// fetched from the Cloudflare Worker panel. The Mihomo compiler already
+		// understands this canonical shape (query/ws/tls/sni/path), so the
+		// control plane only adds the node name and the optional dialer proxy.
+		config := cloneCanonical(session.Canonical)
+		config["name"] = displayName
+		if upstreamGroupID := strings.TrimSpace(provider.UpstreamProxyGroupID); upstreamGroupID != "" {
+			config[store.ResidentialDialerProxyGroupIDKey] = upstreamGroupID
+		}
+		return config
+	}
 	protocol := provider.Protocol
 	server := provider.GatewayHost
 	port := provider.GatewayPort
@@ -186,6 +203,25 @@ func canonicalNodeConfig(provider Provider, session Session, password, displayNa
 // node row, and the display name is excluded so renaming a channel does not
 // orphan traffic history. Credentials are hashed, never stored in the clear.
 func sessionFingerprint(channelID string, provider Provider, session Session) (string, error) {
+	if len(session.Canonical) > 0 {
+		// The canonical config identifies the concrete panel endpoint: server,
+		// port, credential, and the WebSocket path are all part of it. Hashing
+		// the canonical (minus display name) makes every fresh panel refresh
+		// produce a new fingerprint, so the data plane actually switches.
+		fingerprintInput := make(map[string]any, len(session.Canonical)+1)
+		fingerprintInput["channel"] = channelID
+		for key, value := range session.Canonical {
+			if key != "name" {
+				fingerprintInput[key] = value
+			}
+		}
+		encoded, err := json.Marshal(fingerprintInput)
+		if err != nil {
+			return "", fmt.Errorf("encode cf-worker session fingerprint: %w", err)
+		}
+		digest := sha256.Sum256(encoded)
+		return hex.EncodeToString(digest[:]), nil
+	}
 	server := provider.GatewayHost
 	port := provider.GatewayPort
 	if session.Server != "" {

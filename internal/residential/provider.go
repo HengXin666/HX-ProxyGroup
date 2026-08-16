@@ -37,8 +37,13 @@ type Provider struct {
 	// APIURL is the vendor extraction endpoint for api-list rotation. It is
 	// write-only at the HTTP API boundary because BestProxy extraction URLs may
 	// contain an app_key. The service still uses it internally.
-	APIURL                string     `json:"-"`
-	APIURLConfigured      bool       `json:"api_url_configured"`
+	APIURL           string `json:"-"`
+	APIURLConfigured bool   `json:"api_url_configured"`
+	// WorkerURL is the Cloudflare Worker panel (BPB-Worker-Panel) subscription
+	// link for cf-worker rotation. It is write-only at the HTTP API boundary;
+	// the API only reports whether it is configured.
+	WorkerURL             string     `json:"-"`
+	WorkerURLConfigured   bool       `json:"worker_url_configured"`
 	APIProxyURL           string     `json:"-"`
 	APIProxyConfigured    bool       `json:"api_proxy_configured"`
 	UsernameTemplate      string     `json:"username_template"`
@@ -70,6 +75,7 @@ type CreateProviderRequest struct {
 	GatewayPort           int          `json:"gateway_port"`
 	UpstreamProxyGroupID  string       `json:"upstream_proxy_group_id,omitempty"`
 	APIURL                string       `json:"api_url,omitempty"`
+	WorkerURL             string       `json:"worker_url,omitempty"`
 	APIProxyURL           string       `json:"api_proxy_url,omitempty"`
 	Credentials           *Credentials `json:"credentials,omitempty"`
 	UsernameTemplate      string       `json:"username_template"`
@@ -93,6 +99,7 @@ type UpdateProviderRequest struct {
 	GatewayPort           int          `json:"gateway_port"`
 	UpstreamProxyGroupID  string       `json:"upstream_proxy_group_id,omitempty"`
 	APIURL                string       `json:"api_url,omitempty"`
+	WorkerURL             string       `json:"worker_url,omitempty"`
 	APIProxyURL           string       `json:"api_proxy_url,omitempty"`
 	Credentials           *Credentials `json:"credentials,omitempty"`
 	UsernameTemplate      string       `json:"username_template"`
@@ -141,6 +148,7 @@ func (s *Service) CreateProvider(ctx context.Context, request CreateProviderRequ
 		UpstreamProxyGroupID:  request.UpstreamProxyGroupID,
 		APIProxyURL:           request.APIProxyURL,
 		APIURL:                request.APIURL,
+		WorkerURL:             request.WorkerURL,
 		Credentials:           request.Credentials,
 		UsernameTemplate:      request.UsernameTemplate,
 		RotationMode:          request.RotationMode,
@@ -205,6 +213,7 @@ func (s *Service) UpdateProvider(ctx context.Context, id string, request UpdateP
 		UpstreamProxyGroupID:  request.UpstreamProxyGroupID,
 		APIProxyURL:           request.APIProxyURL,
 		APIURL:                request.APIURL,
+		WorkerURL:             request.WorkerURL,
 		Credentials:           request.Credentials,
 		UsernameTemplate:      request.UsernameTemplate,
 		RotationMode:          request.RotationMode,
@@ -272,6 +281,7 @@ type providerInput struct {
 	GatewayPort           int
 	UpstreamProxyGroupID  string
 	APIURL                string
+	WorkerURL             string
 	APIProxyURL           string
 	Credentials           *Credentials
 	UsernameTemplate      string
@@ -294,6 +304,7 @@ type normalizedProvider struct {
 	GatewayHost           string
 	GatewayPort           int
 	UpstreamProxyGroupID  string
+	WorkerURL             string
 	CredentialsEncrypted  []byte
 	UsernameTemplate      string
 	RotationMode          string
@@ -343,16 +354,6 @@ func (s *Service) normalizeProvider(
 	if len(vendor) > 64 {
 		return normalizedProvider{}, fmt.Errorf("%w: vendor must contain at most 64 characters", ErrInvalid)
 	}
-	protocol := strings.ToLower(strings.TrimSpace(input.Protocol))
-	if !containsString(SupportedProtocols(), protocol) {
-		return normalizedProvider{}, fmt.Errorf(
-			"%w: protocol must be one of %s",
-			ErrInvalid,
-			strings.Join(SupportedProtocols(), ", "),
-		)
-	}
-	host := strings.ToLower(strings.TrimSpace(input.GatewayHost))
-	template := strings.TrimSpace(input.UsernameTemplate)
 	rotationMode := strings.ToLower(strings.TrimSpace(input.RotationMode))
 	if rotationMode == "" {
 		rotationMode = RotationSessionTemplate
@@ -364,6 +365,25 @@ func (s *Service) normalizeProvider(
 			strings.Join(SupportedRotationModes(), ", "),
 		)
 	}
+	protocol := strings.ToLower(strings.TrimSpace(input.Protocol))
+	if rotationMode == RotationCloudflareWorker {
+		if !containsString(SupportedWorkerProtocols(), protocol) {
+			return normalizedProvider{}, fmt.Errorf(
+				"%w: protocol must be one of %s for %q rotation",
+				ErrInvalid,
+				strings.Join(SupportedWorkerProtocols(), ", "),
+				RotationCloudflareWorker,
+			)
+		}
+	} else if !containsString(SupportedProtocols(), protocol) {
+		return normalizedProvider{}, fmt.Errorf(
+			"%w: protocol must be one of %s",
+			ErrInvalid,
+			strings.Join(SupportedProtocols(), ", "),
+		)
+	}
+	host := strings.ToLower(strings.TrimSpace(input.GatewayHost))
+	template := strings.TrimSpace(input.UsernameTemplate)
 	existingSecrets := providerSecrets{}
 	if len(existingCredentials) > 0 {
 		decoded, err := s.openProviderSecrets(id, existingCredentials)
@@ -388,7 +408,25 @@ func (s *Service) normalizeProvider(
 		}
 		apiProxyURL = validatedProxyURL
 	}
-	if rotationMode == RotationAPIList {
+	if rotationMode == RotationCloudflareWorker {
+		// cf-worker providers fetch VLESS/Trojan share URIs from a Cloudflare
+		// Worker panel (BPB-Worker-Panel) subscription link. There is no
+		// gateway login or username template; the gateway fields hold a
+		// placeholder that never reaches the data plane.
+		host = cfWorkerGatewayPlaceholder
+		input.GatewayPort = 1
+		template = ""
+		input.APIURL = ""
+		workerURL := strings.TrimSpace(input.WorkerURL)
+		if workerURL == "" {
+			workerURL = strings.TrimSpace(existingSecrets.WorkerURL)
+		}
+		workerURL, err := validateWorkerURL(workerURL)
+		if err != nil {
+			return normalizedProvider{}, err
+		}
+		input.WorkerURL = workerURL
+	} else if rotationMode == RotationAPIList {
 		// api-list providers get their endpoints from the extraction API, so
 		// there is no gateway login and no username template to validate. The
 		// gateway fields hold a placeholder that never reaches the data plane.
@@ -440,6 +478,12 @@ func (s *Service) normalizeProvider(
 	if ttl < 0 || ttl > 86400 {
 		return normalizedProvider{}, fmt.Errorf("%w: session_ttl_seconds must be between 0 and 86400", ErrInvalid)
 	}
+	if rotationMode == RotationCloudflareWorker {
+		// A Cloudflare Worker panel only rotates when the consumer explicitly
+		// asks for a new node. Forcing TTL 0 means the pool never expires on
+		// its own: if the user does not refresh, the exit address stays put.
+		ttl = 0
+	}
 	if vendor == "bestproxy" && strings.Contains(template, "_life-") && (ttl < 1 || ttl > 120) {
 		return normalizedProvider{}, fmt.Errorf("%w: BestProxy life must be between 1 and 120 minutes", ErrInvalid)
 	}
@@ -478,7 +522,9 @@ func (s *Service) normalizeProvider(
 	}
 
 	secrets := existingSecrets
-	if rotationMode == RotationAPIList {
+	if rotationMode == RotationCloudflareWorker {
+		secrets = providerSecrets{WorkerURL: input.WorkerURL, APIProxyURL: apiProxyURL}
+	} else if rotationMode == RotationAPIList {
 		secrets = providerSecrets{APIURL: input.APIURL, APIProxyURL: apiProxyURL}
 	} else if input.Credentials != nil {
 		username := strings.TrimSpace(input.Credentials.Username)
@@ -509,7 +555,8 @@ func (s *Service) normalizeProvider(
 		secrets.APIURL = ""
 		secrets.APIProxyURL = apiProxyURL
 	}
-	if rotationMode != RotationAPIList && (secrets.Username == "" || secrets.Password == "") {
+	if rotationMode != RotationAPIList && rotationMode != RotationCloudflareWorker &&
+		(secrets.Username == "" || secrets.Password == "") {
 		return normalizedProvider{}, fmt.Errorf("%w: gateway credentials are required", ErrInvalid)
 	}
 	encoded, err := json.Marshal(secrets)
@@ -528,6 +575,7 @@ func (s *Service) normalizeProvider(
 		GatewayHost:           host,
 		GatewayPort:           input.GatewayPort,
 		UpstreamProxyGroupID:  strings.TrimSpace(input.UpstreamProxyGroupID),
+		WorkerURL:             input.WorkerURL,
 		CredentialsEncrypted:  sealed,
 		UsernameTemplate:      template,
 		RotationMode:          rotationMode,
@@ -545,6 +593,86 @@ func (s *Service) normalizeProvider(
 // Their real endpoints come from the extraction API, so the placeholder never
 // reaches the data plane; it only satisfies the schema's NOT NULL constraints.
 const apiListGatewayPlaceholder = "api-list.invalid"
+
+// cfWorkerGatewayPlaceholder fills the gateway columns of cf-worker providers.
+// Their real endpoints are VLESS/Trojan share URIs fetched from the Cloudflare
+// Worker panel, so the placeholder never reaches the data plane.
+const cfWorkerGatewayPlaceholder = "cf-worker.invalid"
+
+// validateWorkerURL checks a Cloudflare Worker panel (BPB-Worker-Panel)
+// subscription link before it is stored. The control plane fetches this URL,
+// so it must be HTTPS and resolve to a public host; private and loopback
+// targets would otherwise turn the provider save into an SSRF primitive.
+// Unlike api_url, a path and query parameters are expected: BPB links carry
+// the secure path and the client selection, e.g. /<securePath>/sub/raw?app=xray.
+// Any accepted link form is normalized to that canonical subscription URL.
+func validateWorkerURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("%w: worker_url is required for cf-worker rotation", ErrInvalid)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("%w: worker_url must be an https URL without a fragment", ErrInvalid)
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("%w: worker_url must not embed credentials", ErrInvalid)
+	}
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsPrivate() {
+		return "", fmt.Errorf("%w: worker_url must point at a public address", ErrInvalid)
+	}
+	if err := validateGatewayHost(parsed.Hostname()); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return normalizeWorkerURL(raw)
+}
+
+// normalizeWorkerURL rewrites any accepted BPB-Worker-Panel link form into the
+// canonical raw subscription endpoint. Upstream derives its client selection
+// exclusively from the ?app= query parameter and only /sub/raw returns the
+// base64 VLESS/Trojan payload, so a panel link, a bare secure path, or a sub
+// link without the parameter would otherwise fetch the HTML panel, a 404, or
+// the configured fallback page. The rewrite is idempotent and preserves any
+// unknown path layout (custom domains) while pinning the client parameter.
+func normalizeWorkerURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: worker_url must be an https URL", ErrInvalid)
+	}
+	segments := make([]string, 0, 3)
+	for _, segment := range strings.Split(strings.Trim(parsed.Path, "/"), "/") {
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	if len(segments) == 0 {
+		return "", fmt.Errorf(
+			"%w: worker_url must include the BPB secure path, e.g. https://<worker>/<securePath>/sub/raw?app=xray",
+			ErrInvalid,
+		)
+	}
+	securePath := segments[0]
+	switch {
+	case len(segments) == 1:
+		// Bare secure path: https://host/<securePath> -> subscription link.
+		parsed.Path = "/" + securePath + "/sub/raw"
+	case segments[1] == "panel" || segments[1] == "login":
+		// Panel or login page: rewrite to the raw subscription endpoint.
+		parsed.Path = "/" + securePath + "/sub/raw"
+	case segments[1] == "sub":
+		// Any sub mode resolves to the raw mode that emits share URIs.
+		parsed.Path = "/" + securePath + "/sub/raw"
+	default:
+		// Unknown layout (e.g. a custom domain route): keep the path so a
+		// fetch error stays truthful; only the client parameter is pinned.
+	}
+	parsed.Fragment = ""
+	query := parsed.Query()
+	query.Set("app", "xray")
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
 
 // validateAPIURL checks an api-list extraction endpoint before it is stored.
 // The control plane fetches this URL, so it must be HTTPS and resolve to a
@@ -656,6 +784,8 @@ func (s *Service) providerFromRecord(record store.ResidentialProviderRecord) Pro
 		UpstreamProxyGroupID:  record.UpstreamProxyGroupID,
 		APIURL:                apiURL,
 		APIURLConfigured:      record.RotationMode == RotationAPIList && apiURL != "",
+		WorkerURL:             secrets.WorkerURL,
+		WorkerURLConfigured:   record.RotationMode == RotationCloudflareWorker && secrets.WorkerURL != "",
 		APIProxyURL:           secrets.APIProxyURL,
 		APIProxyConfigured:    secrets.APIProxyURL != "",
 		UsernameTemplate:      record.UsernameTemplate,
@@ -667,16 +797,18 @@ func (s *Service) providerFromRecord(record store.ResidentialProviderRecord) Pro
 		DefaultRegion:         record.DefaultRegion,
 		DefaultRegionMode:     defaultRegionMode,
 		DefaultRandomRegions:  parseRegionList(record.DefaultRandomRegions),
-		CredentialsConfigured: record.RotationMode != RotationAPIList && secretsErr == nil &&
+		CredentialsConfigured: record.RotationMode != RotationAPIList &&
+			record.RotationMode != RotationCloudflareWorker && secretsErr == nil &&
 			secrets.Username != "" && secrets.Password != "",
-		SupportsSticky: (record.RotationMode == RotationSessionTemplate && TemplateUsesSession(record.UsernameTemplate)) || record.RotationMode == RotationAPIList,
-		Enabled:        record.Enabled,
-		Version:        record.Version,
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
+		SupportsSticky: (record.RotationMode == RotationSessionTemplate && TemplateUsesSession(record.UsernameTemplate)) ||
+			record.RotationMode == RotationAPIList || record.RotationMode == RotationCloudflareWorker,
+		Enabled:   record.Enabled,
+		Version:   record.Version,
+		CreatedAt: record.CreatedAt,
+		UpdatedAt: record.UpdatedAt,
 	}
 	// The account login is safe to display; the password never leaves the box.
-	if record.RotationMode != RotationAPIList && secretsErr == nil {
+	if record.RotationMode != RotationAPIList && record.RotationMode != RotationCloudflareWorker && secretsErr == nil {
 		provider.GatewayUsername = secrets.Username
 	}
 	return provider
@@ -686,6 +818,7 @@ type providerSecrets struct {
 	Username    string `json:"username,omitempty"`
 	Password    string `json:"password,omitempty"`
 	APIURL      string `json:"api_url,omitempty"`
+	WorkerURL   string `json:"worker_url,omitempty"`
 	APIProxyURL string `json:"api_proxy_url,omitempty"`
 }
 
@@ -735,10 +868,11 @@ func (s *Service) openCredentials(record store.ResidentialProviderRecord) (Crede
 }
 
 // providerCredentials returns the gateway credentials for a provider. api-list
-// providers authenticate by extraction URL and carry no gateway login, so they
-// always yield an empty credential pair.
+// providers authenticate by extraction URL and cf-worker providers carry the
+// panel identity inside the fetched share URI, so both always yield an empty
+// credential pair.
 func (s *Service) providerCredentials(record store.ResidentialProviderRecord) (Credentials, error) {
-	if record.RotationMode == RotationAPIList {
+	if record.RotationMode == RotationAPIList || record.RotationMode == RotationCloudflareWorker {
 		return Credentials{}, nil
 	}
 	return s.openCredentials(record)

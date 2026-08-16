@@ -175,7 +175,7 @@ func applyQuery(config map[string]any) {
 		config["flow"] = flow
 	}
 	for _, mapping := range []struct{ from, to string }{
-		{"alpn", "alpn"}, {"auth", "auth-str"}, {"auth_str", "auth-str"},
+		{"auth", "auth-str"}, {"auth_str", "auth-str"},
 		{"congestion_control", "congestion-controller"}, {"disable_mtu_discovery", "disable-mtu-discovery"},
 		{"downmbps", "down"}, {"heartbeat", "heartbeat-interval"}, {"obfs", "obfs"},
 		{"obfs-password", "obfs-password"}, {"obfs_password", "obfs-password"},
@@ -195,6 +195,15 @@ func applyQuery(config map[string]any) {
 	}
 	host := stringValue(raw["host"])
 	path := stringValue(raw["path"])
+	// alpn must always be a slice in Mihomo YAML. Share URIs (including the
+	// Cloudflare Worker panel payloads this project consumes) carry either a
+	// single protocol or a comma-separated list, and a scalar value would be
+	// rejected by `mihomo -t` with "'alpn' is not a slice".
+	if value, exists := raw["alpn"]; exists {
+		if alpn, ok := normalizeALPN(value); ok {
+			config["alpn"] = alpn
+		}
+	}
 	switch network {
 	case "ws":
 		options := map[string]any{}
@@ -212,6 +221,34 @@ func applyQuery(config map[string]any) {
 			config["grpc-opts"] = map[string]any{"grpc-service-name": serviceName}
 		}
 	}
+}
+
+// normalizeALPN converts an alpn share-URI value into the slice shape Mihomo
+// requires. Values arrive as a single protocol ("http/1.1"), a comma-separated
+// list ("h2,http/1.1"), or an existing slice; every form collapses into a
+// non-empty string slice. The second result reports whether any value remains.
+func normalizeALPN(value any) ([]string, bool) {
+	var items []string
+	switch typed := value.(type) {
+	case string:
+		for _, part := range strings.Split(typed, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				items = append(items, part)
+			}
+		}
+	case []string:
+		items = append(items, typed...)
+	case []any:
+		for _, item := range typed {
+			if text := strings.TrimSpace(stringValue(item)); text != "" {
+				items = append(items, text)
+			}
+		}
+	}
+	if len(items) == 0 {
+		return nil, false
+	}
+	return items, true
 }
 
 func cloneMap(input map[string]any) map[string]any {

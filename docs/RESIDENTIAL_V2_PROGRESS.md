@@ -64,10 +64,32 @@ Clash / OutlookRegister 本机 Mihomo
 - 上传、下载、连接数和趋势继续由 Mihomo 连接快照采样、内存聚合并批量写 SQLite。
 - 住宅页显示渠道累计流量；统计是采样观测值，不作为精确计费账单。
 
+### 2.5 CF Worker 面板（BPB）供应商
+
+- 新增 `cf-worker` 轮换模式与 BPB-Worker-Panel 预设：用户只填一个 CF 链接
+  （面板链接或 `sub/raw` 订阅链接）到 `worker_url`，服务端 AEAD 加密保存，API 不回显。
+- 控制面经可选的 `api_proxy_url`（出口代理）拉取该链接，用订阅解析器解析返回的
+  VLESS/Trojan WebSocket 分享 URI 生成住宅节点；canonical 配置透传给 Mihomo 编译器，
+  控制面不实现任何代理协议。
+- `session_ttl_seconds` 强制为 0：用户不主动 `next` 就不自动刷新；每次 `next` 才重新
+  拉取面板链接并轮换 Cloudflare 出口地址。
+- 供应商测试连接只验证面板可拉取、节点可解析与首个端点 TCP 可达；真实住宅出口 IP
+  由渠道数据面验证。
+- 兼容性修正：BPB `/sub/raw` 的分享 URI 携带标量 `alpn=http/1.1`（非 TLS 端口为
+  `security=none` 且不带 sni/fp/alpn）。Mihomo 编译器现在把 `alpn` 统一规范化为
+  切片（单值、逗号分隔或已是切片），并在安装了 Mihomo 的机器上用 `mihomo -t`
+  回归验证 BPB VLESS/Trojan WS 节点形状。
+
+> 来源与差异：本模式的协议语义（`/sub/raw` 返回 Base64 编码的 VLESS/Trojan 分享 URI、
+> 每次请求重新解析 Cloudflare 地址与随机 WS 路径）借鉴自研究仓库
+> [`ref/BPB-Worker-Panel`](https://github.com/bia-pain-bache/BPB-Worker-Panel)。
+> HX-ProxyGroup 只复用其面板链接的订阅输出约定，住宅集成模型（Provider/Channel/Session、
+> 声明节点、control token、`dialer-proxy`、AEAD 加密信封）仍为本项目自身架构，未复制其源码。
+
 ## 3. 已验证
 
-- `go test ./...`：378 passed，30 packages；覆盖三种住宅 WS 协议、渠道订阅、控制端点和旧全局
-  API 的 404 行为。
+- `go test ./...`：437 passed，29 packages；覆盖三种住宅 WS 协议、渠道订阅、控制端点、旧全局
+  API 的 404 行为，以及 BPB VLESS/Trojan WS 节点在真实 `mihomo -t` 下的编译兼容性。
 - `go vet ./...`、前端 TypeScript 检查和生产构建通过。
 - OutlookRegister 全量测试：100 passed；覆盖三种 URI、本地 Mihomo 生命周期、端点选择与失败清理。
 - 住宅渠道 Playwright E2E 通过：真实创建 VMess 渠道，校验代理服务页两个复制动作及剪贴板 URL，

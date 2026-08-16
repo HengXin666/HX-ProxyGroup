@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,7 +34,11 @@ type TestResult struct {
 	// credential.
 	RenderedUsernamePreview string `json:"rendered_username_preview,omitempty"`
 	LatencyMS               int    `json:"latency_ms,omitempty"`
-	Error                   string `json:"error,omitempty"`
+	// Detail carries mode-specific context that does not fit the fixed fields,
+	// such as how many nodes a cf-worker panel yielded or why the exit IP is
+	// verified by the channel data plane instead of the control plane.
+	Detail string `json:"detail,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // TestProvider dials the vendor gateway directly from the control plane and
@@ -65,6 +70,9 @@ func (s *Service) TestProvider(ctx context.Context, providerID, echoURL string) 
 		return TestResult{Success: false, Error: err.Error()}, nil
 	}
 	session := sessions[0]
+	if provider.RotationMode == RotationCloudflareWorker {
+		return s.testCloudflareWorkerProvider(ctx, provider, session)
+	}
 
 	endpoint, err := normalizeEchoURL(echoURL)
 	if err != nil {
@@ -101,6 +109,48 @@ func (s *Service) TestProvider(ctx context.Context, providerID, echoURL string) 
 		ExitIP:                  exitIP,
 		RenderedUsernamePreview: preview,
 		LatencyMS:               latency,
+	}, nil
+}
+
+// testCloudflareWorkerProvider verifies a cf-worker provider from the control
+// plane. The control plane must not implement VLESS/Trojan, so instead of
+// tunneling an HTTP probe through the node it confirms the panel link parsed
+// into at least one endpoint and performs a TCP reachability check against the
+// first endpoint, optionally through the configured exit proxy. The actual
+// residential exit IP is only observable from the channel data plane, which
+// the Detail field explains.
+func (s *Service) testCloudflareWorkerProvider(
+	ctx context.Context,
+	provider Provider,
+	session Session,
+) (TestResult, error) {
+	if session.Server == "" || session.Port < 1 || session.Port > 65535 {
+		return TestResult{
+			Success: false,
+			Error:   "cf-worker endpoint has no usable server:port",
+		}, nil
+	}
+	started := time.Now()
+	dialContext, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	connection, err := dialThroughProxy(
+		dialContext,
+		provider.APIProxyURL,
+		net.JoinHostPort(session.Server, strconv.Itoa(session.Port)),
+	)
+	latency := int(time.Since(started).Milliseconds())
+	if err != nil {
+		return TestResult{
+			Success:   false,
+			LatencyMS: latency,
+			Error:     sanitizeProxyError(err, provider.APIProxyURL).Error(),
+		}, nil
+	}
+	_ = connection.Close()
+	return TestResult{
+		Success:   true,
+		LatencyMS: latency,
+		Detail:    "已从 CF Worker 面板解析到节点并通过 TCP 可达性检查；真实出口 IP 由渠道数据面验证",
 	}, nil
 }
 

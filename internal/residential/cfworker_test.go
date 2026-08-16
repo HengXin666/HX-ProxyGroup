@@ -42,6 +42,30 @@ func TestParseWorkerConfigVlessAndTrojan(t *testing.T) {
 	}
 }
 
+func TestNormalizeWorkerServer(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "bare cf subdomain gets workers.dev", in: "bpb.x70hlrsl-a5a", want: "bpb.x70hlrsl-a5a.workers.dev"},
+		{name: "bare hyphenated subdomain", in: "bpb.fh7t6o7n", want: "bpb.fh7t6o7n.workers.dev"},
+		{name: "public domain untouched", in: "www.speedtest.net", want: "www.speedtest.net"},
+		{name: "qualified workers.dev untouched", in: "bpb.x70hlrsl-a5a.workers.dev", want: "bpb.x70hlrsl-a5a.workers.dev"},
+		{name: "ipv4 untouched", in: "104.16.0.1", want: "104.16.0.1"},
+		{name: "ipv6 untouched", in: "2606:4700::1111", want: "2606:4700::1111"},
+		{name: "empty untouched", in: "", want: ""},
+		{name: "bare subdomain with port", in: "bpb.x70hlrsl-a5a:443", want: "bpb.x70hlrsl-a5a.workers.dev:443"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeWorkerServer(test.in); got != test.want {
+				t.Fatalf("normalizeWorkerServer(%q) = %q, want %q", test.in, got, test.want)
+			}
+		})
+	}
+}
+
 func TestParseWorkerConfigRejectsBadPayloads(t *testing.T) {
 	t.Parallel()
 	cases := [][]byte{

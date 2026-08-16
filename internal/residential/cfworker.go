@@ -89,6 +89,7 @@ func parseWorkerConfig(body []byte) ([]FetchedWorkerNode, error) {
 			continue
 		}
 		server := strings.TrimSpace(canonicalString(node.Canonical["server"]))
+		server = normalizeWorkerServer(server)
 		port, ok := canonicalPort(node.Canonical["port"])
 		if server == "" || !ok || len(node.Canonical) == 0 {
 			continue
@@ -152,6 +153,45 @@ func canonicalString(value any) string {
 		return text
 	}
 	return fmt.Sprint(value)
+}
+
+// commonTLDs is the set of public top-level domains the cf-worker node
+// normalizer treats as fully qualified. Bare BPB panel nodes end with a
+// Cloudflare account subdomain (e.g. "bpb.x70hlrsl-a5a") that is not a TLD,
+// so any host whose last label is not a known TLD gets the workers.dev
+// suffix appended.
+var commonTLDs = map[string]struct{}{
+	"com": {}, "net": {}, "org": {}, "io": {}, "dev": {}, "me": {}, "co": {},
+	"cc": {}, "top": {}, "xyz": {}, "info": {}, "biz": {}, "app": {}, "page": {},
+	"site": {}, "online": {}, "tech": {}, "store": {}, "cloud": {}, "cf": {},
+	"workers": {}, "pages": {}, "de": {}, "jp": {}, "cn": {}, "ru": {}, "uk": {},
+}
+
+// normalizeWorkerServer completes bare Cloudflare Worker panel hostnames with
+// the ".workers.dev" suffix. BPB panels advertise their own workers.dev
+// endpoint as a bare hostname (e.g. "bpb.x70hlrsl-a5a"), which otherwise
+// fails DNS resolution at dial time. Public domain nodes such as
+// "www.speedtest.net", IP literals, and already-qualified names are left
+// untouched.
+func normalizeWorkerServer(server string) string {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return server
+	}
+	host := server
+	portSuffix := ""
+	if parsedHost, port, err := net.SplitHostPort(server); err == nil {
+		host = parsedHost
+		portSuffix = ":" + port
+	}
+	if net.ParseIP(host) != nil {
+		return server
+	}
+	last := host[strings.LastIndex(host, ".")+1:]
+	if _, ok := commonTLDs[strings.ToLower(last)]; ok {
+		return server
+	}
+	return host + ".workers.dev" + portSuffix
 }
 
 func canonicalPort(value any) (int, bool) {

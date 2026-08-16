@@ -22,6 +22,11 @@ var (
 	ErrInvalid        = errors.New("invalid residential configuration")
 	ErrRateLimited    = errors.New("rotation rate limit exceeded")
 	ErrSessionExpired = errors.New("residential client session expired")
+	// ErrProviderUnreachable reports that a residential provider's upstream
+	// endpoint (cf-worker panel, api-list extraction, or gateway) could not be
+	// reached. It maps to a 502 at the HTTP boundary instead of an opaque 500,
+	// and it never leaves an in-progress channel provisioned.
+	ErrProviderUnreachable = errors.New("residential provider upstream unreachable")
 )
 
 // Provider is the administrator-facing view of a vendor account. Credentials are

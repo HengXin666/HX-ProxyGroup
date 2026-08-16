@@ -735,6 +735,19 @@ DROP TABLE residential_providers;
 ALTER TABLE residential_providers_v27 RENAME TO residential_providers;
 `,
 	},
+	{
+		version: 28,
+		name:    "api_keys",
+		sql: `
+CREATE TABLE api_keys (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL
+) STRICT;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

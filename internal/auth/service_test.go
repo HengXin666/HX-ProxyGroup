@@ -247,3 +247,63 @@ func TestPasswordHashRoundTrip(t *testing.T) {
 		t.Fatal("malformed hash must error")
 	}
 }
+
+func TestAPIKeyLifecycle(t *testing.T) {
+	service, tokenPath := newTestService(t)
+	setupAdmin(t, service, tokenPath)
+	ctx := context.Background()
+
+	if _, err := service.CreateAPIKey(ctx, "  "); !errors.Is(err, ErrInvalidAPIKeyName) {
+		t.Fatalf("blank name: got %v, want ErrInvalidAPIKeyName", err)
+	}
+	if _, err := service.CreateAPIKey(ctx, strings.Repeat("k", 65)); !errors.Is(err, ErrInvalidAPIKeyName) {
+		t.Fatalf("overlong name: got %v, want ErrInvalidAPIKeyName", err)
+	}
+
+	created, err := service.CreateAPIKey(ctx, "ci runner")
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	if !strings.HasPrefix(created.Key, apiKeyPrefix) || created.Key == "" {
+		t.Fatalf("key %q must carry the %q prefix", created.Key, apiKeyPrefix)
+	}
+	if created.ID == "" {
+		t.Fatal("CreateAPIKey() returned empty id")
+	}
+
+	session, err := service.AuthenticateAPIKey(ctx, created.Key)
+	if err != nil {
+		t.Fatalf("AuthenticateAPIKey() error = %v", err)
+	}
+	if session.CSRFToken != "" {
+		t.Fatalf("API-key session CSRF token = %q, want empty", session.CSRFToken)
+	}
+	if session.Username != "admin" {
+		t.Fatalf("session username = %q, want admin", session.Username)
+	}
+
+	if _, err := service.AuthenticateAPIKey(ctx, apiKeyPrefix+"wrong"); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("wrong key: got %v, want ErrSessionExpired", err)
+	}
+	if _, err := service.AuthenticateAPIKey(ctx, ""); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("empty key: got %v, want ErrSessionExpired", err)
+	}
+
+	keys, err := service.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListAPIKeys() error = %v", err)
+	}
+	if len(keys) != 1 || keys[0].Key != "" {
+		t.Fatalf("ListAPIKeys() = %+v, want one key without secret", keys)
+	}
+
+	if err := service.RevokeAPIKey(ctx, created.ID); err != nil {
+		t.Fatalf("RevokeAPIKey() error = %v", err)
+	}
+	if _, err := service.AuthenticateAPIKey(ctx, created.Key); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("revoked key: got %v, want ErrSessionExpired", err)
+	}
+	if err := service.RevokeAPIKey(ctx, created.ID); err != nil {
+		t.Fatalf("RevokeAPIKey() idempotent error = %v", err)
+	}
+}

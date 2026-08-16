@@ -701,6 +701,8 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "weak_password", err.Error())
 	case errors.Is(err, auth.ErrInvalidUsername):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "invalid_username", err.Error())
+	case errors.Is(err, auth.ErrInvalidAPIKeyName):
+		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "invalid_api_key_name", err.Error())
 	case errors.Is(err, alert.ErrNotFound):
 		s.writeAPIError(writer, request, http.StatusNotFound, "not_found", "alert not found")
 	case errors.Is(err, alert.ErrInvalidSetting):
@@ -715,6 +717,8 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, proxygroup.ErrInvalid), errors.Is(err, listener.ErrInvalid), errors.Is(err, routingrules.ErrInvalid):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+	case errors.Is(err, residential.ErrProviderUnreachable):
+		s.writeAPIError(writer, request, http.StatusBadGateway, "provider_unreachable", err.Error())
 	case errors.Is(err, residential.ErrRateLimited):
 		s.writeAPIError(writer, request, http.StatusTooManyRequests, "rotate_rate_limited", err.Error())
 	case errors.Is(err, residential.ErrInvalid):

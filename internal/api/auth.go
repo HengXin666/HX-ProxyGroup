@@ -17,6 +17,7 @@ type AuthService interface {
 	Setup(ctx context.Context, setupToken, username, password string) error
 	Login(ctx context.Context, clientKey, username, password string) (auth.Session, error)
 	Authenticate(ctx context.Context, token string) (auth.Session, error)
+	AuthenticateAPIKey(ctx context.Context, key string) (auth.Session, error)
 	Logout(ctx context.Context, token string) error
 	LogoutAll(ctx context.Context) error
 	ChangePassword(ctx context.Context, currentPassword, newPassword string) error
@@ -27,6 +28,9 @@ type AuthService interface {
 	DisableTwoFactor(ctx context.Context, code string) error
 	VerifyTwoFactor(ctx context.Context, token, clientKey, code string) error
 	RenewTwoFactorVerification(ctx context.Context, token string) error
+	CreateAPIKey(ctx context.Context, name string) (auth.APIKey, error)
+	ListAPIKeys(ctx context.Context) ([]auth.APIKey, error)
+	RevokeAPIKey(ctx context.Context, id string) error
 }
 
 func WithAuth(service AuthService) Option {
@@ -52,6 +56,54 @@ func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/2fa/enable", s.handleAuthTwoFactorEnable)
 	mux.HandleFunc("/api/v1/auth/2fa/disable", s.handleAuthTwoFactorDisable)
 	mux.HandleFunc("/api/v1/auth/2fa/verify", s.handleAuthTwoFactorVerify)
+	mux.HandleFunc("/api/v1/auth/api-keys", s.handleAuthAPIKeys)
+	mux.HandleFunc("/api/v1/auth/api-keys/", s.handleAuthAPIKey)
+}
+
+func (s *Server) handleAuthAPIKeys(writer http.ResponseWriter, request *http.Request) {
+	switch request.Method {
+	case http.MethodGet:
+		items, err := s.auth.ListAPIKeys(request.Context())
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := decodeJSONBody(writer, request, &body); err != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		created, err := s.auth.CreateAPIKey(request.Context(), body.Name)
+		if err != nil {
+			s.handleError(writer, request, err)
+			return
+		}
+		writer.Header().Set("Location", request.URL.Path+"/"+created.ID)
+		writeJSON(writer, http.StatusCreated, created)
+	default:
+		methodNotAllowed(writer, request, http.MethodGet, http.MethodPost)
+	}
+}
+
+func (s *Server) handleAuthAPIKey(writer http.ResponseWriter, request *http.Request) {
+	path := strings.TrimPrefix(request.URL.Path, "/api/v1/auth/api-keys/")
+	if path == "" || path == request.URL.Path {
+		http.NotFound(writer, request)
+		return
+	}
+	if request.Method != http.MethodDelete {
+		methodNotAllowed(writer, request, http.MethodDelete)
+		return
+	}
+	if err := s.auth.RevokeAPIKey(request.Context(), path); err != nil {
+		s.handleError(writer, request, err)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 // requireAuth guards /api/v1/* once the administrator account exists.
@@ -82,7 +134,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(writer, request)
 			return
 		}
-		session, err := s.auth.Authenticate(request.Context(), sessionToken(request))
+		session, err := s.authSession(request)
 		if err != nil {
 			s.handleError(writer, request, err)
 			return
@@ -90,13 +142,39 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		switch request.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 		default:
-			if request.Header.Get("X-CSRF-Token") != session.CSRFToken {
+			// API-key sessions carry an empty CSRF token: header credentials
+			// are not attached by browsers automatically, so the CSRF gate
+			// only applies to cookie sessions.
+			if session.CSRFToken != "" && request.Header.Get("X-CSRF-Token") != session.CSRFToken {
 				s.writeAPIError(writer, request, http.StatusForbidden, "csrf_token_mismatch", "missing or invalid CSRF token")
 				return
 			}
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// authSession resolves the request credential to a session. A bearer API key
+// (Authorization: Bearer <key> or X-API-Key: <key>) takes precedence over the
+// session cookie, so scripts never need the login/CSRF dance.
+func (s *Server) authSession(request *http.Request) (auth.Session, error) {
+	if key := apiKeyToken(request); key != "" {
+		return s.auth.AuthenticateAPIKey(request.Context(), key)
+	}
+	return s.auth.Authenticate(request.Context(), sessionToken(request))
+}
+
+// apiKeyToken extracts a machine credential from the request headers.
+func apiKeyToken(request *http.Request) string {
+	if key := strings.TrimSpace(request.Header.Get("X-API-Key")); key != "" {
+		return key
+	}
+	authorization := strings.TrimSpace(request.Header.Get("Authorization"))
+	const scheme = "Bearer "
+	if len(authorization) > len(scheme) && strings.EqualFold(authorization[:len(scheme)], scheme) {
+		return strings.TrimSpace(authorization[len(scheme):])
+	}
+	return ""
 }
 
 func (s *Server) handleAuthStatus(writer http.ResponseWriter, request *http.Request) {
@@ -111,7 +189,7 @@ func (s *Server) handleAuthStatus(writer http.ResponseWriter, request *http.Requ
 	}
 	response := map[string]any{"configured": configured, "authenticated": false}
 	if configured {
-		if session, err := s.auth.Authenticate(request.Context(), sessionToken(request)); err == nil {
+		if session, err := s.authSession(request); err == nil {
 			response["authenticated"] = true
 			response["username"] = session.Username
 			response["csrf_token"] = session.CSRFToken

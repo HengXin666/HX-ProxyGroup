@@ -291,3 +291,151 @@ func TestAuthUsernameChangeRequiresPasswordAndRevokesSession(t *testing.T) {
 		t.Fatalf("new username login failed with %d", response.StatusCode)
 	}
 }
+
+func TestAPIKeyAuthAndManagement(t *testing.T) {
+	testServer, _, tokenPath := newAuthTestServer(t)
+	client := testServer.Client()
+
+	// Setup + login yields the cookie session and CSRF token.
+	rawToken, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := postJSON(t, client, testServer.URL+"/api/v1/auth/setup", map[string]string{
+		"setup_token": strings.TrimSpace(string(rawToken)),
+		"username":    "admin",
+		"password":    "correct horse battery",
+	}, nil)
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("setup failed with %d", response.StatusCode)
+	}
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/login", map[string]string{
+		"username": "admin",
+		"password": "correct horse battery",
+	}, nil)
+	var login struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	_ = json.NewDecoder(response.Body).Decode(&login)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || login.CSRFToken == "" {
+		t.Fatalf("login failed with %d", response.StatusCode)
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == sessionCookieName {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("login must set a session cookie")
+	}
+
+	// Create a key with the cookie session + CSRF; plaintext returned once.
+	createHeaders := map[string]string{"Cookie": sessionCookie.String(), "X-CSRF-Token": login.CSRFToken}
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/api-keys", map[string]string{"name": "ci runner"}, createHeaders)
+	var created struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	_ = json.NewDecoder(response.Body).Decode(&created)
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated || created.ID == "" || created.Key == "" {
+		t.Fatalf("create api key failed with %d", response.StatusCode)
+	}
+	if !strings.HasPrefix(created.Key, "hxk_") {
+		t.Fatalf("key %q must carry the hxk_ prefix", created.Key)
+	}
+
+	// Bearer key authenticates without cookie or CSRF.
+	authedRequest, _ := http.NewRequest(http.MethodGet, testServer.URL+"/api/v1/backups", nil)
+	authedRequest.Header.Set("Authorization", "Bearer "+created.Key)
+	response, err = client.Do(authedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bearer GET must succeed, got %d", response.StatusCode)
+	}
+
+	// Cookie session without CSRF is still rejected on mutating requests.
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/api-keys", map[string]string{"name": "no csrf"}, map[string]string{"Cookie": sessionCookie.String()})
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cookie without CSRF: got %d, want 403", response.StatusCode)
+	}
+
+	// X-API-Key header also authenticates mutating requests without CSRF.
+	response = postJSON(t, client, testServer.URL+"/api/v1/auth/api-keys", map[string]string{"name": "second"}, map[string]string{"X-API-Key": created.Key})
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("X-API-Key create failed with %d", response.StatusCode)
+	}
+
+	// Listing via the key never leaks secret material.
+	listRequest, _ := http.NewRequest(http.MethodGet, testServer.URL+"/api/v1/auth/api-keys", nil)
+	listRequest.Header.Set("Authorization", "Bearer "+created.Key)
+	response, err = client.Do(listRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Items []auth.APIKey `json:"items"`
+	}
+	_ = json.NewDecoder(response.Body).Decode(&list)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(list.Items) != 2 {
+		t.Fatalf("list api keys: got %d with %d items, want 200 with 2", response.StatusCode, len(list.Items))
+	}
+	for _, item := range list.Items {
+		if item.Key != "" {
+			t.Fatalf("list leaked key material: %+v", item)
+		}
+	}
+
+	// Empty id and unsupported methods are rejected while the key is valid.
+	notFoundRequest, _ := http.NewRequest(http.MethodDelete, testServer.URL+"/api/v1/auth/api-keys/", nil)
+	notFoundRequest.Header.Set("Authorization", "Bearer "+created.Key)
+	response, err = client.Do(notFoundRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("empty id: got %d, want 404", response.StatusCode)
+	}
+	putRequest, _ := http.NewRequest(http.MethodPut, testServer.URL+"/api/v1/auth/api-keys/"+created.ID, nil)
+	putRequest.Header.Set("Authorization", "Bearer "+created.Key)
+	response, err = client.Do(putRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT api key: got %d, want 405", response.StatusCode)
+	}
+
+	// Revoke via the key itself; the key must then be rejected.
+	revokeRequest, _ := http.NewRequest(http.MethodDelete, testServer.URL+"/api/v1/auth/api-keys/"+created.ID, nil)
+	revokeRequest.Header.Set("Authorization", "Bearer "+created.Key)
+	response, err = client.Do(revokeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke failed with %d", response.StatusCode)
+	}
+	authedRequest, _ = http.NewRequest(http.MethodGet, testServer.URL+"/api/v1/backups", nil)
+	authedRequest.Header.Set("Authorization", "Bearer "+created.Key)
+	response, err = client.Do(authedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked key must be rejected, got %d", response.StatusCode)
+	}
+}

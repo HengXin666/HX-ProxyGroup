@@ -3,6 +3,7 @@ package residential
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -212,5 +213,40 @@ func TestProviderSessionsCloudflareWorker(t *testing.T) {
 	}
 	if len(sessions[0].Canonical) == 0 {
 		t.Fatal("session canonical is empty")
+	}
+}
+
+func TestCreateStickyChannelCloudflareWorkerFetchFailure(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t, WithWorkerFetcher(func(_ context.Context, _ string, _ string) ([]FetchedWorkerNode, error) {
+		return nil, errors.New("lookup bpb.example.com: no such host")
+	}))
+	provider, err := harness.service.CreateProvider(context.Background(), CreateProviderRequest{
+		Name:         "bpb panel",
+		Vendor:       "bpb-panel",
+		Protocol:     "vless",
+		WorkerURL:    "https://bpb.example.com/securePath/sub/raw?app=xray",
+		RotationMode: RotationCloudflareWorker,
+	})
+	if err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+	_, err = harness.service.CreateChannel(context.Background(), CreateChannelRequest{
+		Name:           "bpb sticky",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		Protocol:       "vless",
+		SessionCount:   2,
+		PublicEndpoint: managedPublicEndpoint(),
+	})
+	if !errors.Is(err, ErrProviderUnreachable) {
+		t.Fatalf("CreateChannel() error = %v, want ErrProviderUnreachable", err)
+	}
+	channels, listErr := harness.service.ListChannels(context.Background())
+	if listErr != nil {
+		t.Fatalf("ListChannels() error = %v", listErr)
+	}
+	if len(channels) != 0 {
+		t.Fatalf("CreateChannel() left %d orphaned channels after fetch failure: %+v", len(channels), channels)
 	}
 }

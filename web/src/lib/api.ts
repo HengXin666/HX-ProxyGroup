@@ -228,6 +228,14 @@ export type AuthStatus = {
   csrf_token?: string
 }
 
+export type APIKeyItem = {
+  id: string
+  name: string
+  created_at: string
+  last_used_at: string
+  key?: string
+}
+
 export type LoginResult = {
   username: string
   csrf_token: string
@@ -306,6 +314,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ code }),
     })
+  },
+
+  apiKeys(): Promise<{ items: APIKeyItem[] }> {
+    return request("/api/v1/auth/api-keys")
+  },
+
+  apiKeyCreate(name: string): Promise<APIKeyItem> {
+    return request("/api/v1/auth/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    })
+  },
+
+  apiKeyRevoke(id: string): Promise<void> {
+    return request(`/api/v1/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" })
   },
 
   listAlerts(status?: "firing" | "resolved"): Promise<AlertList> {

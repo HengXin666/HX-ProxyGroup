@@ -29,7 +29,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { api, type TwoFactorSetup, type TwoFactorStatus } from "@/lib/api"
+import { api, type APIKeyItem, type TwoFactorSetup, type TwoFactorStatus } from "@/lib/api"
 import {
   defaultThemeColor,
   savedTheme,
@@ -87,6 +87,11 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
   const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null)
   const [twoFactorCode, setTwoFactorCode] = useState("")
   const [twoFactorBusy, setTwoFactorBusy] = useState<"setup" | "enable" | "disable" | null>(null)
+  const [apiKeys, setAPIKeys] = useState<APIKeyItem[]>([])
+  const [apiKeyName, setApiKeyName] = useState("")
+  const [creatingAPIKey, setCreatingAPIKey] = useState(false)
+  const [newAPIKey, setNewAPIKey] = useState<APIKeyItem | null>(null)
+  const [revokingAPIKey, setRevokingAPIKey] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -101,6 +106,11 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
     catch (error) { onNotice(error instanceof Error ? error.message : "加载 2FA 状态失败", "error") }
   }, [onNotice])
   useEffect(() => { void loadTwoFactor() }, [loadTwoFactor])
+  const loadAPIKeys = useCallback(async () => {
+    try { setAPIKeys((await api.apiKeys()).items) }
+    catch (error) { onNotice(error instanceof Error ? error.message : "加载 API 密钥失败", "error") }
+  }, [onNotice])
+  useEffect(() => { void loadAPIKeys() }, [loadAPIKeys])
   useEffect(() => subscribeTheme(setCurrentTheme), [])
   useEffect(() => subscribeThemeColor((color) => { setCurrentThemeColor(color); setThemeColorDraft(color) }), [])
   useEffect(() => { setNewUsername(username ?? "") }, [username])
@@ -205,6 +215,36 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
       await navigator.clipboard.writeText(value)
       onNotice(`${label}已复制`)
     } catch { onNotice(`无法复制${label}，请手动选择文本`, "error") }
+  }
+
+  async function createAPIKey() {
+    const name = apiKeyName.trim()
+    if (!name) return
+    setCreatingAPIKey(true)
+    try {
+      const created = await api.apiKeyCreate(name)
+      setNewAPIKey(created)
+      setApiKeyName("")
+      await loadAPIKeys()
+    } catch (error) { onNotice(error instanceof Error ? error.message : "创建 API 密钥失败", "error") }
+    finally { setCreatingAPIKey(false) }
+  }
+
+  async function revokeAPIKey(id: string) {
+    setRevokingAPIKey(id)
+    try {
+      await api.apiKeyRevoke(id)
+      setNewAPIKey(null)
+      await loadAPIKeys()
+    } catch (error) { onNotice(error instanceof Error ? error.message : "吊销 API 密钥失败", "error") }
+    finally { setRevokingAPIKey(null) }
+  }
+
+  async function copyAPIKeyValue(value: string) {
+    try {
+      await navigator.clipboard.writeText(value)
+      onNotice("密钥已复制")
+    } catch { onNotice("无法复制密钥，请手动选择文本", "error") }
   }
 
   function changeThemeColor(color: string) {
@@ -322,6 +362,23 @@ export function SettingsPage({ onNotice, onSignedOut, username }: SettingsPagePr
                 {!twoFactorStatus?.enabled && !twoFactorSetup && <div className="mt-3 flex flex-wrap items-center gap-3"><Button variant="outline" size="sm" onClick={() => void beginTwoFactorSetup()} disabled={twoFactorBusy !== null}>{twoFactorBusy === "setup" ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}生成 2FA 密钥</Button><span className="text-xs text-muted-foreground">支持 Google Authenticator、Authy、1Password 等 TOTP 验证器。</span></div>}
                 {twoFactorSetup && <div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3"><div className="text-xs font-medium">将密钥添加到验证器</div><div className="grid gap-3 lg:grid-cols-2"><CopyField label="密钥" value={twoFactorSetup.secret} onCopy={() => void copyTwoFactorValue(twoFactorSetup.secret, "密钥")} /><CopyField label="otpauth 地址" value={twoFactorSetup.otpauth_url} onCopy={() => void copyTwoFactorValue(twoFactorSetup.otpauth_url, "otpauth 地址")} /></div><div className="flex flex-wrap items-end gap-2"><Field label="验证器当前验证码"><Input aria-label="启用 2FA 的验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} /></Field><Button size="sm" onClick={() => void enableTwoFactor()} disabled={twoFactorBusy !== null}>{twoFactorBusy === "enable" ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}启用 2FA</Button></div></div>}
                 {twoFactorStatus?.enabled && <div className="mt-3 flex flex-wrap items-end gap-2"><Field label="关闭前的当前验证码"><Input aria-label="关闭 2FA 的验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} /></Field><Button variant="outline" size="sm" onClick={() => void disableTwoFactor()} disabled={twoFactorBusy !== null}>{twoFactorBusy === "disable" ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}关闭 2FA</Button></div>}
+              </div>
+              <div className="mt-4 border-t pt-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div><div className="text-sm font-semibold">API 密钥</div><div className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">用于脚本或自动化调用管理 API，无需暴露账号密码。请求时携带 <code className="rounded bg-muted px-1">Authorization: Bearer &lt;密钥&gt;</code> 或 <code className="rounded bg-muted px-1">X-API-Key</code> 请求头即可。</div></div>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {apiKeys.map((key) => (
+                    <div key={key.id} className="flex flex-wrap items-center gap-3 rounded-md border bg-muted/40 px-3 py-2">
+                      <KeyRound className="size-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1"><div className="text-xs font-medium">{key.name}</div><div className="text-[11px] text-muted-foreground">创建于 {new Date(key.created_at).toLocaleString()}</div></div>
+                      <Button variant="ghost" size="icon" title="吊销密钥" aria-label={`吊销 ${key.name}`} disabled={revokingAPIKey !== null} onClick={() => void revokeAPIKey(key.id)}>{revokingAPIKey === key.id ? <LoaderCircle className="animate-spin" /> : <Trash2 />}</Button>
+                    </div>
+                  ))}
+                  {apiKeys.length === 0 && <p className="text-xs text-muted-foreground">尚未创建 API 密钥。</p>}
+                </div>
+                {newAPIKey && <div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3"><div className="text-xs font-medium">新密钥（仅显示一次，请立即保存）</div><CopyField label="密钥" value={newAPIKey.key ?? ""} onCopy={() => void copyAPIKeyValue(newAPIKey.key ?? "")} /></div>}
+                <div className="mt-3 flex flex-wrap items-end gap-2"><Field label="名称"><Input aria-label="API 密钥名称" maxLength={64} placeholder="如 ci-runner" value={apiKeyName} onChange={(event) => setApiKeyName(event.target.value)} /></Field><Button size="sm" onClick={() => void createAPIKey()} disabled={creatingAPIKey || !apiKeyName.trim()}>{creatingAPIKey ? <LoaderCircle className="animate-spin" /> : <Plus />}创建密钥</Button></div>
               </div>
             </SettingsPanel>
           </TabsContent>

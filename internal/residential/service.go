@@ -265,7 +265,7 @@ func (s *Service) providerSessions(
 		// intentionally not applied to the fetch URL.
 		nodes, err := s.fetchWorker(ctx, provider.WorkerURL, provider.APIProxyURL)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: fetch cf-worker nodes: %v", ErrProviderUnreachable, err)
 		}
 		sessions := workerSessions(nodes, provider.Protocol, size)
 		if len(sessions) == 0 {
@@ -291,7 +291,7 @@ func (s *Service) providerSessions(
 			nodes, err = s.fetchNodes(ctx, apiURL)
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: fetch api-list nodes: %v", ErrProviderUnreachable, err)
 		}
 		sessions := sessionsFromNodes(nodes, size)
 		if len(sessions) == 0 {

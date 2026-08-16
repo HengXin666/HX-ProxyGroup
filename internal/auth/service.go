@@ -29,6 +29,7 @@ var (
 	ErrLockedOut                    = errors.New("too many failed logins, retry later")
 	ErrInvalidUsername              = errors.New("username must contain 3 to 64 characters")
 	ErrWeakPassword                 = errors.New("password must contain 10 to 128 characters")
+	ErrInvalidAPIKeyName            = errors.New("api key name must contain 1 to 64 characters")
 	ErrTwoFactorUnavailable         = errors.New("two-factor authentication is unavailable")
 	ErrTwoFactorNotConfigured       = errors.New("two-factor authentication is not configured")
 	ErrTwoFactorAlreadyEnabled      = errors.New("two-factor authentication is already enabled")
@@ -62,6 +63,11 @@ type Repository interface {
 	UpsertAdminTwoFactor(context.Context, store.AdminTwoFactorRecord) error
 	UpdateAdminTwoFactorEnabled(context.Context, bool, time.Time) error
 	DeleteAdminTwoFactor(context.Context) error
+	CreateAPIKey(context.Context, store.APIKeyRecord) error
+	GetAPIKeyByHash(context.Context, string) (store.APIKeyRecord, error)
+	TouchAPIKey(context.Context, string, time.Time) error
+	ListAPIKeys(context.Context) ([]store.APIKeyRecord, error)
+	DeleteAPIKey(context.Context, string) error
 }
 
 // Session is the authenticated view handed to the API layer.
@@ -71,6 +77,17 @@ type Session struct {
 	Username            string
 	ExpiresAt           time.Time
 	TwoFactorVerifiedAt *time.Time
+}
+
+// APIKey is the public view of a machine credential. Key carries the
+// plaintext secret and is populated only by CreateAPIKey; list views never
+// expose it, and the server persists only its hash.
+type APIKey struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at"`
+	Key        string    `json:"key,omitempty"`
 }
 
 type Service struct {
@@ -285,6 +302,97 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 		return nil
 	}
 	return s.repository.DeleteAdminSession(ctx, hashToken(token))
+}
+
+// apiKeyPrefix marks generated machine credentials so operators can recognize
+// them at a glance; the prefix itself carries no security meaning.
+const apiKeyPrefix = "hxk_"
+
+// CreateAPIKey issues a new machine credential for the management API. The
+// plaintext key is returned exactly once; only its digest is persisted, so
+// listing and database leaks never expose usable credentials.
+func (s *Service) CreateAPIKey(ctx context.Context, name string) (APIKey, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 64 {
+		return APIKey{}, ErrInvalidAPIKeyName
+	}
+	secret, err := randomToken()
+	if err != nil {
+		return APIKey{}, err
+	}
+	id, err := randomToken()
+	if err != nil {
+		return APIKey{}, err
+	}
+	now := s.now().UTC()
+	record := store.APIKeyRecord{
+		ID:         "api-key-" + id,
+		Name:       name,
+		KeyHash:    hashToken(apiKeyPrefix + secret),
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}
+	if err := s.repository.CreateAPIKey(ctx, record); err != nil {
+		return APIKey{}, err
+	}
+	return APIKey{
+		ID:         record.ID,
+		Name:       record.Name,
+		CreatedAt:  record.CreatedAt,
+		LastUsedAt: record.LastUsedAt,
+		Key:        apiKeyPrefix + secret,
+	}, nil
+}
+
+// AuthenticateAPIKey resolves a machine credential to a session. The returned
+// session carries an empty CSRF token: bearer credentials are not attached by
+// browsers automatically, so the API layer treats an empty CSRF token as an
+// API-key session and skips the cookie CSRF gate.
+func (s *Service) AuthenticateAPIKey(ctx context.Context, rawKey string) (Session, error) {
+	if strings.TrimSpace(rawKey) == "" {
+		return Session{}, ErrSessionExpired
+	}
+	record, err := s.repository.GetAPIKeyByHash(ctx, hashToken(rawKey))
+	if errors.Is(err, store.ErrNotFound) {
+		return Session{}, ErrSessionExpired
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	account, err := s.repository.GetAdminAccount(ctx)
+	if err != nil {
+		return Session{}, ErrSessionExpired
+	}
+	// Throttle write amplification: refresh last_used_at at most once per minute.
+	now := s.now().UTC()
+	if now.Sub(record.LastUsedAt) > time.Minute {
+		_ = s.repository.TouchAPIKey(ctx, record.ID, now)
+	}
+	return Session{Token: rawKey, CSRFToken: "", Username: account.Username, ExpiresAt: record.LastUsedAt}, nil
+}
+
+// ListAPIKeys returns the machine credentials without any secret material.
+func (s *Service) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
+	records, err := s.repository.ListAPIKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]APIKey, 0, len(records))
+	for _, record := range records {
+		keys = append(keys, APIKey{
+			ID:         record.ID,
+			Name:       record.Name,
+			CreatedAt:  record.CreatedAt,
+			LastUsedAt: record.LastUsedAt,
+		})
+	}
+	return keys, nil
+}
+
+// RevokeAPIKey permanently invalidates a machine credential. Revoking a key
+// that does not exist is a no-op.
+func (s *Service) RevokeAPIKey(ctx context.Context, id string) error {
+	return s.repository.DeleteAPIKey(ctx, id)
 }
 
 func (s *Service) LogoutAll(ctx context.Context) error {

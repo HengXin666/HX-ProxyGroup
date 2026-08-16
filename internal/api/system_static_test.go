@@ -46,6 +46,16 @@ func (*systemUpdateAuth) VerifyTwoFactor(context.Context, string, string, string
 	return nil
 }
 func (*systemUpdateAuth) RenewTwoFactorVerification(context.Context, string) error { return nil }
+func (*systemUpdateAuth) AuthenticateAPIKey(context.Context, string) (auth.Session, error) {
+	return auth.Session{Username: "admin"}, nil
+}
+func (*systemUpdateAuth) CreateAPIKey(context.Context, string) (auth.APIKey, error) {
+	return auth.APIKey{}, nil
+}
+func (*systemUpdateAuth) ListAPIKeys(context.Context) ([]auth.APIKey, error) {
+	return nil, nil
+}
+func (*systemUpdateAuth) RevokeAPIKey(context.Context, string) error { return nil }
 
 type systemUpdateService struct{ calls int }
 

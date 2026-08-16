@@ -250,14 +250,16 @@ func sanitizeProxyError(err error, proxyRaw string) error {
 		return nil
 	}
 	message := err.Error()
-	if parsed, parseErr := url.Parse(proxyRaw); parseErr == nil {
-		if parsed.User != nil {
-			if password, ok := parsed.User.Password(); ok {
-				message = strings.ReplaceAll(message, password, "***")
+	if proxyRaw != "" {
+		if parsed, parseErr := url.Parse(proxyRaw); parseErr == nil && parsed.String() != "" {
+			if parsed.User != nil {
+				if password, ok := parsed.User.Password(); ok {
+					message = strings.ReplaceAll(message, password, "***")
+				}
+				message = strings.ReplaceAll(message, parsed.User.Username(), "***")
 			}
-			message = strings.ReplaceAll(message, parsed.User.Username(), "***")
+			message = strings.ReplaceAll(message, parsed.String(), "configured proxy")
 		}
-		message = strings.ReplaceAll(message, parsed.String(), "configured proxy")
 	}
 	return errors.New(message)
 }

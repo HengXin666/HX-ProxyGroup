@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -75,6 +76,18 @@ func TestAPITransportUsesConfiguredProxyProtocol(t *testing.T) {
 	}
 	if sanitized := sanitizeProxyError(io.ErrUnexpectedEOF, "http://user:secret@127.0.0.1:7890").Error(); strings.Contains(sanitized, "secret") {
 		t.Fatalf("proxy error leaked credentials: %s", sanitized)
+	}
+}
+
+func TestSanitizeProxyErrorEmptyProxyPreservesMessage(t *testing.T) {
+	t.Parallel()
+	raw := errors.New("fetch cf-worker nodes: lookup bpb.x70hrsl-a5a.workers.dev: no such host")
+	sanitized := sanitizeProxyError(raw, "")
+	if sanitized.Error() != raw.Error() {
+		t.Fatalf("empty proxyRaw must preserve message verbatim, got %q", sanitized.Error())
+	}
+	if strings.Contains(sanitized.Error(), "configured proxy") {
+		t.Fatalf("empty proxyRaw must not inject placeholder text: %s", sanitized.Error())
 	}
 }
 

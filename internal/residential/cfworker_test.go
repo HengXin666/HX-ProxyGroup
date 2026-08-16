@@ -66,6 +66,37 @@ func TestNormalizeWorkerServer(t *testing.T) {
 	}
 }
 
+func TestParseWorkerConfigSyncsCanonicalServerSuffix(t *testing.T) {
+	t.Parallel()
+	body := bpbRawPayload(t,
+		"vless://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee@bpb.x70hlrsl-a5a:443?encryption=none&host=bpb.x70hlrsl-a5a&type=ws&security=tls&path=%2Fvl%2Fabc%3Fed%3D2560&sni=bpb.x70hlrsl-a5a&fp=chrome&alpn=http%2F1.1#BPB Bare",
+	)
+	nodes, err := parseWorkerConfig(body)
+	if err != nil {
+		t.Fatalf("parseWorkerConfig() error = %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("parseWorkerConfig() = %d nodes, want 1", len(nodes))
+	}
+	want := "bpb.x70hlrsl-a5a.workers.dev"
+	if nodes[0].Server != want {
+		t.Fatalf("node.Server = %q, want %q", nodes[0].Server, want)
+	}
+	if got := nodes[0].Canonical["server"]; got != want {
+		t.Fatalf("canonical server = %v, want %q", got, want)
+	}
+	query, ok := nodes[0].Canonical["query"].(map[string]any)
+	if !ok {
+		t.Fatalf("canonical query = %#v, want map", nodes[0].Canonical["query"])
+	}
+	if got := query["host"]; got != want {
+		t.Fatalf("canonical query host = %v, want %q", got, want)
+	}
+	if got := query["sni"]; got != want {
+		t.Fatalf("canonical query sni = %v, want %q", got, want)
+	}
+}
+
 func TestParseWorkerConfigRejectsBadPayloads(t *testing.T) {
 	t.Parallel()
 	cases := [][]byte{

@@ -89,7 +89,27 @@ func parseWorkerConfig(body []byte) ([]FetchedWorkerNode, error) {
 			continue
 		}
 		server := strings.TrimSpace(canonicalString(node.Canonical["server"]))
-		server = normalizeWorkerServer(server)
+		normalizedServer := normalizeWorkerServer(server)
+		if normalizedServer != server {
+			node.Canonical["server"] = normalizedServer
+			for _, key := range []string{"sni", "servername", "host"} {
+				if value, exists := node.Canonical[key]; exists {
+					if strings.EqualFold(strings.TrimSpace(canonicalString(value)), server) {
+						node.Canonical[key] = normalizedServer
+					}
+				}
+			}
+			if query, ok := node.Canonical["query"].(map[string]any); ok {
+				for _, key := range []string{"host", "sni"} {
+					if value, exists := query[key]; exists {
+						if strings.EqualFold(strings.TrimSpace(canonicalString(value)), server) {
+							query[key] = normalizedServer
+						}
+					}
+				}
+			}
+		}
+		server = normalizedServer
 		port, ok := canonicalPort(node.Canonical["port"])
 		if server == "" || !ok || len(node.Canonical) == 0 {
 			continue

@@ -65,7 +65,14 @@ export function TerminalPage({
       window.clearInterval(keepAliveRef.current)
       keepAliveRef.current = null
     }
-    socketRef.current?.close(1000, "user disconnect")
+    const socket = socketRef.current
+    if (socket) {
+      socket.close(1000, "user disconnect")
+      // The connect() onclose guard ignores stale sockets (its whole purpose),
+      // so a user-initiated disconnect must print the session-ended feedback
+      // here instead of relying on the async close event.
+      terminalRef.current?.write("\r\n\x1b[33m[会话已结束：user disconnect]\x1b[0m\r\n")
+    }
     socketRef.current = null
     setConnection("closed")
   }, [])
@@ -202,6 +209,15 @@ export function TerminalPage({
     socketRef.current = socket
     let opened = false
 
+    // A socket that has been superseded by a newer connection must never
+    // mutate shared state. Its close/error events can fire AFTER a reconnect
+    // has taken over (e.g. 断开 → 连接 quickly, or the 2FA poll forcing a
+    // disconnect right before the user reconnects); without this guard the
+    // stale onclose nulls socketRef.current, clears the new socket's
+    // keepalive, flips the UI back to "closed" and silently drops every
+    // keystroke until the page is reloaded.
+    const isCurrentSocket = () => socketRef.current === socket
+
     // Streaming decoder lets us peek at PTY output for cwd tracking without
     // touching the raw bytes written to the terminal.
     const decoder = new TextDecoder()
@@ -213,6 +229,8 @@ export function TerminalPage({
     }
 
     socket.onopen = () => {
+      // A stale socket that was already replaced must not drive the UI.
+      if (!isCurrentSocket()) return
       opened = true
       setConnection("connected")
       fit?.fit()
@@ -238,6 +256,8 @@ export function TerminalPage({
       socket.send(JSON.stringify({ type: "input", data: "pwd\n" }))
     }
     socket.onmessage = (event) => {
+      // A stale socket must not write late output into the new session.
+      if (!isCurrentSocket()) return
       if (event.data instanceof ArrayBuffer) {
         const bytes = new Uint8Array(event.data)
         terminal.write(bytes)
@@ -271,6 +291,10 @@ export function TerminalPage({
       }
     }
     socket.onclose = (event) => {
+      // Only the current socket may tear the session down: a stale socket's
+      // close event racing a reconnect must not null out the new socket's
+      // reference, clear its keepalive or flip the UI back to "closed".
+      if (!isCurrentSocket()) return
       if (keepAliveRef.current !== null) {
         window.clearInterval(keepAliveRef.current)
         keepAliveRef.current = null
@@ -291,6 +315,8 @@ export function TerminalPage({
       }
     }
     socket.onerror = () => {
+      // A stale socket's error must not surface a notice for the new session.
+      if (!isCurrentSocket()) return
       // A failed WebSocket handshake (e.g. stale 2FA state) surfaces here; the
       // status refresh switches the page to the 2FA unlock prompt.
       api.terminalStatus().then((result) => setStatus(result)).catch(() => {})

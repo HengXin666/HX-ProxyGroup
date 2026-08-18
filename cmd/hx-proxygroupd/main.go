@@ -289,6 +289,7 @@ func run(logger *slog.Logger) error {
 		PrivilegedSocket: cfg.TerminalPrivilegedSocket,
 		UpdaterPath:      "/usr/local/sbin/hx-proxygroup-install",
 		PersistHistory:   cfg.TerminalHistory,
+		CwdStore:         database,
 	}, logger)
 	if err != nil {
 		return err

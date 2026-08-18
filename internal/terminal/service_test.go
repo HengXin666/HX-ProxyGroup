@@ -5,13 +5,47 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// memoryCwdStore is an in-memory CwdStore that counts writes so tests can
+// assert persistence and throttling.
+type memoryCwdStore struct {
+	mutex  sync.Mutex
+	values map[string]string
+	writes int
+}
+
+func (m *memoryCwdStore) GetMetadata(_ context.Context, key string) (string, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	value, ok := m.values[key]
+	if !ok {
+		return "", errors.New("not found")
+	}
+	return value, nil
+}
+
+func (m *memoryCwdStore) SetMetadata(_ context.Context, key, value string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.values[key] = value
+	m.writes++
+	return nil
+}
+
+func (m *memoryCwdStore) writeCount() int {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.writes
 }
 
 func TestDisabledServiceRefusesSessions(t *testing.T) {
@@ -199,6 +233,135 @@ func TestSafeShellEnvironmentDropsApplicationSecrets(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("safe environment missing %q: %s", expected, joined)
 		}
+	}
+}
+
+func TestStartShellResumesRequestedDirectory(t *testing.T) {
+	home := t.TempDir()
+	startDir := t.TempDir()
+
+	file, command, err := startShell("/bin/sh", []string{"HOME=" + home}, false, startDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPTYSession(file, command).Close("test done")
+	if command.Dir != startDir {
+		t.Fatalf("shell start dir = %q, want %q", command.Dir, startDir)
+	}
+
+	// A vanished or relative start dir must fall back to HOME, never be
+	// passed through to the shell.
+	for _, invalid := range []string{filepath.Join(startDir, "does-not-exist"), "relative/dir", "", "/tmp/\x00bad"} {
+		file, command, err = startShell("/bin/sh", []string{"HOME=" + home}, false, invalid)
+		if err != nil {
+			t.Fatalf("startShell(%q): %v", invalid, err)
+		}
+		newPTYSession(file, command).Close("test done")
+		if command.Dir != home {
+			t.Fatalf("invalid start dir %q resolved to %q, want HOME %q", invalid, command.Dir, home)
+		}
+	}
+}
+
+func TestCwdReportPersistsAndResumesNextSession(t *testing.T) {
+	store := &memoryCwdStore{values: map[string]string{}}
+	service, err := NewService(Config{Enabled: true, Shell: "/bin/sh", CwdStore: store}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	startDir := t.TempDir()
+	service.ReportCwd(context.Background(), "admin", startDir)
+
+	// A fresh service (no in-memory cache) must pick the directory up from the
+	// store: this is the re-login / control-plane restart path.
+	resumed, err := NewService(Config{Enabled: true, Shell: "/bin/sh", CwdStore: store}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := resumed.Open(context.Background(), "admin", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("open resumed session: %v", err)
+	}
+	defer session.Close("test done")
+	if _, err := session.Write([]byte("pwd\n")); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	buffer := make([]byte, 4096)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(output.String(), startDir) {
+		count, readErr := session.Read(buffer)
+		if count > 0 {
+			output.WriteString(string(buffer[:count]))
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	if !strings.Contains(output.String(), startDir) {
+		t.Fatalf("resumed shell did not start in %q; output: %q", startDir, output.String())
+	}
+}
+
+func TestCwdReportThrottlesPersistence(t *testing.T) {
+	previous := cwdPersistInterval
+	cwdPersistInterval = 50 * time.Millisecond
+	defer func() { cwdPersistInterval = previous }()
+
+	store := &memoryCwdStore{values: map[string]string{}}
+	service, err := NewService(Config{Enabled: true, CwdStore: store}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first := t.TempDir()
+	second := t.TempDir()
+	third := t.TempDir()
+
+	service.ReportCwd(ctx, "admin", first)
+	if writes := store.writeCount(); writes != 1 {
+		t.Fatalf("first report writes = %d, want 1", writes)
+	}
+	// A second report inside the throttle window must not persist again.
+	service.ReportCwd(ctx, "admin", second)
+	if writes := store.writeCount(); writes != 1 {
+		t.Fatalf("throttled report writes = %d, want 1", writes)
+	}
+	// After the window, a changed directory persists.
+	time.Sleep(80 * time.Millisecond)
+	service.ReportCwd(ctx, "admin", third)
+	if writes := store.writeCount(); writes != 2 {
+		t.Fatalf("post-window report writes = %d, want 2", writes)
+	}
+	// A report of the same directory never rewrites even after the window.
+	time.Sleep(80 * time.Millisecond)
+	service.ReportCwd(ctx, "admin", third)
+	if writes := store.writeCount(); writes != 2 {
+		t.Fatalf("unchanged report writes = %d, want 2", writes)
+	}
+
+	// Invalid inputs never write.
+	before := store.writeCount()
+	service.ReportCwd(ctx, "admin", "relative/path")
+	service.ReportCwd(ctx, "admin", "")
+	service.ReportCwd(ctx, "admin", "/tmp/bad\x00path")
+	service.ReportCwd(ctx, "", first)
+	if writes := store.writeCount(); writes != before {
+		t.Fatalf("invalid reports wrote %d times, want 0", writes-before)
+	}
+}
+
+func TestCwdReportCachedForConcurrentSessions(t *testing.T) {
+	store := &memoryCwdStore{values: map[string]string{}}
+	service, err := NewService(Config{Enabled: true, CwdStore: store}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	startDir := t.TempDir()
+	service.ReportCwd(context.Background(), "admin", startDir)
+	// Same process: the in-memory cache serves the value without a store read.
+	if got := service.resumeCwd(context.Background(), "admin"); got != startDir {
+		t.Fatalf("resumeCwd = %q, want %q", got, startDir)
 	}
 }
 

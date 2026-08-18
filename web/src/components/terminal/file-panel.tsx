@@ -42,32 +42,47 @@ export function FilePanel({ path, connected, onPathChange, onNotice }: FilePanel
   const lastNavRef = useRef<{ name: string; at: number } | null>(null)
   const [dragOver, setDragOver] = useState(false)
 
+  // load fetches one directory listing. Transient failures (network drops,
+  // 5xx from a busy control plane) are retried with a small backoff, and the
+  // previous successful listing stays visible while retrying; only a
+  // definitive 403/404 or exhausted retries surface as a failure.
   const load = useCallback(async (target: string) => {
     const seq = ++seqRef.current
     setLoading(true)
-    try {
-      const result = await api.listTerminalFiles(target === "" ? "/" : target)
-      if (seqRef.current !== seq) return
-      setFailed(null)
-      setList(result)
-    } catch (cause) {
-      if (seqRef.current !== seq) return
-      // Missing and permission-denied directories are normal shell states (the
-      // root PTY helper starts in /root while the control plane cannot read
-      // it). Render them inline instead of firing a page toast on every sync.
-      if (
-        cause instanceof ApiError &&
-        (cause.code === "file_list_forbidden" || cause.code === "file_list_not_found")
-      ) {
-        setList(null)
-        setFailed({ path: target === "" ? "/" : target, message: cause.message })
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const result = await api.listTerminalFiles(target === "" ? "/" : target)
+        if (seqRef.current !== seq) return
+        setFailed(null)
+        setList(result)
+        setLoading(false)
         return
+      } catch (cause) {
+        if (seqRef.current !== seq) return
+        lastError = cause
+        const retryable =
+          cause instanceof ApiError ? cause.status >= 500 : true // network-level failure
+        if (!retryable || attempt === 2) break
+        await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)))
       }
+    }
+    if (seqRef.current !== seq) return
+    const cause = lastError
+    // Missing and permission-denied directories are normal shell states (the
+    // root PTY helper starts in /root while the control plane cannot read
+    // it). Render them inline instead of firing a page toast on every sync.
+    if (
+      cause instanceof ApiError &&
+      (cause.code === "file_list_forbidden" || cause.code === "file_list_not_found")
+    ) {
+      setList(null)
+      setFailed({ path: target === "" ? "/" : target, message: cause.message })
+    } else {
       setFailed(null)
       onNotice(cause instanceof ApiError ? cause.message : "读取目录失败", "error")
-    } finally {
-      if (seqRef.current === seq) setLoading(false)
     }
+    setLoading(false)
   }, [onNotice])
 
   useEffect(() => {

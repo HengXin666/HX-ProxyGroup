@@ -17,6 +17,9 @@ type TerminalService interface {
 	Enabled() bool
 	Status() terminal.Status
 	Open(ctx context.Context, actor, remote string) (terminal.Session, error)
+	// ReportCwd records the shell directory reported by the frontend so a
+	// reconnect or a later login resumes in the previous directory.
+	ReportCwd(ctx context.Context, actor, cwd string)
 	// File operations share the privilege domain of the shell: they are served
 	// by the root PTY helper when one is configured, so the file manager can
 	// browse directories (e.g. /home, /root) the sandboxed control plane
@@ -66,10 +69,12 @@ func (s *Server) handleTerminalStatus(writer http.ResponseWriter, request *http.
 }
 
 // terminalMessage is the client -> server control protocol. Server -> client
-// traffic is raw binary PTY output rendered by xterm.js.
+// traffic is raw binary PTY output rendered by xterm.js, plus lightweight JSON
+// control frames (mode / pong).
 type terminalMessage struct {
 	Type string `json:"type"`
 	Data string `json:"data,omitempty"`
+	Cwd  string `json:"cwd,omitempty"`
 	Cols int    `json:"cols,omitempty"`
 	Rows int    `json:"rows,omitempty"`
 }
@@ -80,7 +85,15 @@ type terminalModeMessage struct {
 	Canonical bool   `json:"canonical"`
 }
 
-var terminalAuthRevalidateInterval = 30 * time.Second
+var (
+	terminalAuthRevalidateInterval = 30 * time.Second
+	// terminalHeartbeatInterval / terminalHeartbeatTimeout drive the server
+	// heartbeat: the server pings and requires the browser's automatic pong
+	// within the timeout. On lossy networks a silently dead peer is reaped in
+	// about interval+timeout instead of leaking its session slot indefinitely.
+	terminalHeartbeatInterval = 15 * time.Second
+	terminalHeartbeatTimeout  = 15 * time.Second
+)
 
 // handleTerminalSocket bridges one WebSocket to one PTY session. Unlike the
 // rest of the API, the terminal requires a fully configured and
@@ -188,6 +201,33 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 		}
 	}()
 
+	// Heartbeat the peer so a silently dead connection (packet loss, NAT drop)
+	// is detected promptly: the session slot is freed and a later reconnect is
+	// not blocked by the session cap. Browsers auto-respond to pings; when the
+	// pong is not received within the timeout the peer is treated as gone.
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(terminalHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-socketCtx.Done():
+				return
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(socketCtx, terminalHeartbeatTimeout)
+				pingErr := connection.Ping(pingCtx)
+				pingCancel()
+				if pingErr != nil {
+					shell.Close("connection heartbeat lost")
+					cancel()
+					_ = connection.Close(websocket.StatusGoingAway, "connection heartbeat lost")
+					return
+				}
+			}
+		}
+	}()
+
 	// Revalidate the database-backed administrator session while the socket is
 	// open. Logout-all, username changes, password changes, and expiry revoke
 	// an existing terminal instead of only blocking the next connection.
@@ -245,11 +285,25 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 			}
 		case "resize":
 			_ = shell.Resize(message.Cols, message.Rows)
+		case "ping":
+			// Application-level keepalive from the client (browsers cannot
+			// send WebSocket ping frames). Reply so the client can detect a
+			// half-dead connection without waiting for TCP to give up.
+			pong, _ := json.Marshal(terminalMessage{Type: "pong"})
+			writeCtx, writeCancel := context.WithTimeout(socketCtx, 5*time.Second)
+			_ = connection.Write(writeCtx, websocket.MessageText, pong)
+			writeCancel()
+		case "cwd":
+			// Persist the reported shell directory for resume. The service
+			// validates and throttles; a failed persist must not kill the
+			// terminal.
+			s.terminal.ReportCwd(socketCtx, session.Username, message.Cwd)
 		}
 	}
 	cancel()
 	shell.Close("connection closed")
 	<-outputDone
 	<-authDone
+	<-heartbeatDone
 	_ = connection.Close(websocket.StatusNormalClosure, "bye")
 }

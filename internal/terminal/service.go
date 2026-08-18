@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,25 @@ const (
 	defaultShellSizeCols = 120
 	defaultShellSizeRows = 32
 )
+
+var (
+	// cwdPersistInterval throttles per-actor persistence of the reported shell
+	// directory. The client reports on every tracked change (bounded by its own
+	// throttle); this server-side floor keeps SQLite writes to at most one per
+	// actor per interval while still surviving reconnects and restarts.
+	// Declared as a var (not const) so tests can shrink it.
+	cwdPersistInterval = 5 * time.Second
+)
+
+// CwdStore persists the last known shell directory per administrator so a
+// reconnect or a later login resumes in the previous directory. The
+// control-plane store implements it with the system_metadata key-value table;
+// the store is optional — without one the terminal simply falls back to the
+// shell's HOME on every session.
+type CwdStore interface {
+	GetMetadata(ctx context.Context, key string) (string, error)
+	SetMetadata(ctx context.Context, key, value string) error
+}
 
 type Config struct {
 	// Enabled gates the whole feature. The control-plane default is enabled;
@@ -60,6 +80,9 @@ type Config struct {
 	// ~/.bash_history, zsh ~/.zsh_history) instead of pointing HISTFILE at
 	// /dev/null. Enabled by default; disable for a no-history lockdown.
 	PersistHistory bool
+	// CwdStore optionally persists the last shell directory per administrator
+	// (nil disables directory resume).
+	CwdStore CwdStore
 	// UpdaterPath enables the fixed-command privileged update request. The
 	// helper validates this root-owned executable before scheduling it.
 	UpdaterPath string
@@ -82,6 +105,13 @@ type Service struct {
 
 	mutex    sync.Mutex
 	sessions map[string]Session
+
+	// cwd state: per-actor last reported directory and the last time it was
+	// persisted, used to resume sessions in the previous directory without
+	// writing SQLite on every keystroke.
+	cwdMutex  sync.Mutex
+	lastCwd   map[string]string
+	lastWrite map[string]time.Time
 
 	// host samples the local machine + monitored processes at a low cadence.
 	host           *hostCollector
@@ -106,6 +136,8 @@ func NewService(config Config, logger *slog.Logger) (*Service, error) {
 		config:         config,
 		logger:         logger,
 		sessions:       make(map[string]Session),
+		lastCwd:        make(map[string]string),
+		lastWrite:      make(map[string]time.Time),
 		host:           newHostCollector(),
 		metricsTargets: map[int]string{os.Getpid(): "hx-proxygroupd"},
 	}, nil
@@ -189,16 +221,17 @@ func (s *Service) Open(ctx context.Context, actor, remote string) (Session, erro
 		s.mutex.Unlock()
 	}
 	now := time.Now()
+	startDir := s.resumeCwd(ctx, actor)
 	var base Session
 	var shellName string
 	var err error
 	if socketPath := strings.TrimSpace(s.config.PrivilegedSocket); socketPath != "" {
-		base, err = openRemoteSession(ctx, socketPath)
+		base, err = openRemoteSession(ctx, socketPath, startDir)
 		shellName = "root PTY helper"
 	} else {
 		var ptyFile *os.File
 		var command *exec.Cmd
-		ptyFile, command, err = startShell(s.config.Shell, os.Environ(), s.config.PersistHistory)
+		ptyFile, command, err = startShell(s.config.Shell, os.Environ(), s.config.PersistHistory, startDir)
 		if err == nil {
 			base = newPTYSession(ptyFile, command)
 			shellName = command.Path
@@ -238,9 +271,82 @@ func (s *Service) Open(ctx context.Context, actor, remote string) (Session, erro
 		"remote", remote,
 		"shell", shellName,
 		"privileged", strings.TrimSpace(s.config.PrivilegedSocket) != "",
+		"resume_dir", startDir,
 	)
 	go session.watch(ctx, s.config.IdleTimeout, s.config.MaxLifetime)
 	return session, nil
+}
+
+func cwdKey(actor string) string { return "terminal_cwd:" + actor }
+
+// validReportedCwd reports whether a client-provided directory is safe to
+// remember as a resume hint. The directory does not need to exist yet — the
+// shell start fallback handles a vanished directory — but it must be a bounded
+// absolute path with no NUL or line breaks.
+func validReportedCwd(cwd string) bool {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" || !filepath.IsAbs(cwd) || strings.ContainsRune(cwd, 0) || strings.ContainsAny(cwd, "\r\n") || len(cwd) > 4096 {
+		return false
+	}
+	return true
+}
+
+// ReportCwd records the shell directory reported by the frontend for an
+// administrator. The value is cached in memory immediately (so a concurrent
+// session and a same-process reconnect see it) and persisted to the optional
+// store at most once per cwdPersistInterval per actor. Persistence failures
+// are logged but never fail the terminal: a missed write only costs the next
+// resume.
+func (s *Service) ReportCwd(ctx context.Context, actor, cwd string) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" || !validReportedCwd(cwd) {
+		return
+	}
+	cwd = filepath.Clean(cwd)
+	s.cwdMutex.Lock()
+	changed := s.lastCwd[actor] != cwd
+	s.lastCwd[actor] = cwd
+	last := s.lastWrite[actor]
+	shouldWrite := s.config.CwdStore != nil && changed && (last.IsZero() || time.Since(last) >= cwdPersistInterval)
+	s.cwdMutex.Unlock()
+	if !shouldWrite {
+		return
+	}
+	if err := s.config.CwdStore.SetMetadata(ctx, cwdKey(actor), cwd); err != nil {
+		s.logger.Warn("terminal resume directory persist failed", "actor", actor, "error", err)
+		return
+	}
+	s.cwdMutex.Lock()
+	s.lastWrite[actor] = time.Now()
+	s.cwdMutex.Unlock()
+}
+
+// resumeCwd returns the last reported directory for an actor, preferring the
+// in-memory value (fresh reports, concurrent sessions) and falling back to the
+// optional store after a service restart. The returned value is only a hint:
+// startShell validates it again and falls back to HOME when it is unusable.
+func (s *Service) resumeCwd(ctx context.Context, actor string) string {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return ""
+	}
+	s.cwdMutex.Lock()
+	cached := s.lastCwd[actor]
+	s.cwdMutex.Unlock()
+	if cached != "" {
+		return cached
+	}
+	if s.config.CwdStore == nil {
+		return ""
+	}
+	value, err := s.config.CwdStore.GetMetadata(ctx, cwdKey(actor))
+	if err != nil {
+		return ""
+	}
+	if !validReportedCwd(value) {
+		return ""
+	}
+	return filepath.Clean(value)
 }
 
 // Shutdown closes every open session (service stop).

@@ -12,7 +12,18 @@ import { createTypedCdTracker, detectPwdOutput, quoteForShell } from "@/lib/term
 import { subscribeTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
-type ConnectionState = "idle" | "connecting" | "connected" | "closed"
+type ConnectionState = "idle" | "connecting" | "connected" | "reconnecting" | "closed"
+
+// Reconnect backoff: 1s, 2s, 4s, 8s, 16s, then 30s capped, plus jitter. The
+// terminal buffer survives reconnects (auto-reconnect never resets xterm), so
+// scrollback and last command output remain visible while the link heals.
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 30_000
+// A pong must arrive at least this often while the socket looks open; browsers
+// cannot send WebSocket ping frames, so the client pings and the server pongs.
+// Missing the deadline for a full minute means the path is half-dead — force a
+// close so the reconnect loop takes over instead of waiting for TCP to give up.
+const PONG_TIMEOUT_MS = 60_000
 
 export function TerminalPage({
   onNotice,
@@ -24,6 +35,9 @@ export function TerminalPage({
   const fitRef = useRef<FitAddon | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const keepAliveRef = useRef<number | null>(null)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const reconnectAttemptRef = useRef(0)
+  const lastPongRef = useRef(0)
   const cwdRef = useRef("/")
   // Tracked by the typed-cd tracker to unblock probes after a raw-mode
   // application (vim/less/htop) exits — the tracker clears its internal
@@ -39,10 +53,21 @@ export function TerminalPage({
   const [unlocking, setUnlocking] = useState(false)
   const [panelHidden, setPanelHidden] = useState(false)
   const [cwd, setCwd] = useState("/")
+  // statusRef mirrors status for callbacks that outlive a render (reconnect
+  // timers, keepalive) so they always check the latest 2FA state.
+  const statusRef = useRef<TerminalStatus | null>(null)
+  statusRef.current = status
 
   const updateCwd = useCallback((next: string) => {
     cwdRef.current = next
     setCwd(next)
+    // Report the directory to the server so a reconnect or a later login
+    // resumes here. The service validates and throttles persistence; the
+    // message itself is tiny, so reporting on every confirmed change is fine.
+    const socket = socketRef.current
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "cwd", cwd: next }))
+    }
   }, [])
 
   useEffect(() => {
@@ -61,6 +86,11 @@ export function TerminalPage({
   }, [onNotice])
 
   const disconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+    reconnectAttemptRef.current = 0
     if (keepAliveRef.current !== null) {
       window.clearInterval(keepAliveRef.current)
       keepAliveRef.current = null
@@ -118,14 +148,20 @@ export function TerminalPage({
   }
 
   // Keep the session synced with server PTY clock even when the browser tab is
-  // hidden: switching pages must NOT disconnect the user. A lightweight no-op
-  // ping frame every 20s encourages NAT/proxy keepalive and helps the server
-  // keep the session lastActive fresh without sending real input.
+  // hidden: switching pages must NOT disconnect the user. A lightweight ping
+  // frame every 20s keeps NAT/proxy keepalive alive in both directions (the
+  // server replies pong) and lets the client detect a half-dead connection via
+  // the pong deadline instead of waiting for TCP to give up.
   const startKeepalive = useCallback((socket: WebSocket) => {
     if (keepAliveRef.current !== null) window.clearInterval(keepAliveRef.current)
+    lastPongRef.current = Date.now()
     keepAliveRef.current = window.setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "resize", cols: 0, rows: 0 }))
+      if (socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify({ type: "ping" }))
+      if (Date.now() - lastPongRef.current > PONG_TIMEOUT_MS) {
+        // No pong for a full minute on a connection we believe is open: the
+        // path is half-dead. Force the close so the reconnect loop takes over.
+        socket.close(4000, "pong timeout")
       }
     }, 20_000)
   }, [])
@@ -160,8 +196,33 @@ export function TerminalPage({
     return () => observer.disconnect()
   }, [])
 
-  const connect = useCallback(() => {
+  // connectRef lets timers created in an older render invoke the latest
+  // connect without recreating the timer whenever connect's identity changes.
+  const connectRef = useRef<((options?: { preserve?: boolean }) => void) | null>(null)
+
+  // Schedule an automatic reconnect with exponential backoff + jitter. The
+  // 2FA state is re-checked when the timer fires so a lapsed verification
+  // simply stops the loop and lets the unlock prompt take over.
+  const scheduleReconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) return
+    const attempt = reconnectAttemptRef.current
+    reconnectAttemptRef.current = attempt + 1
+    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** Math.min(attempt, 5)) + Math.random() * 400
+    setConnection("reconnecting")
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      if (!statusRef.current?.two_factor_verified) return
+      connectRef.current?.({ preserve: true })
+    }, delay)
+  }, [])
+
+  const connect = useCallback((options?: { preserve?: boolean }) => {
     if (!containerRef.current || socketRef.current) return
+    // A manual connect cancels any pending auto-reconnect (the user took over).
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
     if (!status?.two_factor_verified) {
       // The cached status may be stale if the 2FA window lapsed while the page
       // stayed open; refresh once so the unlock prompt appears immediately.
@@ -186,6 +247,9 @@ export function TerminalPage({
     }
     const terminal = terminalRef.current
     const fit = fitRef.current
+    // Auto-reconnects preserve the xterm buffer so scrollback and the last
+    // command output survive the network blip; manual connects start fresh.
+    const isReconnect = options?.preserve === true
     // Reconnecting must not stack onData listeners: each leaked listener
     // re-sends every keystroke, so a reconnect used to echo `d` as `dd`.
     inputDisposableRef.current?.dispose()
@@ -201,7 +265,9 @@ export function TerminalPage({
       }
       pendingInput = ""
     }
-    terminal.reset()
+    if (!isReconnect) {
+      terminal.reset()
+    }
     fit?.fit()
 
     const socket = new WebSocket(api.terminalSocketURL())
@@ -232,6 +298,7 @@ export function TerminalPage({
       // A stale socket that was already replaced must not drive the UI.
       if (!isCurrentSocket()) return
       opened = true
+      reconnectAttemptRef.current = 0
       setConnection("connected")
       fit?.fit()
       sendResize()
@@ -244,6 +311,9 @@ export function TerminalPage({
       pwdDeadlineRef.current = Date.now() + 4000
       pwdBufferRef.current = ""
       socket.send(JSON.stringify({ type: "input", data: "pwd\n" }))
+      if (isReconnect) {
+        terminal.write("\r\n\x1b[32m[已重新连接]\x1b[0m\r\n")
+      }
     }
     // Ask the shell for its current directory again. Used when a `cd` target
     // cannot be resolved from what the user typed (bare `cd`, `~`, `$VAR`, `-`).
@@ -277,12 +347,15 @@ export function TerminalPage({
         return
       }
       if (typeof event.data === "string") {
-        // Control frames from the server; unblock the typed-cd tracker when
-        // a canonical-mode frame arrives (a full-screen app restored the
-        // terminal line discipline, so the shell is back at a prompt).
+        // Control frames from the server: pong refreshes the keepalive
+        // deadline; a canonical-mode frame unblocks the typed-cd tracker (a
+        // full-screen app restored the line discipline, so the shell is back
+        // at a prompt).
         try {
           const message = JSON.parse(event.data) as { type?: string; canonical?: boolean }
-          if (message.type === "mode" && message.canonical === true) {
+          if (message.type === "pong") {
+            lastPongRef.current = Date.now()
+          } else if (message.type === "mode" && message.canonical === true) {
             typedCdRef.current?.clearBlocked()
           }
         } catch {
@@ -302,17 +375,33 @@ export function TerminalPage({
       socketRef.current = null
       pwdPendingRef.current = false
       pwdBufferRef.current = ""
-      setConnection("closed")
-      terminal.write(`\r\n\x1b[33m[会话已结束${event.reason ? `：${event.reason}` : ""}]\x1b[0m\r\n`)
       // Refresh 2FA/session state: when the server revoked the session (2FA
       // window lapsed, logout-all, ...) the UI must switch back to the unlock
       // prompt instead of letting the user retry against stale state.
       api.terminalStatus().then((result) => setStatus(result)).catch(() => {})
-      if (event.code === 1008) {
-        onNotice("会话验证已失效，请重新验证后连接", "error")
-      } else if (event.wasClean === false && opened) {
-        onNotice("终端连接被中断，请确认网络稳定后重连", "error")
+      if (event.code === 1000) {
+        // Clean user-initiated close (disconnect/unmount already handled the
+        // feedback); never auto-reconnect.
+        setConnection("closed")
+        return
       }
+      if (event.code === 1008) {
+        // Server revoked the session: stop reconnecting and prompt for a new
+        // 2FA verification.
+        setConnection("closed")
+        terminal.write(`\r\n\x1b[33m[会话已结束${event.reason ? `：${event.reason}` : ""}]\x1b[0m\r\n`)
+        onNotice("会话验证已失效，请重新验证后连接", "error")
+        return
+      }
+      // Anything else — abnormal drop, server restart, pong timeout — is a
+      // transient network failure on a lossy link: keep the scrollback and
+      // reconnect with exponential backoff.
+      setConnection("reconnecting")
+      terminal.write("\r\n\x1b[33m[网络中断，正在自动重连…]\x1b[0m\r\n")
+      if (reconnectAttemptRef.current === 0 && opened) {
+        onNotice("网络中断，正在自动重连", "error")
+      }
+      scheduleReconnect()
     }
     socket.onerror = () => {
       // A stale socket's error must not surface a notice for the new session.
@@ -354,7 +443,8 @@ export function TerminalPage({
     })
 
     inputDisposableRef.current = inputDisposable
-  }, [onNotice, startKeepalive, status?.two_factor_verified, updateCwd])
+  }, [onNotice, scheduleReconnect, startKeepalive, status?.two_factor_verified, updateCwd])
+  connectRef.current = connect
 
   // Navigate from the file panel: update the shared cwd and drive the shell.
   const handlePanelPath = useCallback((next: string) => {
@@ -370,6 +460,10 @@ export function TerminalPage({
 
   useEffect(() => {
     return () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
       if (keepAliveRef.current !== null) window.clearInterval(keepAliveRef.current)
       socketRef.current?.close(1000, "unmount")
       socketRef.current = null
@@ -440,11 +534,11 @@ export function TerminalPage({
               ) : (
                 <button
                   type="button"
-                  onClick={connect}
-                  disabled={connection === "connecting" || !status?.two_factor_verified}
+                  onClick={() => connect()}
+                  disabled={connection === "connecting" || connection === "reconnecting" || !status?.two_factor_verified}
                   className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
                 >
-                  <Play className="size-3.5" /> {connection === "connecting" ? "连接中…" : "连接"}
+                  <Play className="size-3.5" /> {connection === "connecting" ? "连接中…" : connection === "reconnecting" ? "重连中…" : "连接"}
                 </button>
               )}
             </div>
@@ -456,14 +550,14 @@ export function TerminalPage({
 
         {!panelHidden && (
           <aside className="hidden min-h-0 flex-col gap-3 rounded-md border bg-card lg:flex">
-            {connection === "connected" ? (
+            {connection === "connected" || connection === "reconnecting" ? (
               <>
                 <div className="overflow-auto p-2">
-                  <HostMonitor enabled />
+                  <HostMonitor enabled={connection === "connected"} />
                 </div>
                 <div className="mx-2 border-t" />
                 <div className="min-h-0 flex-1">
-                  <FilePanel path={cwd} connected onPathChange={handlePanelPath} onNotice={onNotice} />
+                  <FilePanel path={cwd} connected={connection === "connected"} onPathChange={handlePanelPath} onNotice={onNotice} />
                 </div>
               </>
             ) : (
@@ -496,6 +590,7 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
     idle: { label: "未连接", className: "border-border bg-card text-muted-foreground" },
     connecting: { label: "连接中", className: "border-warning-border bg-warning-muted text-warning-foreground" },
     connected: { label: "已连接", className: "border-success-border bg-success-muted text-success-foreground" },
+    reconnecting: { label: "重连中", className: "border-warning-border bg-warning-muted text-warning-foreground" },
     closed: { label: "已断开", className: "border-border bg-muted/60 text-muted-foreground" },
   }
   return (

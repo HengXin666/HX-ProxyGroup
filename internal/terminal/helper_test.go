@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -78,6 +79,80 @@ func TestPrivilegedHelperRoundTrip(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("helper did not stop after context cancellation")
+	}
+}
+
+// TestFileOperationsNotStarvedByPTYSessions reproduces the production bug
+// behind "read unix .../terminal.sock: i/o timeout" in the file manager: file
+// operations used to contend for the same MaxSessions semaphore as PTY
+// sessions, so once every slot was held by an open shell the file panel
+// starved until a session closed. File operations must be served while the
+// session cap is fully occupied.
+func TestFileOperationsNotStarvedByPTYSessions(t *testing.T) {
+	root := t.TempDir()
+	socketPath := filepath.Join(root, "terminal.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	helperErrors := make(chan error, 1)
+	go func() {
+		helperErrors <- RunHelper(ctx, HelperConfig{
+			SocketPath:  socketPath,
+			Shell:       "/bin/sh",
+			MaxSessions: 1,
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+	waitForSocket(t, socketPath)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-helperErrors:
+			if err != nil {
+				t.Errorf("stop helper: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("helper did not stop after context cancellation")
+		}
+	})
+
+	service, err := NewService(Config{
+		Enabled:          true,
+		PrivilegedSocket: socketPath,
+		MaxSessions:      1,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Occupy the only PTY session slot with a live shell.
+	session, err := service.Open(context.Background(), "admin", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("open helper session: %v", err)
+	}
+	defer session.Close("test done")
+
+	// A file operation must still complete promptly while the slot is taken.
+	done := make(chan error, 1)
+	go func() {
+		entries, listErr := service.ListFiles(context.Background(), root)
+		if listErr == nil {
+			found := false
+			for _, entry := range entries {
+				if entry.Name == "terminal.sock" {
+					found = true
+				}
+			}
+			if !found {
+				listErr = fmt.Errorf("file list missing expected entry: %+v", entries)
+			}
+		}
+		done <- listErr
+	}()
+	select {
+	case listErr := <-done:
+		if listErr != nil {
+			t.Fatalf("file list starved behind PTY session: %v", listErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("file list did not complete while a PTY session held the only slot")
 	}
 }
 

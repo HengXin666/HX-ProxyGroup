@@ -27,13 +27,15 @@ export function HostMonitor({ enabled }: { enabled: boolean }) {
         setSample(next)
         setHistory((current) => [...current, next].slice(-120))
       } catch {
+        // A malformed stream is a server bug; stop retrying it.
         source.close()
+        sourceRef.current = null
       }
     }
-    source.onerror = () => {
-      source.close()
-      sourceRef.current = null
-    }
+    // Transient network drops (packet loss, NAT timeouts) surface here. Do NOT
+    // close: EventSource reconnects automatically with its built-in backoff,
+    // so the monitor keeps working when the link heals.
+    source.onerror = () => {}
     return () => {
       source.close()
       sourceRef.current = null

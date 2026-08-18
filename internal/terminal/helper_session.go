@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +30,7 @@ type remoteSession struct {
 	readyOnce     sync.Once
 }
 
-func openRemoteSession(ctx context.Context, path string) (Session, error) {
+func openRemoteSession(ctx context.Context, path, startDir string) (Session, error) {
 	openContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	connection, err := (&net.Dialer{}).DialContext(openContext, "unix", path)
@@ -43,7 +44,8 @@ func openRemoteSession(ctx context.Context, path string) (Session, error) {
 		ready:      make(chan error, 1),
 	}
 	go session.readLoop()
-	if err := session.send(frameOpen, nil); err != nil {
+	payload, _ := json.Marshal(helperOpenRequest{Cwd: startDir})
+	if err := session.send(frameOpen, payload); err != nil {
 		session.Close("helper open failed")
 		return nil, fmt.Errorf("open terminal helper session: %w", err)
 	}

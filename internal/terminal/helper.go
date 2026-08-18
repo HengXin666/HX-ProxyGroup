@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +57,18 @@ const (
 	helperFileChunk = 256 << 10
 	// helperFileIdleTimeout bounds a single helper file operation.
 	helperFileIdleTimeout = 30 * time.Second
+	// helperSessionSlotWait bounds how long an open PTY request waits for a
+	// session slot. The control plane's own open handshake times out at 5s, so
+	// refusing early with an error frame is strictly better than letting the
+	// connection linger half-open.
+	helperSessionSlotWait = 5 * time.Second
+	// maxHelperFileConcurrency bounds parallel privileged file operations.
+	// File operations are short-lived and must never contend with PTY session
+	// slots: a full session cap (2) previously starved the file manager into
+	// "read unix .../terminal.sock: i/o timeout" whenever both shells were
+	// open. A separate, larger bound keeps a flood of listings from exhausting
+	// the helper while still decoupling them from open shells.
+	maxHelperFileConcurrency = 8
 	// MaxFileListEntries bounds one directory listing so a giant directory
 	// cannot flood a response or the helper frame stream.
 	MaxFileListEntries = 5000
@@ -134,7 +147,14 @@ func RunHelper(ctx context.Context, config HelperConfig, logger *slog.Logger) er
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
-	semaphore := make(chan struct{}, config.MaxSessions)
+	// ptySem bounds concurrent shell sessions (config.MaxSessions). fileSem is
+	// a separate, larger bound for file operations so the file manager never
+	// starves behind open shells. dispatchSem only bounds the goroutines that
+	// read a connection's first frame (a ≤5s hold each), keeping accepted
+	// connections bounded without ever blocking a file op on a session slot.
+	ptySem := make(chan struct{}, config.MaxSessions)
+	fileSem := make(chan struct{}, maxHelperFileConcurrency)
+	dispatchSem := make(chan struct{}, config.MaxSessions+maxHelperFileConcurrency+2)
 	var waitGroup sync.WaitGroup
 	for {
 		connection, acceptErr := listener.Accept()
@@ -150,7 +170,7 @@ func RunHelper(ctx context.Context, config HelperConfig, logger *slog.Logger) er
 			continue
 		}
 		select {
-		case semaphore <- struct{}{}:
+		case dispatchSem <- struct{}{}:
 		case <-ctx.Done():
 			_ = connection.Close()
 			waitGroup.Wait()
@@ -159,8 +179,8 @@ func RunHelper(ctx context.Context, config HelperConfig, logger *slog.Logger) er
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			defer func() { <-semaphore }()
-			handleHelperConnection(ctx, connection, config.Shell, config.UpdaterPath, config.PersistHistory)
+			defer func() { <-dispatchSem }()
+			serveHelperConnection(ctx, connection, config, ptySem, fileSem)
 		}()
 	}
 }
@@ -237,7 +257,12 @@ func unixPeerCredentials(fd int) (int, error) {
 	return int(credentials.Uid), nil
 }
 
-func handleHelperConnection(ctx context.Context, connection net.Conn, shell, updaterPath string, persistHistory bool) {
+// serveHelperConnection reads a connection's first frame and routes it by
+// kind. PTY sessions acquire ptySem (bounded by MaxSessions), file operations
+// acquire the separate fileSem, and update requests are served directly: file
+// and update work must stay available even while every session slot is held by
+// an open shell.
+func serveHelperConnection(ctx context.Context, connection net.Conn, config HelperConfig, ptySem, fileSem chan struct{}) {
 	closeOnContext := make(chan struct{})
 	go func() {
 		select {
@@ -255,19 +280,70 @@ func handleHelperConnection(ctx context.Context, connection net.Conn, shell, upd
 		_ = connection.Close()
 		return
 	}
-	switch kind {
-	case frameUpdate:
-		handleUpdateRequest(ctx, connection, updaterPath)
+	switch {
+	case kind == frameUpdate:
+		handleUpdateRequest(ctx, connection, config.UpdaterPath)
 		return
-	case frameFileList, frameFileStat, frameFileDownload, frameFileUpload, frameFileMkdir, frameFileRemove:
-		handleHelperFileRequest(connection, kind, payload)
+	case isHelperFileFrame(kind):
+		select {
+		case fileSem <- struct{}{}:
+			defer func() { <-fileSem }()
+			handleHelperFileRequest(connection, kind, payload)
+		case <-ctx.Done():
+			_ = connection.Close()
+		}
 		return
-	}
-	if kind != frameOpen {
+	case kind == frameOpen:
+		select {
+		case ptySem <- struct{}{}:
+		case <-ctx.Done():
+			_ = connection.Close()
+			return
+		case <-time.After(helperSessionSlotWait):
+			_ = writeFrame(connection, frameError, []byte("too many concurrent terminal sessions"))
+			_ = connection.Close()
+			return
+		}
+		defer func() { <-ptySem }()
+		serveHelperPTYSession(ctx, connection, config.Shell, config.PersistHistory, payload)
+		return
+	default:
 		_ = connection.Close()
-		return
 	}
-	ptyFile, command, err := startShell(shell, os.Environ(), persistHistory)
+}
+
+// isHelperFileFrame reports whether a frame kind is a file-operation request
+// served by handleHelperFileRequest.
+func isHelperFileFrame(kind byte) bool {
+	switch kind {
+	case frameFileList, frameFileStat, frameFileDownload, frameFileUpload, frameFileMkdir, frameFileRemove:
+		return true
+	}
+	return false
+}
+
+// helperOpenRequest is the optional JSON payload of a frameOpen frame. Cwd
+// asks the helper to start the shell in a previously persisted directory; an
+// empty payload keeps the historical behavior (HOME).
+type helperOpenRequest struct {
+	Cwd string `json:"cwd,omitempty"`
+}
+
+// decodeOpenCwd extracts the requested start directory from a frameOpen
+// payload. Any malformed payload is ignored so the shell still starts.
+func decodeOpenCwd(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var request helperOpenRequest
+	if json.Unmarshal(payload, &request) != nil {
+		return ""
+	}
+	return request.Cwd
+}
+
+func serveHelperPTYSession(ctx context.Context, connection net.Conn, shell string, persistHistory bool, openPayload []byte) {
+	ptyFile, command, err := startShell(shell, os.Environ(), persistHistory, decodeOpenCwd(openPayload))
 	if err != nil {
 		_ = writeFrame(connection, frameError, []byte("start privileged terminal: "+err.Error()))
 		_ = connection.Close()

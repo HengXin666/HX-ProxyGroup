@@ -76,8 +76,10 @@ func (s *trackedSession) Close(cause string) {
 	}
 }
 
-// startShell launches the login shell inside a new PTY.
-func startShell(shell string, environment []string, persistHistory bool) (*os.File, *exec.Cmd, error) {
+// startShell launches the login shell inside a new PTY. startDir is the
+// optionally persisted last session directory; it wins over HOME when valid so
+// a reconnect or re-login resumes where the previous session ended.
+func startShell(shell string, environment []string, persistHistory bool, startDir string) (*os.File, *exec.Cmd, error) {
 	shell = strings.TrimSpace(shell)
 	if shell == "" {
 		shell = os.Getenv("SHELL")
@@ -90,16 +92,38 @@ func startShell(shell string, environment []string, persistHistory bool) (*os.Fi
 	}
 	command := exec.Command(shell)
 	command.Env = safeShellEnvironment(environment, shell, persistHistory)
-	if home := environmentValue(environment, "HOME"); home != "" {
-		if info, err := os.Stat(home); err == nil && info.IsDir() {
-			command.Dir = home
-		}
-	}
+	command.Dir = resolveShellStartDir(startDir, environmentValue(environment, "HOME"))
 	ptyFile, err := pty.Start(command)
 	if err != nil {
 		return nil, nil, fmt.Errorf("start shell pty: %w", err)
 	}
 	return ptyFile, command, nil
+}
+
+// resolveShellStartDir picks the working directory for a new shell. The
+// persisted last-cwd wins when it is a usable absolute directory (the previous
+// session's directory may legitimately have been removed since); otherwise the
+// user's HOME is used. An empty result leaves the shell in the helper's own
+// working directory, matching the pre-persistence behavior.
+func resolveShellStartDir(startDir, home string) string {
+	if usable := usableDirectory(startDir); usable != "" {
+		return usable
+	}
+	return usableDirectory(home)
+}
+
+// usableDirectory returns the path when it is a valid absolute directory the
+// shell may start in, otherwise "".
+func usableDirectory(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || !filepath.IsAbs(path) || strings.ContainsRune(path, 0) || len(path) > 4096 {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return path
 }
 
 func newPTYSession(ptyFile *os.File, command *exec.Cmd) *ptySession {

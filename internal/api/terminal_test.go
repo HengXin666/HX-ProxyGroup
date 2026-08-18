@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,5 +225,236 @@ func TestTerminalWebSocketRejectsCrossOriginAndTracksStepUpRevocation(t *testing
 	}
 	if terminalService.Status().ActiveSessions != 0 {
 		t.Fatal("revoked administrator session left terminal running")
+	}
+}
+
+// memoryCwdStore is the API-test CwdStore: it records writes so the test can
+// assert that a cwd control frame reaches the terminal service.
+type memoryCwdStore struct {
+	mutex  sync.Mutex
+	values map[string]string
+}
+
+func (m *memoryCwdStore) GetMetadata(_ context.Context, key string) (string, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	value, ok := m.values[key]
+	if !ok {
+		return "", store.ErrNotFound
+	}
+	return value, nil
+}
+
+func (m *memoryCwdStore) SetMetadata(_ context.Context, key, value string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.values[key] = value
+	return nil
+}
+
+func (m *memoryCwdStore) read(key string) string {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.values[key]
+}
+
+// newTerminalAPITestServer builds the full auth + 2FA + terminal stack and
+// returns the pieces a WebSocket test needs.
+func newTerminalAPITestServer(t *testing.T) (*auth.Service, *terminalservice.Service, *memoryCwdStore, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	database, err := store.Open(context.Background(), filepath.Join(root, "terminal-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tokenPath := filepath.Join(root, "admin-setup-token")
+	box, err := secret.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authService, err := auth.NewService(database, tokenPath, logger, box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authService.EnsureSetupToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	setupToken, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authService.Setup(context.Background(), strings.TrimSpace(string(setupToken)), "admin", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	twoFactorSetup, err := authService.BeginTwoFactorSetup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	twoFactorCode, err := auth.TOTPCode(twoFactorSetup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authService.EnableTwoFactor(context.Background(), twoFactorCode); err != nil {
+		t.Fatal(err)
+	}
+	authSession, err := authService.Login(context.Background(), "127.0.0.1", "admin", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authService.VerifyTwoFactor(context.Background(), authSession.Token, "127.0.0.1", twoFactorCode); err != nil {
+		t.Fatal(err)
+	}
+	cwdStore := &memoryCwdStore{values: map[string]string{}}
+	terminalService, err := terminalservice.NewService(terminalservice.Config{
+		Enabled:  true,
+		Shell:    "/bin/sh",
+		CwdStore: cwdStore,
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(terminalService.Shutdown)
+	server, err := NewServer(&stubBundleService{}, logger, WithAuth(authService), WithTerminal(terminalService))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := httptest.NewServer(server.Handler())
+	t.Cleanup(testServer.Close)
+	websocketURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/api/v1/terminal/ws"
+	return authService, terminalService, cwdStore, websocketURL, authSession.Token
+}
+
+// TestTerminalWebSocketPingPongAndCwdReport verifies the lossy-network control
+// protocol: the server answers application-level pings with pongs (so the
+// client can detect a half-dead connection) and persists cwd reports.
+func TestTerminalWebSocketPingPongAndCwdReport(t *testing.T) {
+	_, _, cwdStore, websocketURL, sessionToken := newTerminalAPITestServer(t)
+	headers := http.Header{}
+	headers.Set("Cookie", sessionCookieName+"="+sessionToken)
+	origin := "http://" + strings.TrimSuffix(strings.TrimPrefix(websocketURL, "ws://"), "/api/v1/terminal/ws")
+	headers.Set("Origin", origin)
+	connection, _, err := websocket.Dial(context.Background(), websocketURL, &websocket.DialOptions{HTTPHeader: headers})
+	if err != nil {
+		t.Fatalf("terminal dial: %v", err)
+	}
+	defer connection.CloseNow()
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelRead()
+	// Drain the initial mode frame.
+	for {
+		kind, payload, readErr := connection.Read(readCtx)
+		if readErr != nil {
+			t.Fatalf("read terminal mode: %v", readErr)
+		}
+		if kind != websocket.MessageText {
+			continue
+		}
+		var message terminalMessage
+		if json.Unmarshal(payload, &message) == nil && message.Type == "mode" {
+			break
+		}
+	}
+
+	// ping -> pong.
+	ping, _ := json.Marshal(terminalMessage{Type: "ping"})
+	if err := connection.Write(readCtx, websocket.MessageText, ping); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	pongSeen := false
+	for time.Now().Before(deadline) && !pongSeen {
+		kind, payload, readErr := connection.Read(readCtx)
+		if readErr != nil {
+			t.Fatalf("read pong: %v", readErr)
+		}
+		if kind != websocket.MessageText {
+			continue
+		}
+		var message terminalMessage
+		if json.Unmarshal(payload, &message) == nil && message.Type == "pong" {
+			pongSeen = true
+		}
+	}
+	if !pongSeen {
+		t.Fatal("server did not answer the application-level ping with a pong")
+	}
+
+	// cwd control frame -> persisted in the terminal service's CwdStore.
+	reportDir := t.TempDir()
+	cwd, _ := json.Marshal(terminalMessage{Type: "cwd", Cwd: reportDir})
+	if err := connection.Write(readCtx, websocket.MessageText, cwd); err != nil {
+		t.Fatalf("write cwd report: %v", err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		value := cwdStore.read("terminal_cwd:admin")
+		if value == reportDir {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("cwd report never reached the store; want %q", reportDir)
+}
+
+// TestTerminalHeartbeatReapsSilentPeer verifies the server heartbeat: a peer
+// that stops reading cannot answer pings, so the server must close the socket
+// and free the session slot instead of leaking it forever.
+func TestTerminalHeartbeatReapsSilentPeer(t *testing.T) {
+	previousInterval := terminalHeartbeatInterval
+	previousTimeout := terminalHeartbeatTimeout
+	terminalHeartbeatInterval = 30 * time.Millisecond
+	terminalHeartbeatTimeout = 60 * time.Millisecond
+	defer func() {
+		terminalHeartbeatInterval = previousInterval
+		terminalHeartbeatTimeout = previousTimeout
+	}()
+
+	_, terminalService, _, websocketURL, sessionToken := newTerminalAPITestServer(t)
+	headers := http.Header{}
+	headers.Set("Cookie", sessionCookieName+"="+sessionToken)
+	origin := "http://" + strings.TrimSuffix(strings.TrimPrefix(websocketURL, "ws://"), "/api/v1/terminal/ws")
+	headers.Set("Origin", origin)
+	connection, _, err := websocket.Dial(context.Background(), websocketURL, &websocket.DialOptions{HTTPHeader: headers})
+	if err != nil {
+		t.Fatalf("terminal dial: %v", err)
+	}
+	defer connection.CloseNow()
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelRead()
+	// Read the initial mode frame so the session is confirmed active, then
+	// STOP reading: a real browser auto-pongs, but a peer that never reads
+	// cannot answer server pings.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		kind, payload, readErr := connection.Read(readCtx)
+		if readErr != nil {
+			t.Fatalf("read terminal mode: %v", readErr)
+		}
+		if kind != websocket.MessageText {
+			continue
+		}
+		var message terminalMessage
+		if json.Unmarshal(payload, &message) == nil && message.Type == "mode" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("mode frame never arrived")
+		}
+	}
+	if active := terminalService.Status().ActiveSessions; active != 1 {
+		t.Fatalf("active sessions = %d, want 1", active)
+	}
+
+	// Now the peer goes silent. The heartbeat must reap it and release the slot.
+	deadline = time.Now().Add(3 * time.Second)
+	for terminalService.Status().ActiveSessions != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if active := terminalService.Status().ActiveSessions; active != 0 {
+		t.Fatalf("silent peer was not reaped by the heartbeat; active = %d", active)
 	}
 }

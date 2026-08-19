@@ -180,7 +180,11 @@ WantedBy=multi-user.target
 TCP/HTTP，也不承载代理流量。控制面退出或关闭时，`PartOf` 会回收 helper 和其 root PTY。
 helper 还接受一个与 PTY 帧分离的无参数更新请求；它只在校验 root 所有、不可被组/其他用户写入的
 安装器后，通过 `systemd-run` 调度 `/usr/local/sbin/hx-proxygroup-install upgrade`，不接受浏览器
-提供命令、路径或目标版本。
+提供命令、路径或目标版本。更新请求先确认后调度：helper 立即回复 `frameReady`，再在独立 goroutine
+中运行 `systemd-run`（30 秒上限），systemd 繁忙不会拖住控制面握手（早期同步实现曾让客户端 5 秒
+超时报 `read .../terminal.sock: i/o timeout` 误报更新失败）。同一时刻只允许一个更新在飞：进程内
+单飞互斥，配合 `systemctl is-active hx-proxygroup-update` 覆盖 helper 重启后的重复请求，更新进行中
+的再次点击直接返回"更新进行中"错误；`systemd-run` 失败只记日志，不影响已确认的请求。
 
 仓库中的 `deploy/systemd/` 是发布包的权威 unit。控制面和数据面均以非 root 用户运行，管理 API 只监听 `127.0.0.1`，External Controller 使用 Unix Socket，并启用 systemd 文件系统、设备、内核和 capability 沙箱。浏览器终端另有一个 root PTY helper，只监听控制面用户可访问的本机 Unix Socket；它不接收网络流量，终端 WebSocket 仍必须通过管理员登录和 TOTP 2FA。
 

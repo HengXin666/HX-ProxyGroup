@@ -311,6 +311,8 @@ sudo hx-proxygroup-install upgrade
 
 生产 systemd 安装也可在「关于」页执行一键更新。页面内可输入认证器的 6 位 TOTP 完成当前
 Session 的 2FA 验证；root helper 只接受固定的无参数升级请求，不接受浏览器提交命令或版本字符串。
+更新请求先确认后异步调度：helper 立即受理，再通过 `systemd-run` 调度安装器，systemd 繁忙不会
+导致请求超时误报失败；同一时刻只允许一个更新在飞，更新进行中重复点击会提示"更新进行中"。
 
 安装器在切换版本前校验新 Mihomo 与当前配置；三个服务 readiness 失败时原子恢复上一版 `current` 链接并重启旧版本。升级成功后安装器自身也会更新。
 

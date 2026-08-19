@@ -10,13 +10,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -155,6 +153,9 @@ func RunHelper(ctx context.Context, config HelperConfig, logger *slog.Logger) er
 	ptySem := make(chan struct{}, config.MaxSessions)
 	fileSem := make(chan struct{}, maxHelperFileConcurrency)
 	dispatchSem := make(chan struct{}, config.MaxSessions+maxHelperFileConcurrency+2)
+	// updates serializes automatic-update requests and schedules them
+	// asynchronously, so a busy systemd never delays the request reply.
+	updates := newUpdateScheduler(config.UpdaterPath, logger)
 	var waitGroup sync.WaitGroup
 	for {
 		connection, acceptErr := listener.Accept()
@@ -180,7 +181,7 @@ func RunHelper(ctx context.Context, config HelperConfig, logger *slog.Logger) er
 		go func() {
 			defer waitGroup.Done()
 			defer func() { <-dispatchSem }()
-			serveHelperConnection(ctx, connection, config, ptySem, fileSem)
+			serveHelperConnection(ctx, connection, config, ptySem, fileSem, updates)
 		}()
 	}
 }
@@ -259,10 +260,10 @@ func unixPeerCredentials(fd int) (int, error) {
 
 // serveHelperConnection reads a connection's first frame and routes it by
 // kind. PTY sessions acquire ptySem (bounded by MaxSessions), file operations
-// acquire the separate fileSem, and update requests are served directly: file
-// and update work must stay available even while every session slot is held by
-// an open shell.
-func serveHelperConnection(ctx context.Context, connection net.Conn, config HelperConfig, ptySem, fileSem chan struct{}) {
+// acquire the separate fileSem, and update requests go through the scheduler
+// directly: file and update work must stay available even while every session
+// slot is held by an open shell.
+func serveHelperConnection(ctx context.Context, connection net.Conn, config HelperConfig, ptySem, fileSem chan struct{}, updates *updateScheduler) {
 	closeOnContext := make(chan struct{})
 	go func() {
 		select {
@@ -282,7 +283,7 @@ func serveHelperConnection(ctx context.Context, connection net.Conn, config Help
 	}
 	switch {
 	case kind == frameUpdate:
-		handleUpdateRequest(ctx, connection, config.UpdaterPath)
+		updates.serve(ctx, connection)
 		return
 	case isHelperFileFrame(kind):
 		select {
@@ -408,41 +409,6 @@ func serveHelperPTYSession(ctx context.Context, connection net.Conn, shell strin
 	_ = connection.Close()
 	session.Close("helper input closed")
 	<-outputDone
-}
-
-func handleUpdateRequest(ctx context.Context, connection net.Conn, updaterPath string) {
-	defer connection.Close()
-	updaterPath = filepath.Clean(strings.TrimSpace(updaterPath))
-	if !filepath.IsAbs(updaterPath) {
-		_ = writeFrame(connection, frameError, []byte("automatic updater is unavailable"))
-		return
-	}
-	info, err := os.Stat(updaterPath)
-	if err != nil {
-		_ = writeFrame(connection, frameError, []byte("automatic updater is unavailable"))
-		return
-	}
-	stat, ownedByRoot := info.Sys().(*syscall.Stat_t)
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || !ownedByRoot || stat.Uid != 0 {
-		_ = writeFrame(connection, frameError, []byte("automatic updater is unavailable"))
-		return
-	}
-	command := exec.CommandContext(
-		ctx,
-		"systemd-run",
-		"--unit=hx-proxygroup-update",
-		"--collect",
-		"--property=Type=exec",
-		updaterPath,
-		"upgrade",
-	)
-	command.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
-	if output, err := command.CombinedOutput(); err != nil {
-		_ = output
-		_ = writeFrame(connection, frameError, []byte("could not schedule automatic update"))
-		return
-	}
-	_ = writeFrame(connection, frameReady, nil)
 }
 
 type helperWriter struct {

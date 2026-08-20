@@ -3,6 +3,7 @@ package mihomo
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -101,18 +102,81 @@ func applyTLS(config map[string]any) {
 	delete(config, "sni")
 }
 
+// splitEarlyData splits a WebSocket path like `/foo?ed=2048` into the clean
+// path (`/foo`) and the early-data size (2048). The `ed` query parameter is
+// the BPB / cfnew (Cloudflare Worker VLESS) convention for WebSocket max
+// early data; mihomo consumes it via `ws-opts.max-early-data` plus
+// `early-data-header-name: Sec-WebSocket-Protocol`, never as part of the
+// request path. A missing or malformed `ed` returns the path untouched with
+// earlyData 0. 20260821.
+func splitEarlyData(path string) (string, int) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", 0
+	}
+	queryIndex := strings.IndexByte(path, '?')
+	if queryIndex < 0 {
+		return path, 0
+	}
+	clean := path[:queryIndex]
+	query, err := url.ParseQuery(path[queryIndex+1:])
+	if err != nil {
+		return path, 0
+	}
+	raw := strings.TrimSpace(query.Get("ed"))
+	if raw == "" {
+		return path, 0
+	}
+	size, err := strconv.Atoi(raw)
+	if err != nil || size <= 0 {
+		return path, 0
+	}
+	return clean, size
+}
+
 func applyTransport(config map[string]any) {
+	// 20260821 cf-worker（BPB/cfnew）兼容：workerSessions 的 canonical 把传输
+	// 类型放在 query.type（如 "ws"），没有提升到顶层 network。这里同时查
+	// query.type，否则 mihomo 看到 ws-opts 却没有 network: ws，WebSocket
+	// 转发不生效（connection reset）。
 	network := strings.ToLower(firstString(config, "network", "net"))
+	if network == "" {
+		if query, ok := config["query"].(map[string]any); ok {
+			if qtype := strings.ToLower(stringValue(query["type"])); qtype != "" {
+				network = qtype
+			}
+		}
+	}
 	if network != "" {
 		config["network"] = network
 	}
 	host := stringValue(config["host"])
+	if host == "" {
+		if query, ok := config["query"].(map[string]any); ok {
+			host = stringValue(query["host"])
+		}
+	}
 	path := stringValue(config["path"])
+	if path == "" {
+		if query, ok := config["query"].(map[string]any); ok {
+			path = stringValue(query["path"])
+		}
+	}
 	switch network {
 	case "ws":
 		options := map[string]any{}
-		if path != "" {
-			options["path"] = path
+		// 20260821 BPB / cfnew（Cloudflare Worker VLESS）兼容：订阅节点 path 形如
+		// `/?ed=2048`——`ed` 是 WebSocket 早数据（max early data）参数，mihomo 需要
+		// 显式的 max-early-data + early-data-header-name 配置，path 只保留 `/`。
+		// 否则 mihomo 1.19.30 把 `?ed=2048` 当作普通 path 发送，worker 端
+		// Sec-WebSocket-Protocol 握手不匹配 → connection reset by peer。
+		cleanPath, earlyData := splitEarlyData(path)
+		if cleanPath != "" {
+			options["path"] = cleanPath
+		}
+		if earlyData > 0 {
+			options["max-early-data"] = earlyData
+			options["early-data-header-name"] = "Sec-WebSocket-Protocol"
 		}
 		if host != "" {
 			options["headers"] = map[string]string{"Host": host}
@@ -207,8 +271,18 @@ func applyQuery(config map[string]any) {
 	switch network {
 	case "ws":
 		options := map[string]any{}
-		if path != "" {
-			options["path"] = path
+		// 20260821 BPB / cfnew（Cloudflare Worker VLESS）兼容：订阅节点 path 形如
+		// `/?ed=2048`——`ed` 是 WebSocket 早数据（max early data）参数，mihomo 需要
+		// 显式的 max-early-data + early-data-header-name 配置，path 只保留 `/`。
+		// 否则 mihomo 1.19.30 把 `?ed=2048` 当作普通 path 发送，worker 端
+		// Sec-WebSocket-Protocol 握手不匹配 → connection reset by peer。
+		cleanPath, earlyData := splitEarlyData(path)
+		if cleanPath != "" {
+			options["path"] = cleanPath
+		}
+		if earlyData > 0 {
+			options["max-early-data"] = earlyData
+			options["early-data-header-name"] = "Sec-WebSocket-Protocol"
 		}
 		if host != "" {
 			options["headers"] = map[string]string{"Host": host}

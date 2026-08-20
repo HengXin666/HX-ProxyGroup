@@ -666,11 +666,16 @@ func normalizeWorkerURL(raw string) (string, error) {
 		// Panel or login page: rewrite to the raw subscription endpoint.
 		parsed.Path = "/" + securePath + "/sub/raw"
 	case segments[1] == "sub":
-		// Any sub mode resolves to the raw mode that emits share URIs.
-		parsed.Path = "/" + securePath + "/sub/raw"
+		// 20260821 cfnew（BPB-Worker-Panel fork）兼容：`/{securePath}/sub?app=xray`
+		// 直接返回 base64 VLESS/Trojan 订阅（实测 200），改写为 /sub/raw 会 404。
+		// 标准 BPB 的 raw 链接（/sub/raw?app=xray）走 default 分支保留原路径，
+		// 所以这里不再做 sub -> raw 改写；仅 panel/login 才需要重写到 raw。
+		// 保留原路径，下方统一 pin ?app=xray 即可。
 	default:
-		// Unknown layout (e.g. a custom domain route): keep the path so a
-		// fetch error stays truthful; only the client parameter is pinned.
+		// Unknown layout (e.g. a custom domain route), raw subscription links
+		// (/sub/raw?app=xray) and cfnew sub links (/sub?app=xray): keep the
+		// path so a fetch error stays truthful; only the client parameter is
+		// pinned. cfnew 20260821 实测 /sub 直接返回节点，不能改写成 /sub/raw。
 	}
 	parsed.Fragment = ""
 	query := parsed.Query()

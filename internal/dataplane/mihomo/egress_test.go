@@ -1,6 +1,7 @@
 package mihomo
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -37,5 +38,36 @@ func TestResolveEgressInterfaceAllowsExplicitDisable(t *testing.T) {
 		if err != nil || name != "" {
 			t.Errorf("ResolveEgressInterface(%q) = %q, %v; want empty, nil", value, name, err)
 		}
+	}
+}
+
+func TestInterfaceIsWireless(t *testing.T) {
+	t.Parallel()
+	// 本机 wlo1 是 Wi-Fi（/sys/class/net/wlo1/wireless 存在）
+	if info, err := os.Stat("/sys/class/net/wlo1/wireless"); err == nil && info.IsDir() {
+		if !interfaceIsWireless("wlo1") {
+			t.Fatal("interfaceIsWireless(wlo1) = false, want true for the Wi-Fi NIC")
+		}
+	}
+	// 不存在的接口必须返回 false 而不崩溃
+	if interfaceIsWireless("definitely-not-an-interface-xyz") {
+		t.Fatal("interfaceIsWireless(nonexistent) = true, want false")
+	}
+}
+
+func TestResolveEgressInterfaceSkipsWireless(t *testing.T) {
+	t.Parallel()
+	// 20260821 回归：Wi-Fi 接口（wlo1）做 auto egress 会导致 mihomo 出站
+	// WebSocket reset（cf-worker 节点实测）。auto 解析到无线接口时应返回空。
+	info, err := os.Stat("/sys/class/net/wlo1/wireless")
+	if err != nil || !info.IsDir() {
+		t.Skip("no wireless interface on this host")
+	}
+	name, err := ResolveEgressInterface("auto")
+	if err != nil {
+		t.Fatalf("ResolveEgressInterface(auto) error = %v", err)
+	}
+	if name != "" {
+		t.Fatalf("ResolveEgressInterface(auto) = %q on a wireless default route, want empty", name)
 	}
 }

@@ -46,7 +46,24 @@ func ResolveEgressInterface(value string) (string, error) {
 	if device.Flags&net.FlagLoopback != 0 {
 		return "", fmt.Errorf("egress interface %q is loopback", value)
 	}
+	// 20260821 Wi-Fi 接口（/sys/class/net/<name>/wireless 存在）强制绑定为
+	// mihomo egress 会让出站 WebSocket 被 connection reset（本机 wlo1 实测：
+	// cf-worker 节点全部 reset，去掉 interface-name 后正常）。无线链路受
+	// 省电/漫游影响不稳定，绑定会把转发路由钉死在弱链路上；此时返回空串
+	// 让 mihomo 走系统默认路由，既保留有线场景的隔离，又避免无线误伤。
+	if interfaceIsWireless(device.Name) {
+		return "", nil
+	}
 	return device.Name, nil
+}
+
+// interfaceIsWireless reports whether a Linux interface is a Wi-Fi device.
+// The kernel exposes /sys/class/net/<name>/wireless only for wireless NICs,
+// which is a more reliable signal than IFF_DORMANT (the sysfs flags file
+// does not carry the dormant bit even when iproute2 reports DORMANT).
+func interfaceIsWireless(name string) bool {
+	info, err := os.Stat("/sys/class/net/" + name + "/wireless")
+	return err == nil && info.IsDir()
 }
 
 func parseDefaultRouteInterface(reader io.Reader) (string, error) {

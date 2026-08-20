@@ -70,8 +70,16 @@ func TestConvertNodeConfigBPBWorkerShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("ws-opts missing: %#v", config["ws-opts"])
 	}
-	if options["path"] != "/vl/abc?ed=2560" {
-		t.Fatalf("ws-opts.path = %v", options["path"])
+	// 20260821 BPB/cfnew 早数据兼容：ed=2560 拆分为 max-early-data，
+	// path 只保留 /vl/abc（否则 mihomo 1.19.30 连接 worker 会 reset）。
+	if options["path"] != "/vl/abc" {
+		t.Fatalf("ws-opts.path = %v, want /vl/abc", options["path"])
+	}
+	if options["max-early-data"] != 2560 {
+		t.Fatalf("ws-opts.max-early-data = %v, want 2560", options["max-early-data"])
+	}
+	if options["early-data-header-name"] != "Sec-WebSocket-Protocol" {
+		t.Fatalf("ws-opts.early-data-header-name = %v", options["early-data-header-name"])
 	}
 	headers, ok := options["headers"].(map[string]string)
 	if !ok || headers["Host"] != "example.com" {

@@ -224,6 +224,7 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		RandomRegions:      marshalRegionList(regionSelection.RandomRegions),
 		SessionCount:       sessionCount,
 		IdleReleaseSeconds: idleRelease,
+		Preallocate:        request.Preallocate,
 		ControlToken:       controlToken,
 		RotateToken:        rotateToken,
 		PoolCreatedAt:      poolCreatedAt,
@@ -312,6 +313,9 @@ func (s *Service) UpdateChannel(ctx context.Context, id string, request UpdateCh
 			return Channel{}, err
 		}
 		existing.IdleReleaseSeconds = idleRelease
+	}
+	if request.Preallocate != nil {
+		existing.Preallocate = *request.Preallocate
 	}
 	if request.DirectListener != nil {
 		return Channel{}, fmt.Errorf(

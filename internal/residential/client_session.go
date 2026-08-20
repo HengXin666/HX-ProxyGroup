@@ -108,6 +108,22 @@ func (s *Service) EnsureClientSessionByTokenWithOptions(
 			}
 			return s.clientSessionView(ctx, updated, true)
 		}
+		// 20260821 懒分配：channel 创建时未预占 IP（preallocate=false），
+		// 会话只有凭据没有分配；首个客户端请求到达才补分配，分配后发布。
+		if existing.NodeFingerprint == "" {
+			providerRecord, providerErr := s.repository.GetResidentialProvider(ctx, record.ProviderID)
+			if providerErr != nil {
+				return ClientSession{}, mapStoreError(providerErr)
+			}
+			if existing.CountryCode == "" {
+				existing.CountryCode = countryCode
+			}
+			allocated, allocateErr := s.replaceClientSessionAllocation(ctx, record, providerRecord, existing, false)
+			if allocateErr != nil {
+				return ClientSession{}, allocateErr
+			}
+			return s.clientSessionView(ctx, allocated, true)
+		}
 		return s.clientSessionView(ctx, existing, true)
 	}
 	if !errors.Is(err, store.ErrNotFound) {

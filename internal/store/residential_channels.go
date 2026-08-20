@@ -24,6 +24,13 @@ type ResidentialChannelRecord struct {
 	RandomRegions      string
 	SessionCount       int
 	IdleReleaseSeconds int
+	// Preallocate eagerly allocates a residential IP for every declared
+	// session at channel create/update time. Default false: sessions are
+	// provisioned lazily — credentials exist immediately, the first real
+	// client request triggers the allocation. Lazy allocation avoids a
+	// startup-time burst of concurrent provider allocations blocking
+	// channel creation (20260821 user decision).
+	Preallocate        bool
 	ControlToken       string
 	ActiveSessionIndex int
 	RotateToken        string
@@ -44,10 +51,10 @@ func (s *Store) CreateResidentialChannel(
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO residential_channels(
     id, name, provider_id, mode, proxy_group_id, listener_id, direct_listener_id,
-    region, region_mode, random_regions, session_count, idle_release_seconds, control_token,
-    active_session_index, rotate_token, rotate_count, last_rotated_at,
+    region, region_mode, random_regions, session_count, idle_release_seconds, preallocate,
+    control_token, active_session_index, rotate_token, rotate_count, last_rotated_at,
     last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -61,6 +68,7 @@ INSERT INTO residential_channels(
 		residentialDefaultString(record.RandomRegions, "[]"),
 		record.SessionCount,
 		record.IdleReleaseSeconds,
+		boolToInteger(record.Preallocate),
 		record.ControlToken,
 		record.ActiveSessionIndex,
 		record.RotateToken,
@@ -195,7 +203,7 @@ UPDATE residential_channels
 SET
     name = ?, provider_id = ?, mode = ?, proxy_group_id = ?, listener_id = ?,
     direct_listener_id = ?, region = ?, region_mode = ?, random_regions = ?,
-    session_count = ?, idle_release_seconds = ?, control_token = ?,
+    session_count = ?, idle_release_seconds = ?, preallocate = ?, control_token = ?,
     enabled = ?, version = version + 1, updated_at = ?
 WHERE id = ? AND version = ?
 `,
@@ -210,6 +218,7 @@ WHERE id = ? AND version = ?
 		residentialDefaultString(record.RandomRegions, "[]"),
 		record.SessionCount,
 		record.IdleReleaseSeconds,
+		boolToInteger(record.Preallocate),
 		record.ControlToken,
 		boolToInteger(record.Enabled),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
@@ -379,14 +388,15 @@ func (s *Store) DeleteResidentialChannel(ctx context.Context, id string, expecte
 const residentialChannelSelect = `
 SELECT
     id, name, provider_id, mode, proxy_group_id, listener_id, COALESCE(direct_listener_id, ''),
-    region, region_mode, random_regions, session_count, idle_release_seconds, control_token,
-    active_session_index, rotate_token, rotate_count, last_rotated_at,
+    region, region_mode, random_regions, session_count, idle_release_seconds, preallocate,
+    control_token, active_session_index, rotate_token, rotate_count, last_rotated_at,
     last_exit_ip, pool_created_at, enabled, version, created_at, updated_at
 FROM residential_channels`
 
 func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 	var record ResidentialChannelRecord
 	var enabled int
+	var preallocate int
 	var lastRotatedAt string
 	var poolCreatedAt string
 	var createdAt string
@@ -404,6 +414,7 @@ func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 		&record.RandomRegions,
 		&record.SessionCount,
 		&record.IdleReleaseSeconds,
+		&preallocate,
 		&record.ControlToken,
 		&record.ActiveSessionIndex,
 		&record.RotateToken,
@@ -441,6 +452,7 @@ func scanResidentialChannel(source scanner) (ResidentialChannelRecord, error) {
 		record.PoolCreatedAt = &parsedPoolCreatedAt
 	}
 	record.Enabled = enabled != 0
+	record.Preallocate = preallocate != 0
 	record.CreatedAt = parsedCreatedAt
 	record.UpdatedAt = parsedUpdatedAt
 	return record, nil

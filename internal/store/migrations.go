@@ -748,6 +748,17 @@ CREATE TABLE api_keys (
 ) STRICT;
 `,
 	},
+	{
+		version: 29,
+		name:    "residential_channel_preallocate",
+		// 20260821 用户决策：会话默认懒分配——channel 创建时只建凭据不预占 IP，
+		// 首个客户端请求到达才分配；避免「一次性分配 N 个 IP」阻塞 channel 创建
+		// 与 provider 并发上限。preallocate=1 保留旧的立即预分配行为。
+		sql: `
+ALTER TABLE residential_channels
+    ADD COLUMN preallocate INTEGER NOT NULL DEFAULT 0 CHECK (preallocate IN (0, 1));
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

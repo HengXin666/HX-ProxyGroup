@@ -866,3 +866,54 @@ func TestDeleteChannelRemovesEverythingItProvisioned(t *testing.T) {
 		t.Fatalf("delete left %d proxy groups behind", len(groups))
 	}
 }
+
+func TestEnsureClientSessionLazyDeclaredAllocation(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t)
+	ctx := context.Background()
+	provider := harness.createProvider(t)
+	// 懒分配 channel：preallocate=false（默认）+ SessionCount=2
+	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
+		Name:           "lazy-declared",
+		ProviderID:     provider.ID,
+		Mode:           ModeSticky,
+		SessionCount:   2,
+		PublicEndpoint: managedPublicEndpoint(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 创建后：无任何 session 已分配（懒分配）
+	sessions, err := harness.store.ListResidentialClientSessions(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions {
+		if session.NodeFingerprint != "" {
+			t.Fatalf("lazy channel provisioned an allocation at create: %s", session.SessionID)
+		}
+	}
+	// 首个客户端请求 s01 → 触发补分配
+	record, err := harness.store.GetResidentialChannel(ctx, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocated, err := harness.service.EnsureClientSessionByToken(ctx, record.RotateToken, "s01")
+	if err != nil {
+		t.Fatalf("EnsureClientSessionByToken() error = %v", err)
+	}
+	if allocated.AllocatedAt == nil {
+		t.Fatal("first client request did not trigger the lazy allocation")
+	}
+	// 第二个客户端请求 s02 → 独立分配
+	second, err := harness.service.EnsureClientSessionByToken(ctx, record.RotateToken, "s02")
+	if err != nil {
+		t.Fatalf("EnsureClientSessionByToken(s02) error = %v", err)
+	}
+	if second.AllocatedAt == nil {
+		t.Fatal("second client request did not trigger its allocation")
+	}
+	if allocated.ProxyUsername == second.ProxyUsername {
+		t.Fatal("lazy sessions share credentials")
+	}
+}

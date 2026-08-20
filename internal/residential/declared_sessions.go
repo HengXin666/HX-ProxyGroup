@@ -102,6 +102,17 @@ func (s *Service) syncDeclaredSessionsLocked(ctx context.Context, channelID stri
 	if err != nil {
 		return mapStoreError(err)
 	}
+	// 20260821 懒分配：preallocate=false 时创建 channel 不预占 IP；但对
+	// cf-worker（Cloudflare Worker 订阅）仍做一次可达性校验——CF 订阅挂了
+	// 必须在创建时就暴露（用户明确要求），而不是等到首个客户端请求。
+	// 校验只拉一次订阅确认端点可用，不为 session 分配出口 IP。
+	// 其他模式（session-template / api-list）保持完全懒：创建零 fetch。
+	if !channel.Preallocate &&
+		strings.EqualFold(providerRecord.RotationMode, RotationCloudflareWorker) {
+		if err := s.verifyProviderReachableLocked(ctx, channel, providerRecord); err != nil {
+			return err
+		}
+	}
 	repaired, err := s.clearMissingClientSessionAllocations(ctx, channel)
 	if err != nil {
 		return err
@@ -131,7 +142,11 @@ func (s *Service) syncDeclaredSessionsLocked(ctx context.Context, channelID stri
 		delete(declared, index)
 	}
 
-	eager := channel.IdleReleaseSeconds == 0
+	// 20260821 用户决策：默认懒分配（preallocate=false）——创建 channel 时
+	// 只建凭据不预占 IP，首个客户端请求到达才分配；避免「一次性分配 N 个
+	// IP」阻塞 channel 创建与 provider 并发上限。preallocate=true 保留旧的
+	// 立即预分配行为（此时 idle_release_seconds=0 表示永驻、>0 表示用后释放）。
+	eager := channel.Preallocate
 	for index := 1; index <= channel.SessionCount; index++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -145,6 +160,35 @@ func (s *Service) syncDeclaredSessionsLocked(ctx context.Context, channelID stri
 	}
 	if repaired {
 		return s.republishClientSessionGroup(ctx, channel)
+	}
+	return nil
+}
+
+// verifyProviderReachableLocked performs one lightweight provider reachability
+// check during lazy channel provisioning (preallocate=false): it fetches a
+// single session shape from the provider but discards it, so a dead
+// subscription surfaces at channel create/update time instead of on the first
+// client request. It never allocates an exit IP.
+func (s *Service) verifyProviderReachableLocked(
+	ctx context.Context,
+	channel store.ResidentialChannelRecord,
+	providerRecord store.ResidentialProviderRecord,
+) error {
+	provider := s.providerFromRecord(providerRecord)
+	credentials, err := s.providerCredentials(providerRecord)
+	if err != nil {
+		return err
+	}
+	regionSelection, err := clientSessionRegionSelection(channel, "")
+	if err != nil {
+		return err
+	}
+	sessions, err := s.providerSessions(ctx, provider, credentials, regionSelection, 1)
+	if err != nil {
+		return err
+	}
+	if len(sessions) == 0 {
+		return fmt.Errorf("%w: provider returned no sessions", ErrInvalid)
 	}
 	return nil
 }

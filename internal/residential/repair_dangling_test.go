@@ -17,7 +17,7 @@ func TestCreateChannelRepairsDanglingSessionSlots(t *testing.T) {
 
 	first, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "broken-channel", ProviderID: provider.ID, Mode: ModeSticky,
-		SessionCount: 1, PublicEndpoint: managedPublicEndpoint(),
+		SessionCount: 1, Preallocate: true, PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestCreateChannelRepairsDanglingSessionSlots(t *testing.T) {
 	// still holds a dangling reference at the moment the create starts.
 	second, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "fresh-channel", ProviderID: provider.ID, Mode: ModeSticky,
-		SessionCount: 1, PublicEndpoint: managedPublicEndpoint(),
+		SessionCount: 1, Preallocate: true, PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel with a dangling session elsewhere: %v", err)
@@ -73,7 +73,7 @@ func TestUpdateChannelRepairsDanglingSessionSlots(t *testing.T) {
 
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "broken-channel", ProviderID: provider.ID, Mode: ModeSticky,
-		SessionCount: 1, PublicEndpoint: managedPublicEndpoint(),
+		SessionCount: 1, Preallocate: true, PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)

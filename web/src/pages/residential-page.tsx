@@ -107,6 +107,7 @@ type ChannelForm = {
   publicHost: string
   sessionCount: string
   idleReleaseSeconds: string
+  preallocate: boolean
   enabled: boolean
 }
 
@@ -121,6 +122,7 @@ const emptyChannelForm: ChannelForm = {
   publicHost: "",
   sessionCount: "3",
   idleReleaseSeconds: "0",
+  preallocate: false,
   enabled: true,
 }
 
@@ -941,6 +943,7 @@ function ChannelDialog({
         publicHost: initial.public_endpoint?.host ?? "",
         sessionCount: String(initial.session_count ?? 0),
         idleReleaseSeconds: String(initial.idle_release_seconds ?? 0),
+        preallocate: initial.preallocate ?? false,
         enabled: initial.enabled,
       }
     }
@@ -997,6 +1000,7 @@ function ChannelDialog({
           random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
           session_count: initial.mode === "sticky" ? Number(form.sessionCount) : undefined,
           idle_release_seconds: initial.mode === "sticky" ? Number(form.idleReleaseSeconds) : undefined,
+          preallocate: initial.mode === "sticky" ? form.preallocate : undefined,
           public_endpoint: publicEndpoint,
           enabled: form.enabled,
         }
@@ -1012,6 +1016,7 @@ function ChannelDialog({
           random_regions: form.regionMode === "application-random" ? parseRegionList(form.randomRegions) : undefined,
           session_count: form.mode === "sticky" ? Number(form.sessionCount) : 0,
           idle_release_seconds: form.mode === "sticky" ? Number(form.idleReleaseSeconds) : 0,
+          preallocate: form.mode === "sticky" ? form.preallocate : false,
           public_endpoint: publicEndpoint ?? { host: form.publicHost.trim(), port: 443, tls: true },
           enabled: form.enabled,
         }
@@ -1093,6 +1098,11 @@ function ChannelDialog({
                   空闲释放（秒）
                   <Input value={form.idleReleaseSeconds} onChange={(event) => update("idleReleaseSeconds", event.target.value)} inputMode="numeric" min={0} />
                   <span className="text-[11px] text-muted-foreground">0 表示保持分配；换 IP 不改变节点凭据。</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={form.preallocate} onChange={(event) => update("preallocate", event.target.checked)} />
+                  创建时立即预分配全部出口 IP
+                  <span className="text-[11px] text-muted-foreground">默认关闭：懒分配——客户端首次请求到达时才分配，避免一次性分配 N 个 IP 阻塞创建（20260821）。</span>
                 </label>
               </>
             )}

@@ -30,8 +30,12 @@ type Channel struct {
 	SessionCount int `json:"session_count"`
 	// IdleReleaseSeconds returns the provider allocation after inactivity while
 	// retaining the logical node and its client credential.
-	IdleReleaseSeconds int              `json:"idle_release_seconds"`
-	Sessions           []ChannelSession `json:"sessions,omitempty"`
+	IdleReleaseSeconds int `json:"idle_release_seconds"`
+	// Preallocate reports whether sessions eagerly allocate their residential
+	// IP at channel create/update (true) or lazily on first client request
+	// (false, default). 20260821 user decision.
+	Preallocate bool             `json:"preallocate"`
+	Sessions    []ChannelSession `json:"sessions,omitempty"`
 	// DirectEndpoint is an optional authenticated TCP entry point which bypasses
 	// the reverse proxy.
 	DirectEndpoint *ChannelEndpoint `json:"direct_endpoint,omitempty"`
@@ -81,16 +85,21 @@ type ChannelEndpoint struct {
 }
 
 type CreateChannelRequest struct {
-	Name           string                  `json:"name"`
-	ProviderID     string                  `json:"provider_id"`
-	Mode           string                  `json:"mode"`
-	Protocol       string                  `json:"protocol,omitempty"`
-	Region         string                  `json:"region,omitempty"`
-	RegionMode     RegionMode              `json:"region_mode,omitempty"`
-	RandomRegions  []string                `json:"random_regions,omitempty"`
-	PoolSize       int                     `json:"pool_size,omitempty"` // ignored for sticky channels
-	SessionCount   int                     `json:"session_count,omitempty"`
-	IdleRelease    int                     `json:"idle_release_seconds,omitempty"`
+	Name          string     `json:"name"`
+	ProviderID    string     `json:"provider_id"`
+	Mode          string     `json:"mode"`
+	Protocol      string     `json:"protocol,omitempty"`
+	Region        string     `json:"region,omitempty"`
+	RegionMode    RegionMode `json:"region_mode,omitempty"`
+	RandomRegions []string   `json:"random_regions,omitempty"`
+	PoolSize      int        `json:"pool_size,omitempty"` // ignored for sticky channels
+	SessionCount  int        `json:"session_count,omitempty"`
+	IdleRelease   int        `json:"idle_release_seconds,omitempty"`
+	// Preallocate eagerly allocates an IP for every declared session at
+	// channel create/update. Default false = lazy allocation: credentials
+	// exist immediately, the first client request triggers allocation
+	// (avoids a startup burst blocking channel creation, 20260821).
+	Preallocate    bool                    `json:"preallocate,omitempty"`
 	Listener       ChannelListenerRequest  `json:"listener"`
 	DirectListener *ChannelListenerRequest `json:"direct_listener,omitempty"`
 	PublicEndpoint listener.PublicEndpoint `json:"public_endpoint,omitempty"`
@@ -113,6 +122,7 @@ type UpdateChannelRequest struct {
 	RandomRegions  []string                 `json:"random_regions,omitempty"`
 	SessionCount   *int                     `json:"session_count,omitempty"`
 	IdleRelease    *int                     `json:"idle_release_seconds,omitempty"`
+	Preallocate    *bool                    `json:"preallocate,omitempty"`
 	PublicEndpoint *listener.PublicEndpoint `json:"public_endpoint,omitempty"`
 	DirectListener *ChannelListenerRequest  `json:"direct_listener,omitempty"`
 	ClearDirect    bool                     `json:"clear_direct_listener,omitempty"`

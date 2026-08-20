@@ -75,7 +75,7 @@ func TestRotateClientSessionRepairsMissingPoolSlot(t *testing.T) {
 	provider := harness.createProvider(t)
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "repair-missing-slot", ProviderID: provider.ID, Mode: ModeSticky,
-		SessionCount: 1, PublicEndpoint: managedPublicEndpoint(),
+		SessionCount: 1, Preallocate: true, PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestRotateClientSessionKeepsNodeReferencedByAnotherSession(t *testing.T) {
 	provider := harness.createProvider(t)
 	channel, err := harness.service.CreateChannel(ctx, CreateChannelRequest{
 		Name: "shared-pool-slot", ProviderID: provider.ID, Mode: ModeSticky,
-		SessionCount: 2, PublicEndpoint: managedPublicEndpoint(),
+		SessionCount: 2, Preallocate: true, PublicEndpoint: managedPublicEndpoint(),
 	})
 	if err != nil {
 		t.Fatal(err)

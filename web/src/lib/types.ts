@@ -653,6 +653,7 @@ export interface ResidentialChannel {
   control_url?: string
   session_count: number
   idle_release_seconds: number
+  preallocate?: boolean
   sessions?: ResidentialChannelSession[]
   direct_endpoint?: ResidentialChannelEndpoint
   control_path?: string
@@ -691,6 +692,7 @@ export interface CreateResidentialChannelRequest {
   random_regions?: string[]
   session_count?: number
   idle_release_seconds?: number
+  preallocate?: boolean
   public_endpoint?: ListenerPublicEndpoint
   enabled?: boolean
 }
@@ -703,6 +705,7 @@ export interface UpdateResidentialChannelRequest {
   random_regions?: string[]
   session_count?: number
   idle_release_seconds?: number
+  preallocate?: boolean
   clear_direct_listener?: boolean
   public_endpoint?: ListenerPublicEndpoint
   enabled: boolean

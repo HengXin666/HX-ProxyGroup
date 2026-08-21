@@ -161,6 +161,7 @@ type ResidentialService interface {
 	DeleteClientSessionByToken(context.Context, string, string) error
 	RotateChannelToken(context.Context, string) (residential.Channel, error)
 	RefreshChannelPool(context.Context, string) error
+	CfWorkerSubscriptions(context.Context) ([]residential.CfSubscription, error)
 }
 
 type Option func(*Server) error
@@ -438,6 +439,11 @@ func (s *Server) Handler() http.Handler {
 		// same way as the /sub/ subscription export.
 		mux.HandleFunc("/rot/", s.handleResidentialRotatePublic)
 		mux.HandleFunc("/ctl/", s.handleResidentialControlPublic)
+		// Public token-addressed config center: GET /provision/<token> returns
+		// the plain list of enabled cf-worker provider subscription URLs.
+		// Consumers pull these and dial the workers directly — this control
+		// plane is a config issuer, not a relay. 20260821.
+		mux.HandleFunc("/provision/", s.handleProvisionConfig)
 	}
 	if s.traffic != nil {
 		mux.HandleFunc("/api/v1/traffic", s.handleTraffic)

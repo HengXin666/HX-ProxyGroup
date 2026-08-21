@@ -72,6 +72,19 @@ type Settings struct {
 	Quality     QualitySettings     `json:"quality"`
 	DNS         DNSSettings         `json:"dns"`
 	Performance PerformanceSettings `json:"performance"`
+	// Provision is the config-center ("授权/配置中心") gate. When Enabled and
+	// Token are set, GET /provision/<token> answers with the plain list of
+	// every enabled cf-worker provider's subscription URL — consumers (e.g.
+	// the OutlookRegister cf_bpb preset) pull these and dial the CF workers
+	// directly, without proxying traffic through this control plane.
+	// 20260821 user decision: pxy is a config center, not a relay.
+	Provision ProvisionSettings `json:"provision"`
+}
+
+// ProvisionSettings gates the public config-center endpoint.
+type ProvisionSettings struct {
+	Enabled bool   `json:"enabled"`
+	Token   string `json:"token,omitempty"`
 }
 
 func Default() Settings {
@@ -266,6 +279,13 @@ func Validate(settings Settings) error {
 	if performance.LogLevel != "silent" && performance.LogLevel != "error" && performance.LogLevel != "warning" && performance.LogLevel != "info" && performance.LogLevel != "debug" {
 		return fmt.Errorf("%w: performance.log_level is invalid", ErrInvalid)
 	}
+	// Provision（配置中心）：启用时必须给 token，且 token 必须满足 URL 路径段
+	// 安全要求（同 validID：小写字母数字 - _）。token 即公开端点的唯一凭据。
+	if settings.Provision.Enabled {
+		if !validID(settings.Provision.Token) {
+			return fmt.Errorf("%w: provision.token must be 1-32 lowercase chars, digits, - or _", ErrInvalid)
+		}
+	}
 	return nil
 }
 
@@ -279,6 +299,10 @@ func normalize(settings *Settings) {
 	trimList(settings.DNS.DefaultNameserver)
 	trimList(settings.DNS.Nameserver)
 	trimList(settings.DNS.Fallback)
+	settings.Provision.Token = strings.TrimSpace(settings.Provision.Token)
+	if !settings.Provision.Enabled {
+		settings.Provision.Token = ""
+	}
 }
 
 func trimList(values []string) {

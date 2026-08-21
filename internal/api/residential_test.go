@@ -37,6 +37,8 @@ type stubResidentialService struct {
 	clientSession      residential.ClientSession
 	clientSessionErr   error
 	clientSessionCalls [][3]string
+	cfSubscriptions    []residential.CfSubscription
+	cfSubscriptionsErr error
 }
 
 type countryAwareStubResidentialService struct {
@@ -184,6 +186,10 @@ func (s *stubResidentialService) RotateChannelToken(context.Context, string) (re
 }
 
 func (s *stubResidentialService) RefreshChannelPool(context.Context, string) error { return nil }
+
+func (s *stubResidentialService) CfWorkerSubscriptions(context.Context) ([]residential.CfSubscription, error) {
+	return s.cfSubscriptions, s.cfSubscriptionsErr
+}
 
 func (s *stubResidentialService) EnsureClientSessionByToken(_ context.Context, token, sessionID string) (residential.ClientSession, error) {
 	s.clientSessionCalls = append(s.clientSessionCalls, [3]string{"ensure", token, sessionID})

@@ -772,6 +772,41 @@ func validateGatewayHost(host string) error {
 	return nil
 }
 
+// CfWorkerSubscriptions returns the plain subscription URL list of every
+// enabled cf-worker provider. This is the "config center" export consumed by
+// external clients (e.g. HX-OutlookRegister's cf_bpb preset): they pull these
+// URLs and dial the Cloudflare Workers directly — traffic never relays through
+// this control plane, only the configuration does. 20260821 user decision:
+// pxy is a config center / authorization issuer, not a relay.
+func (s *Service) CfWorkerSubscriptions(ctx context.Context) ([]CfSubscription, error) {
+	records, err := s.repository.ListResidentialProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	subscriptions := make([]CfSubscription, 0, len(records))
+	for _, record := range records {
+		if record.RotationMode != RotationCloudflareWorker || !record.Enabled {
+			continue
+		}
+		provider := s.providerFromRecord(record)
+		workerURL := strings.TrimSpace(provider.WorkerURL)
+		if workerURL == "" {
+			continue
+		}
+		subscriptions = append(subscriptions, CfSubscription{
+			Name: provider.Name,
+			URL:  workerURL,
+		})
+	}
+	return subscriptions, nil
+}
+
+// CfSubscription is one exported Cloudflare Worker subscription URL.
+type CfSubscription struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
 func (s *Service) providerFromRecord(record store.ResidentialProviderRecord) Provider {
 	secrets, secretsErr := s.openProviderSecrets(record.ID, record.CredentialsEncrypted)
 	defaultRegionMode := RegionMode(record.DefaultRegionMode)

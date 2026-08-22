@@ -175,6 +175,25 @@ func (s *Service) TriggerUpdate(ctx context.Context) error {
 	return requestRemoteUpdate(ctx, s.config.PrivilegedSocket)
 }
 
+// ExecResult is the outcome of one remote command execution.
+type ExecResult struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+// Execute runs one non-interactive command through the privileged helper and
+// returns its captured output. It is only available in a production systemd
+// installation where the root helper socket is configured (20260823: the API
+// remote-management path — lets an authenticated operator drive the VPS
+// without a PTY session).
+func (s *Service) Execute(ctx context.Context, command string, timeout time.Duration) (ExecResult, error) {
+	if strings.TrimSpace(s.config.PrivilegedSocket) == "" {
+		return ExecResult{}, errors.New("remote exec is unavailable outside a production systemd installation")
+	}
+	return requestRemoteExec(ctx, s.config.PrivilegedSocket, command, timeout)
+}
+
 // Status is the API view of the terminal feature.
 type Status struct {
 	Enabled        bool `json:"enabled"`

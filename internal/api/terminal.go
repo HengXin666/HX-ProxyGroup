@@ -20,6 +20,9 @@ type TerminalService interface {
 	// ReportCwd records the shell directory reported by the frontend so a
 	// reconnect or a later login resumes in the previous directory.
 	ReportCwd(ctx context.Context, actor, cwd string)
+	// Execute runs one non-interactive command through the privileged helper
+	// and returns its captured output (20260823 API remote-management path).
+	Execute(ctx context.Context, command string, timeout time.Duration) (terminal.ExecResult, error)
 	// File operations share the privilege domain of the shell: they are served
 	// by the root PTY helper when one is configured, so the file manager can
 	// browse directories (e.g. /home, /root) the sandboxed control plane

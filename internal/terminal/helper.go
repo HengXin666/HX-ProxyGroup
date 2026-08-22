@@ -21,15 +21,17 @@ import (
 )
 
 const (
-	frameOpen   byte = 1
-	frameInput  byte = 2
-	frameResize byte = 3
-	frameClose  byte = 4
-	frameUpdate byte = 5
-	frameReady  byte = 11
-	frameOutput byte = 12
-	frameMode   byte = 13
-	frameError  byte = 14
+	frameOpen       byte = 1
+	frameInput      byte = 2
+	frameResize     byte = 3
+	frameClose      byte = 4
+	frameUpdate     byte = 5
+	frameExec       byte = 6
+	frameReady      byte = 11
+	frameOutput     byte = 12
+	frameMode       byte = 13
+	frameError      byte = 14
+	frameExecResult byte = 15
 
 	// Dedicated helper connections for file operations. Each operation uses
 	// one connection: the control plane sends a request frame, the helper
@@ -284,6 +286,9 @@ func serveHelperConnection(ctx context.Context, connection net.Conn, config Help
 	switch {
 	case kind == frameUpdate:
 		updates.serve(ctx, connection)
+		return
+	case kind == frameExec:
+		handleHelperExecRequest(connection, payload)
 		return
 	case isHelperFileFrame(kind):
 		select {

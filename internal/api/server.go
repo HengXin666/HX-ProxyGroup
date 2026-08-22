@@ -483,6 +483,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.terminal != nil {
 		mux.HandleFunc("/api/v1/terminal/status", s.handleTerminalStatus)
+		mux.HandleFunc("/api/v1/terminal/exec", s.handleTerminalExec)
 		mux.HandleFunc("/api/v1/terminal/ws", s.handleTerminalSocket)
 		// Sensitive file/metrics surfaces carry the same authority as a root
 		// shell, so they are gated by the same 2FA step-up as the WebSocket.

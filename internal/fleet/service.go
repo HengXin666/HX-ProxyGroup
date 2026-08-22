@@ -222,6 +222,9 @@ func (s *Service) maintainAccount(ctx context.Context, account store.CFAccountRe
 			"count", len(byName), "target", settings.Fleet.FleetSize)
 	}
 
+	if err := s.ensureProvidersEnabled(ctx, byName); err != nil {
+		s.logger.WarnContext(ctx, "fleet ensure providers enabled failed", "error", err)
+	}
 	names := make([]string, 0, len(byName))
 	for name := range byName {
 		names = append(names, name)
@@ -322,6 +325,49 @@ func cfSubdomainFromCanonical(canonicalURL string) string {
 		return parts[1]
 	}
 	return ""
+}
+
+// ensureProvidersEnabled re-enables the fleet's providers. The remote
+// configuration-publish flow resets newly created providers to enabled=false
+// (20260823 live test), which keeps them off the provision list; the fleet
+// must assert enabled=true on every sweep.
+func (s *Service) ensureProvidersEnabled(ctx context.Context, byName map[string]*store.FleetWorkerRecord) error {
+	for _, record := range byName {
+		if record.ProviderID == "" {
+			continue
+		}
+		provider, err := s.residential.GetProvider(ctx, record.ProviderID)
+		if err != nil {
+			continue
+		}
+		if provider.Enabled {
+			continue
+		}
+		_, err = s.residential.UpdateProvider(ctx, record.ProviderID, residential.UpdateProviderRequest{
+			Version:               provider.Version,
+			Name:                  provider.Name,
+			Vendor:                provider.Vendor,
+			Protocol:              provider.Protocol,
+			GatewayHost:           provider.GatewayHost,
+			GatewayPort:           provider.GatewayPort,
+			UsernameTemplate:      provider.UsernameTemplate,
+			RotationMode:          provider.RotationMode,
+			SessionTTLSeconds:     provider.SessionTTLSeconds,
+			MaxConcurrentSessions: provider.MaxConcurrentSessions,
+			PoolSize:              provider.PoolSize,
+			SessionExpiryPolicy:   provider.SessionExpiryPolicy,
+			DefaultRegion:         provider.DefaultRegion,
+			DefaultRegionMode:     provider.DefaultRegionMode,
+			DefaultRandomRegions:  provider.DefaultRandomRegions,
+			Enabled:               true,
+		})
+		if err != nil {
+			s.logger.WarnContext(ctx, "fleet re-enable provider failed", "provider", record.ProviderID, "error", err)
+			continue
+		}
+		s.logger.InfoContext(ctx, "fleet provider re-enabled", "provider", record.ProviderID)
+	}
+	return nil
 }
 
 // disableProvider disables a cf-worker provider (keeps it off the provision list).

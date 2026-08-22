@@ -34,9 +34,10 @@ func ObfuscateWorker(ctx context.Context, opts ObfuscateOptions, rng func(int) i
 	if err := os.MkdirAll(scratch, 0o755); err != nil {
 		return "", fmt.Errorf("混淆目录创建失败: %w", err)
 	}
+	templatePath := ResolveAssetPath(opts.TemplatePath, "cfworker/worker.js")
 	plain := filepath.Join(scratch, "tpl.plain.js")
 	if _, err := os.Stat(plain); err != nil {
-		template, readErr := os.ReadFile(opts.TemplatePath)
+		template, readErr := os.ReadFile(templatePath)
 		if readErr != nil {
 			return "", fmt.Errorf("读取 worker 模板 %s 失败: %w", opts.TemplatePath, readErr)
 		}
@@ -51,7 +52,7 @@ func ObfuscateWorker(ctx context.Context, opts ObfuscateOptions, rng func(int) i
 		}
 		recipe := obfuscateRecipes[rng(len(obfuscateRecipes))]
 		artifact := filepath.Join(scratch, "tpl.plain."+recipe+".js")
-		command := exec.CommandContext(ctx, "bash", opts.ScriptPath, plain, scratch, recipe)
+		command := exec.CommandContext(ctx, "bash", ResolveAssetPath(opts.ScriptPath, "cfworker/obfuscate.sh"), plain, scratch, recipe)
 		if output, err := command.CombinedOutput(); err != nil {
 			lastErr = fmt.Errorf("混淆(%s)失败: %s", recipe, strings.TrimSpace(string(output)))
 			continue

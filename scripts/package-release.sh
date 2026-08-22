@@ -8,6 +8,7 @@ CONTROL_BINARY=""
 MIHOMO_BINARY=""
 WEB_DIR=""
 OUTPUT_DIR=""
+CFWORKER_DIR="${CFWORKER_DIR:-/home/hx/Loli/code/AI-Code/HX-CF-Tunnel}"
 
 fail() { printf 'package-release: %s\n' "$*" >&2; exit 1; }
 
@@ -18,6 +19,7 @@ while [[ $# -gt 0 ]]; do
         --control) CONTROL_BINARY="${2:-}"; shift 2 ;;
         --mihomo) MIHOMO_BINARY="${2:-}"; shift 2 ;;
         --web-dir) WEB_DIR="${2:-}"; shift 2 ;;
+        --cfworker-dir) CFWORKER_DIR="${2:-}"; shift 2 ;;
         --output-dir) OUTPUT_DIR="${2:-}"; shift 2 ;;
         *) fail "unknown option: $1" ;;
     esac
@@ -39,6 +41,12 @@ install -m 0755 "${MIHOMO_BINARY}" "${stage}/bin/mihomo"
 install -m 0755 "${ROOT_DIR}/install.sh" "${stage}/install.sh"
 install -m 0644 "${ROOT_DIR}/LICENSE" "${stage}/LICENSE"
 cp -a "${WEB_DIR}/." "${stage}/web/"
+# Fleet deploy assets (20260823): the cfnew worker template + HX-CF-Tunnel
+# obfuscation script travel inside the bundle so remote installations can run
+# the fleet without SSH access to the development machine.
+install -d -m 0755 "${stage}/cfworker"
+install -m 0644 "${CFWORKER_DIR}/dist-obf/少年你相信光吗.plain.js" "${stage}/cfworker/worker.js"
+install -m 0755 "${CFWORKER_DIR}/scripts/obfuscate.sh" "${stage}/cfworker/obfuscate.sh"
 cp -a "${ROOT_DIR}/deploy/systemd/." "${stage}/deploy/systemd/"
 
 bundle_name="hx-proxygroup_${VERSION}_linux_${ARCH}.tar.gz"

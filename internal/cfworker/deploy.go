@@ -129,7 +129,7 @@ func Deploy(
 	// cfnew build (~1.7MB, always under the free-plan size cap) and the
 	// proven-good path — this guarantees the fleet never stays short because
 	// of an oversized/broken randomized obfuscation (20260823).
-	if opts.Obfuscate.TemplatePath != "" {
+	if opts.Obfuscate.TemplatePath != "" || assetExists("cfworker/worker.js") {
 		name := NeutralName(existing)
 		existing[name] = true
 		result, fallbackErr := deployRaw(ctx, client, account, subdomain, name, opts.Obfuscate.TemplatePath)
@@ -192,9 +192,10 @@ func deployRaw(
 	account AccountCredentials,
 	subdomain, name, templatePath string,
 ) (DeployResult, error) {
+	templatePath = ResolveAssetPath(templatePath, "cfworker/worker.js")
 	script, err := os.ReadFile(templatePath)
 	if err != nil {
-		return DeployResult{}, fmt.Errorf("读取模板失败: %w", err)
+		return DeployResult{}, fmt.Errorf("读取模板失败(%s): %w", templatePath, err)
 	}
 	pathVal := "/" + randomHex(12)
 	variables := map[string]string{"u": randomUUID(), "d": pathVal}

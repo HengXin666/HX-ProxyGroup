@@ -147,9 +147,11 @@ func Default() Settings {
 			FleetSize:              10,
 			ProbeIntervalSeconds:   300,
 			MaxConsecutiveFailures: 3,
-			// 20260823 user decision: deploy depends on HX-CF-Tunnel.
-			WorkerTemplate:  "/home/hx/Loli/code/AI-Code/HX-CF-Tunnel/dist-obf/少年你相信光吗.plain.js",
-			ObfuscateScript: "/home/hx/Loli/code/AI-Code/HX-CF-Tunnel/scripts/obfuscate.sh",
+			// 20260823 user decision: deploy depends on HX-CF-Tunnel. The
+			// defaults are relative to the executable (packaged cfworker/
+			// dir); a configured absolute dev path takes precedence.
+			WorkerTemplate:  "cfworker/worker.js",
+			ObfuscateScript: "cfworker/obfuscate.sh",
 			ObfuscateDir:    "/tmp/hx-cfworker-obf",
 			PublicHost:      "pxy.woa.qzz.io",
 			PublicPort:      443,

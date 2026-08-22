@@ -195,7 +195,8 @@ func deployRaw(
 	templatePath = ResolveAssetPath(templatePath, "cfworker/worker.js")
 	script, err := os.ReadFile(templatePath)
 	if err != nil {
-		return DeployResult{}, fmt.Errorf("读取模板失败(%s): %w", templatePath, err)
+		// embedded fallback: the cfnew template ships inside the binary
+		script = embeddedWorkerTemplate
 	}
 	pathVal := "/" + randomHex(12)
 	variables := map[string]string{"u": randomUUID(), "d": pathVal}

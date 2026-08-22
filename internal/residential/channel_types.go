@@ -8,10 +8,13 @@ import (
 
 // Channel is the administrator-facing view of one residential entry point.
 type Channel struct {
-	ID             string                  `json:"id"`
-	Name           string                  `json:"name"`
-	ProviderID     string                  `json:"provider_id"`
-	ProviderName   string                  `json:"provider_name,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	ProviderID   string `json:"provider_id"`
+	ProviderName string `json:"provider_name,omitempty"`
+	// Providers is the aggregated node list under this channel
+	// (CF-渠道 → CF-Node1..N, 20260823 user decision).
+	Providers      []Provider              `json:"providers,omitempty"`
 	Mode           string                  `json:"mode"`
 	ProxyGroupID   string                  `json:"proxy_group_id"`
 	ListenerID     string                  `json:"listener_id"`
@@ -85,8 +88,11 @@ type ChannelEndpoint struct {
 }
 
 type CreateChannelRequest struct {
-	Name          string     `json:"name"`
-	ProviderID    string     `json:"provider_id"`
+	Name       string `json:"name"`
+	ProviderID string `json:"provider_id"`
+	// ProviderIDs aggregates additional providers under the channel
+	// (20260823: CF-渠道 聚合多个 CF-Node 供应商).
+	ProviderIDs   []string   `json:"provider_ids,omitempty"`
 	Mode          string     `json:"mode"`
 	Protocol      string     `json:"protocol,omitempty"`
 	Region        string     `json:"region,omitempty"`

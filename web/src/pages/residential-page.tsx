@@ -99,6 +99,7 @@ const emptyProviderForm: ProviderForm = {
 type ChannelForm = {
   name: string
   providerID: string
+  providerIDs: string[]
   mode: ResidentialChannelMode
   protocol: "vless" | "vmess" | "trojan"
   regionMode: ResidentialRegionMode
@@ -114,6 +115,7 @@ type ChannelForm = {
 const emptyChannelForm: ChannelForm = {
   name: "",
   providerID: "",
+  providerIDs: [],
   mode: "sticky",
   protocol: "vless",
   regionMode: "fixed",
@@ -244,7 +246,11 @@ export function ResidentialPage({
                     {channels.map((channel) => (
                       <tr key={channel.id}>
                         <td className="px-3 py-2 font-medium">{channel.name}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{channel.provider_name ?? channel.provider_id}</td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {channel.providers && channel.providers.length > 0
+                            ? channel.providers.map((provider) => provider.name).join(", ")
+                            : (channel.provider_name ?? channel.provider_id)}
+                        </td>
                         <td className="px-3 py-2"><Badge variant={channel.mode === "sticky" ? "default" : "outline"}>{channel.mode === "sticky" ? "粘滞" : "透传"}</Badge></td>
                         <td className="px-3 py-2 text-muted-foreground">
                           {regionModeLabel(channel.region_mode)}
@@ -935,6 +941,7 @@ function ChannelDialog({
       return {
         name: initial.name,
         providerID: initial.provider_id,
+        providerIDs: (initial.providers ?? []).map((provider) => provider.id),
         mode: initial.mode,
         protocol: (isResidentialWebSocketKind(initial.endpoint.kind) ? initial.endpoint.kind : "vless") as ChannelForm["protocol"],
         regionMode: initial.region_mode ?? "fixed",
@@ -951,6 +958,7 @@ function ChannelDialog({
     return {
       ...emptyChannelForm,
       providerID: provider?.id ?? "",
+      providerIDs: [],
       regionMode: provider?.default_region_mode ?? "fixed",
       region: provider?.default_region ?? "",
       randomRegions: (provider?.default_random_regions ?? []).join(", "),
@@ -1009,6 +1017,7 @@ function ChannelDialog({
         const payload: CreateResidentialChannelRequest = {
           name: form.name.trim(),
           provider_id: form.providerID,
+          provider_ids: form.providerIDs,
           mode: form.mode,
           protocol: form.protocol,
           region_mode: form.regionMode,
@@ -1065,6 +1074,29 @@ function ChannelDialog({
                   </SelectContent>
                 </Select>
               )}
+            </label>
+            <label className="grid gap-1 text-xs">
+              聚合节点（CF-渠道 挂多个 CF-Node，可选）
+              <div className="max-h-32 overflow-y-auto rounded-md border border-border p-1.5">
+                {providers
+                  .filter((provider) => provider.id !== form.providerID)
+                  .map((provider) => (
+                    <label key={provider.id} className="flex cursor-pointer items-center gap-1.5 px-1 py-0.5 text-xs hover:bg-surface">
+                      <input
+                        type="checkbox"
+                        className="h-3 w-3"
+                        checked={form.providerIDs.includes(provider.id)}
+                        onChange={(event) => {
+                          const next = event.target.checked
+                            ? [...form.providerIDs, provider.id]
+                            : form.providerIDs.filter((id) => id !== provider.id)
+                          update("providerIDs", next)
+                        }}
+                      />
+                      {provider.name}
+                    </label>
+                  ))}
+              </div>
             </label>
             <label className="grid gap-1 text-xs">
               模式

@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/cfworker"
+	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/residential"
 	"github.com/HengXin666/HX-ProxyGroup/internal/secret"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
@@ -177,7 +179,13 @@ func (s *Service) maintainAccount(ctx context.Context, account store.CFAccountRe
 		deployed, err := cfworker.Deploy(ctx, client, cfworker.AccountCredentials{
 			Email: account.Email, AccountID: account.CFAccountID,
 			APIToken: decryptToken(account.APITokenEncrypted, s.secretBox, account.ID),
-		}, s.dataDir)
+		}, cfworker.DeployOptions{
+			Obfuscate: cfworker.ObfuscateOptions{
+				TemplatePath: settings.Fleet.WorkerTemplate,
+				ScriptPath:   settings.Fleet.ObfuscateScript,
+				OutputDir:    settings.Fleet.ObfuscateDir,
+			},
+		})
 		if err != nil {
 			s.logger.ErrorContext(ctx, "fleet deploy failed", "error", err)
 			break
@@ -219,10 +227,101 @@ func (s *Service) maintainAccount(ctx context.Context, account store.CFAccountRe
 		names = append(names, name)
 	}
 	sortStrings(names)
+	// 20260823 user decision: aggregate this account's node providers under one
+	// CF channel (HX-Proxy → [CF-渠道] → [CF-Node1..N]) so the frontend shows
+	// the hierarchy. cf-worker channels bypass the session machinery; the link
+	// is management/export only.
+	if len(byName) > 0 {
+		channelID, channelErr := s.ensureCFChannel(ctx, firstProviderID(byName), firstCanonical(byName))
+		if channelErr != nil {
+			s.logger.WarnContext(ctx, "fleet ensure CF channel failed", "error", channelErr)
+		} else {
+			providerIDs := make([]string, 0, len(byName))
+			for _, record := range byName {
+				if record.ProviderID != "" {
+					providerIDs = append(providerIDs, record.ProviderID)
+				}
+			}
+			sortStrings(providerIDs)
+			if len(providerIDs) > 0 {
+				if err := s.store.ReplaceChannelProviders(ctx, channelID, providerIDs); err != nil {
+					s.logger.WarnContext(ctx, "fleet link channel providers failed", "error", err)
+				}
+			}
+		}
+	}
 	return AccountSummary{
 		Email: account.Email, Status: "active",
 		Workers: names, Healthy: healthy, BannedThisRound: banned,
 	}, nil
+}
+
+// ensureCFChannel finds or creates the per-account CF channel ("CF-<子域>").
+func (s *Service) ensureCFChannel(
+	ctx context.Context, primaryProviderID, canonicalURL string,
+) (string, error) {
+	subdomain := cfSubdomainFromCanonical(canonicalURL)
+	name := "CF-" + subdomain
+	if name == "CF-" {
+		return "", errors.New("无法从 canonical URL 推导子域")
+	}
+	channels, err := s.residential.ListChannels(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, channel := range channels {
+		if channel.Name == name {
+			return channel.ID, nil
+		}
+	}
+	settings, settingsErr := s.settingsRead(ctx)
+	if settingsErr != nil {
+		return "", settingsErr
+	}
+	created, err := s.residential.CreateChannel(ctx, residential.CreateChannelRequest{
+		Name:       name,
+		ProviderID: primaryProviderID,
+		Mode:       residential.ModePassthrough,
+		Protocol:   "vless",
+		PublicEndpoint: listener.PublicEndpoint{
+			Host: settings.Fleet.PublicHost,
+			Port: settings.Fleet.PublicPort,
+			TLS:  true,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	s.logger.InfoContext(ctx, "fleet CF channel created", "channel", name)
+	return created.ID, nil
+}
+
+func firstProviderID(byName map[string]*store.FleetWorkerRecord) string {
+	for _, record := range byName {
+		if record.ProviderID != "" {
+			return record.ProviderID
+		}
+	}
+	return ""
+}
+
+func firstCanonical(byName map[string]*store.FleetWorkerRecord) string {
+	for _, record := range byName {
+		if record.CanonicalURL != "" {
+			return record.CanonicalURL
+		}
+	}
+	return ""
+}
+
+func cfSubdomainFromCanonical(canonicalURL string) string {
+	// https://<name>.<sub>.workers.dev/<path>/sub?app=xray → parts[1]
+	host := strings.TrimPrefix(canonicalURL, "https://")
+	parts := strings.SplitN(host, ".", 3)
+	if len(parts) >= 3 {
+		return parts[1]
+	}
+	return ""
 }
 
 // disableProvider disables a cf-worker provider (keeps it off the provision list).

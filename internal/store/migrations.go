@@ -790,6 +790,24 @@ CREATE TABLE fleet_workers (
 
 `,
 	},
+	{
+		version: 31,
+		name:    "channel_providers",
+		// 20260823 user decision: one channel aggregates multiple providers —
+		// HX-Proxy → [CF-渠道] → [CF-Node1..N] visible in the frontend. The
+		// channel keeps its primary provider_id column for session routing;
+		// the junction carries the full node list.
+		sql: `
+CREATE TABLE channel_providers (
+    channel_id TEXT NOT NULL REFERENCES residential_channels(id) ON DELETE CASCADE,
+    provider_id TEXT NOT NULL REFERENCES residential_providers(id) ON DELETE CASCADE,
+    PRIMARY KEY (channel_id, provider_id)
+) STRICT;
+
+INSERT INTO channel_providers (channel_id, provider_id)
+    SELECT id, provider_id FROM residential_channels;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

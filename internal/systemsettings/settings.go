@@ -92,6 +92,16 @@ type FleetSettings struct {
 	ProbeIntervalSeconds   int    `json:"probe_interval_seconds"`
 	MaxConsecutiveFailures int    `json:"max_consecutive_failures"`
 	Proxy                  string `json:"proxy,omitempty"`
+	// WorkerTemplate / ObfuscateScript point at HX-CF-Tunnel (20260823 user
+	// decision: the fleet deploys the HX-CF-Tunnel cfnew worker with a random
+	// obfuscation recipe per deploy).
+	WorkerTemplate  string `json:"worker_template,omitempty"`
+	ObfuscateScript string `json:"obfuscate_script,omitempty"`
+	ObfuscateDir    string `json:"obfuscate_dir,omitempty"`
+	// PublicHost is the public endpoint host for the per-account CF channel
+	// (managed WebSocket channels require public_endpoint.host).
+	PublicHost string `json:"public_host,omitempty"`
+	PublicPort int    `json:"public_port,omitempty"`
 }
 
 // ProvisionSettings gates the public config-center endpoint.
@@ -137,6 +147,12 @@ func Default() Settings {
 			FleetSize:              10,
 			ProbeIntervalSeconds:   300,
 			MaxConsecutiveFailures: 3,
+			// 20260823 user decision: deploy depends on HX-CF-Tunnel.
+			WorkerTemplate:  "/home/hx/Loli/code/AI-Code/HX-CF-Tunnel/dist-obf/少年你相信光吗.plain.js",
+			ObfuscateScript: "/home/hx/Loli/code/AI-Code/HX-CF-Tunnel/scripts/obfuscate.sh",
+			ObfuscateDir:    "/tmp/hx-cfworker-obf",
+			PublicHost:      "pxy.woa.qzz.io",
+			PublicPort:      443,
 		},
 	}
 }

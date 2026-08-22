@@ -35,6 +35,23 @@ func (s *Service) ListChannels(ctx context.Context) ([]Channel, error) {
 	return channels, nil
 }
 
+// channelProviders resolves the providers aggregated under a channel.
+func (s *Service) channelProviders(ctx context.Context, channelID string) ([]Provider, error) {
+	ids, err := s.repository.ListChannelProviders(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	providers := make([]Provider, 0, len(ids))
+	for _, id := range ids {
+		record, err := s.repository.GetResidentialProvider(ctx, id)
+		if err != nil {
+			continue
+		}
+		providers = append(providers, s.providerFromRecord(record))
+	}
+	return providers, nil
+}
+
 func (s *Service) GetChannel(ctx context.Context, id string) (Channel, error) {
 	record, err := s.repository.GetResidentialChannel(ctx, id)
 	if err != nil {
@@ -48,6 +65,10 @@ func (s *Service) GetChannel(ctx context.Context, id string) (Channel, error) {
 }
 
 func (s *Service) channelFromRecord(ctx context.Context, record store.ResidentialChannelRecord, provider Provider) (Channel, error) {
+	aggregated, err := s.channelProviders(ctx, record.ID)
+	if err != nil {
+		return Channel{}, err
+	}
 	pool, err := s.repository.ListResidentialSessionNodes(ctx, record.ID)
 	if err != nil {
 		return Channel{}, err
@@ -68,7 +89,8 @@ func (s *Service) channelFromRecord(ctx context.Context, record store.Residentia
 	}
 	channel := Channel{
 		ID: record.ID, Name: record.Name, ProviderID: record.ProviderID, ProviderName: provider.Name,
-		Mode: record.Mode, ProxyGroupID: record.ProxyGroupID, ListenerID: record.ListenerID,
+		Providers: aggregated,
+		Mode:      record.Mode, ProxyGroupID: record.ProxyGroupID, ListenerID: record.ListenerID,
 		Region: record.Region, RegionMode: normalizedChannelRegionMode(record.RegionMode),
 		RandomRegions: parseRegionList(record.RandomRegions), SessionCount: record.SessionCount,
 		IdleReleaseSeconds: record.IdleReleaseSeconds, Preallocate: record.Preallocate,

@@ -640,6 +640,7 @@ export interface ResidentialChannel {
   name: string
   provider_id: string
   provider_name?: string
+  providers?: ResidentialProvider[]
   mode: ResidentialChannelMode
   proxy_group_id: string
   listener_id: string
@@ -685,6 +686,7 @@ export interface ResidentialProviderList {
 export interface CreateResidentialChannelRequest {
   name: string
   provider_id: string
+  provider_ids?: string[]
   mode: ResidentialChannelMode
   protocol: "vless" | "vmess" | "trojan"
   region?: string

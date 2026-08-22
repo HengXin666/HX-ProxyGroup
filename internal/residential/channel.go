@@ -237,6 +237,32 @@ func (s *Service) CreateChannel(ctx context.Context, request CreateChannelReques
 		rollbackListeners()
 		return Channel{}, mapStoreError(err)
 	}
+	// 20260823: aggregate additional providers under this channel (CF-渠道 →
+	// CF-Node1..N). The primary provider plus the declared provider_ids form
+	// the node list shown in the frontend; cf-worker channels bypass the
+	// session machinery anyway, so the aggregation is management/export only.
+	aggregateIDs := append([]string{provider.ID}, request.ProviderIDs...)
+	validIDs := make([]string, 0, len(aggregateIDs))
+	seen := make(map[string]bool, len(aggregateIDs))
+	for _, aggregateID := range aggregateIDs {
+		aggregateID = strings.TrimSpace(aggregateID)
+		if aggregateID == "" || seen[aggregateID] {
+			continue
+		}
+		aggregateRecord, aggregateErr := s.repository.GetResidentialProvider(ctx, aggregateID)
+		if aggregateErr != nil || !aggregateRecord.Enabled {
+			continue
+		}
+		seen[aggregateID] = true
+		validIDs = append(validIDs, aggregateID)
+	}
+	if len(validIDs) > 0 {
+		if err := s.repository.ReplaceChannelProviders(ctx, created.ID, validIDs); err != nil {
+			_ = s.repository.DeleteResidentialChannel(ctx, created.ID, created.Version)
+			rollbackListeners()
+			return Channel{}, fmt.Errorf("aggregate channel providers: %w", err)
+		}
+	}
 	// Declared sessions are what makes this channel publishable as an ordinary
 	// subscription, so provisioning them is part of creating the channel rather
 	// than a later background step.

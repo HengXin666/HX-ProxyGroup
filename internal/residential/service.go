@@ -22,6 +22,8 @@ type Repository interface {
 	DeleteResidentialProvider(context.Context, string, int) error
 
 	CreateResidentialChannel(context.Context, store.ResidentialChannelRecord) (store.ResidentialChannelRecord, error)
+	ReplaceChannelProviders(context.Context, string, []string) error
+	ListChannelProviders(context.Context, string) ([]string, error)
 	GetResidentialChannel(context.Context, string) (store.ResidentialChannelRecord, error)
 	GetResidentialChannelByRotateToken(context.Context, string) (store.ResidentialChannelRecord, error)
 	GetResidentialChannelByControlToken(context.Context, string) (store.ResidentialChannelRecord, error)

@@ -200,3 +200,41 @@ func scanFleetWorker(scanner interface{ Scan(...any) error }) (FleetWorkerRecord
 	record.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	return record, nil
 }
+
+// ReplaceChannelProviders rewrites the channel→provider links (aggregation).
+func (s *Store) ReplaceChannelProviders(ctx context.Context, channelID string, providerIDs []string) error {
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM channel_providers WHERE channel_id = ?", channelID); err != nil {
+		return fmt.Errorf("clear channel providers: %w", err)
+	}
+	for _, providerID := range providerIDs {
+		if _, err := s.db.ExecContext(ctx, `
+INSERT INTO channel_providers(channel_id, provider_id) VALUES (?, ?)`,
+			channelID, providerID); err != nil {
+			return fmt.Errorf("link channel provider: %w", err)
+		}
+	}
+	return nil
+}
+
+// ListChannelProviders returns the provider ids aggregated under a channel.
+func (s *Store) ListChannelProviders(ctx context.Context, channelID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT provider_id FROM channel_providers WHERE channel_id = ? ORDER BY provider_id",
+		channelID)
+	if err != nil {
+		return nil, fmt.Errorf("list channel providers: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}

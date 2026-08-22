@@ -8,7 +8,11 @@ CONTROL_BINARY=""
 MIHOMO_BINARY=""
 WEB_DIR=""
 OUTPUT_DIR=""
-CFWORKER_DIR="${CFWORKER_DIR:-/home/hx/Loli/code/AI-Code/HX-CF-Tunnel}"
+# Fleet deploy assets: default to the repo-embedded copies (internal/cfworker/
+# assets, the same files embedded into the binary via go:embed) so the release
+# workflow works on CI without the development HX-CF-Tunnel checkout. Point
+# --cfworker-dir at HX-CF-Tunnel to prefer newer local copies.
+CFWORKER_DIR="${CFWORKER_DIR:-${ROOT_DIR}/internal/cfworker/assets}"
 
 fail() { printf 'package-release: %s\n' "$*" >&2; exit 1; }
 
@@ -45,8 +49,8 @@ cp -a "${WEB_DIR}/." "${stage}/web/"
 # obfuscation script travel inside the bundle so remote installations can run
 # the fleet without SSH access to the development machine.
 install -d -m 0755 "${stage}/cfworker"
-install -m 0644 "${CFWORKER_DIR}/dist-obf/少年你相信光吗.plain.js" "${stage}/cfworker/worker.js"
-install -m 0755 "${CFWORKER_DIR}/scripts/obfuscate.sh" "${stage}/cfworker/obfuscate.sh"
+install -m 0644 "${CFWORKER_DIR}/worker.js" "${stage}/cfworker/worker.js"
+install -m 0755 "${CFWORKER_DIR}/obfuscate.sh" "${stage}/cfworker/obfuscate.sh"
 cp -a "${ROOT_DIR}/deploy/systemd/." "${stage}/deploy/systemd/"
 
 bundle_name="hx-proxygroup_${VERSION}_linux_${ARCH}.tar.gz"

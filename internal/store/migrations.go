@@ -759,6 +759,37 @@ ALTER TABLE residential_channels
     ADD COLUMN preallocate INTEGER NOT NULL DEFAULT 0 CHECK (preallocate IN (0, 1));
 `,
 	},
+	{
+		version: 30,
+		name:    "cf_fleet",
+		// 20260823 用户决策：HX-ProxyGroup 内置 CF worker 舰队维护——
+		// 给定 CF 账号(API token)自动部署/探测/封禁重建/账号切换。
+		sql: `
+CREATE TABLE cf_accounts (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    cf_account_id TEXT NOT NULL,
+    api_token_encrypted TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'banned')),
+    banned_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE fleet_workers (
+    account_id TEXT NOT NULL,
+    worker_name TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    provider_id TEXT NOT NULL DEFAULT '',
+    failures INTEGER NOT NULL DEFAULT 0,
+    last_check TEXT NOT NULL DEFAULT '',
+    last_detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, worker_name)
+) STRICT;
+
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

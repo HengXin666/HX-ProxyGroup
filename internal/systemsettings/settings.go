@@ -79,6 +79,19 @@ type Settings struct {
 	// directly, without proxying traffic through this control plane.
 	// 20260821 user decision: pxy is a config center, not a relay.
 	Provision ProvisionSettings `json:"provision"`
+	// Fleet is the built-in CF worker fleet maintainer (20260823): given CF
+	// accounts (API tokens) it deploys/probes/recreates worker endpoints and
+	// switches accounts when one is banned.
+	Fleet FleetSettings `json:"fleet"`
+}
+
+// FleetSettings gates the built-in CF worker fleet maintainer.
+type FleetSettings struct {
+	Enabled                bool   `json:"enabled"`
+	FleetSize              int    `json:"fleet_size"`
+	ProbeIntervalSeconds   int    `json:"probe_interval_seconds"`
+	MaxConsecutiveFailures int    `json:"max_consecutive_failures"`
+	Proxy                  string `json:"proxy,omitempty"`
 }
 
 // ProvisionSettings gates the public config-center endpoint.
@@ -118,6 +131,12 @@ func Default() Settings {
 			KeepAliveInterval: 15,
 			FindProcessMode:   "off",
 			LogLevel:          "warning",
+		},
+		Fleet: FleetSettings{
+			Enabled:                false,
+			FleetSize:              10,
+			ProbeIntervalSeconds:   300,
+			MaxConsecutiveFailures: 3,
 		},
 	}
 }
@@ -241,6 +260,17 @@ func Validate(settings Settings) error {
 	}
 	if err := validatePublicHTTPURL(quality.TestURL); err != nil {
 		return fmt.Errorf("%w: quality.test_url: %v", ErrInvalid, err)
+	}
+	if settings.Fleet.Enabled {
+		if settings.Fleet.FleetSize < 1 || settings.Fleet.FleetSize > 50 {
+			return fmt.Errorf("%w: fleet.fleet_size must be between 1 and 50", ErrInvalid)
+		}
+		if settings.Fleet.ProbeIntervalSeconds < 30 || settings.Fleet.ProbeIntervalSeconds > 86400 {
+			return fmt.Errorf("%w: fleet.probe_interval_seconds must be between 30 and 86400", ErrInvalid)
+		}
+		if settings.Fleet.MaxConsecutiveFailures < 1 || settings.Fleet.MaxConsecutiveFailures > 10 {
+			return fmt.Errorf("%w: fleet.max_consecutive_failures must be between 1 and 10", ErrInvalid)
+		}
 	}
 	if len(quality.HealthTargets) > 12 {
 		return fmt.Errorf("%w: at most 12 health targets are allowed", ErrInvalid)

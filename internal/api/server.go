@@ -319,6 +319,7 @@ type Server struct {
 	routingRules     RoutingRulesService
 	overview         OverviewService
 	residential      ResidentialService
+	fleet            FleetService
 	logs             http.Handler
 	dataplane        DataPlaneService
 	systemInfo       *SystemInfo
@@ -427,6 +428,12 @@ func (s *Server) Handler() http.Handler {
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
 		mux.HandleFunc("/api/v1/proxy-services/", s.handleProxyService)
+	}
+	if s.fleet != nil {
+		mux.HandleFunc("/api/v1/fleet/status", s.handleFleetStatus)
+		mux.HandleFunc("/api/v1/fleet/sweep", s.handleFleetSweep)
+		mux.HandleFunc("/api/v1/fleet/accounts", s.handleFleetAccounts)
+		mux.HandleFunc("/api/v1/fleet/accounts/", s.handleFleetAccount)
 	}
 	if s.residential != nil {
 		mux.HandleFunc("/api/v1/residential/presets", s.handleResidentialPresets)

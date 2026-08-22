@@ -24,6 +24,7 @@ import (
 	"github.com/HengXin666/HX-ProxyGroup/internal/bundle"
 	"github.com/HengXin666/HX-ProxyGroup/internal/config"
 	"github.com/HengXin666/HX-ProxyGroup/internal/dataplane/mihomo"
+	"github.com/HengXin666/HX-ProxyGroup/internal/fleet"
 	"github.com/HengXin666/HX-ProxyGroup/internal/instance"
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/metrics"
@@ -211,6 +212,20 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// 20260823 user decision: the CF worker fleet maintainer lives inside
+	// HX-ProxyGroup itself (not an external script) — give it CF accounts and
+	// it deploys/probes/recreates worker endpoints on the configured interval.
+	fleetService, err := fleet.NewService(
+		database,
+		residentialService,
+		secretBox,
+		logger,
+		cfg.DataDirectory,
+		settingsService.Get,
+	)
+	if err != nil {
+		return err
+	}
 	trafficService, err := metrics.NewService(database, mihomoManager, logger, metrics.Config{})
 	if err != nil {
 		return err
@@ -360,6 +375,7 @@ func run(logger *slog.Logger) error {
 		api.WithListeners(listenerService),
 		api.WithProxyServices(proxyService),
 		api.WithResidential(residentialService),
+		api.WithFleet(fleetService),
 		api.WithTraffic(trafficService),
 		api.WithSettings(settingsService),
 		api.WithRoutingRules(routingRulesService),
@@ -412,7 +428,7 @@ func run(logger *slog.Logger) error {
 		serverErrors <- nil
 	}()
 
-	const backgroundTasks = 5
+	const backgroundTasks = 6
 	backgroundErrors := make(chan error, backgroundTasks)
 	runBackground := func(name string, task func(context.Context) error) {
 		go func() {
@@ -438,6 +454,7 @@ func run(logger *slog.Logger) error {
 	runBackground("node_scheduler", nodeScheduler.Run)
 	runBackground("residential_scheduler", residentialScheduler.Run)
 	runBackground("alert_scheduler", alertScheduler.Run)
+	runBackground("fleet_scheduler", fleetService.Run)
 	runBackground("traffic_service", trafficService.Run)
 	drainBackground := func(alreadyRead int) error {
 		var joined error

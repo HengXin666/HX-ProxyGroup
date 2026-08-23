@@ -186,6 +186,30 @@ export type TerminalProcessResource = {
 
 export type SystemResourceSample = TerminalHostSample
 
+export type DiskUsage = {
+  filesystem: string
+  size_bytes: number
+  used_bytes: number
+  avail_bytes: number
+  use_percent: number
+  mounted_on: string
+}
+
+export type DockerContainer = {
+  id: string
+  name: string
+  image: string
+  state: string
+  status: string
+  ports: string
+  created: string
+  cpu_perc?: string
+  mem_usage?: string
+  mem_perc?: string
+  net_io?: string
+  block_io?: string
+}
+
 export type TerminalFileEntry = {
   name: string
   size: number
@@ -411,6 +435,12 @@ export const api = {
   },
   systemResources(): Promise<SystemResourceSample> {
     return request("/api/v1/system/resources")
+  },
+  systemDisk(): Promise<{ filesystems: DiskUsage[] }> {
+    return request("/api/v1/system/disk")
+  },
+  dockerContainers(): Promise<{ containers: DockerContainer[] }> {
+    return request("/api/v1/docker/containers")
   },
 
   triggerSystemUpdate(): Promise<{ accepted: boolean }> {

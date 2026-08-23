@@ -5,14 +5,18 @@ import { FitAddon } from "@xterm/addon-fit"
 import "@xterm/xterm/css/xterm.css"
 
 import { ApiError, api, type TerminalStatus } from "@/lib/api"
+import { DockerPage } from "@/components/terminal/docker-page"
 import { FilePanel } from "@/components/terminal/file-panel"
 import { HostMonitor } from "@/components/terminal/host-monitor"
+import { OpsPage } from "@/components/terminal/ops-page"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { createTypedCdTracker, detectPwdOutput, quoteForShell } from "@/lib/terminal-cwd"
 import { subscribeTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
 type ConnectionState = "idle" | "connecting" | "connected" | "reconnecting" | "closed"
+type TerminalTab = "shell" | "ops" | "docker"
 
 // Reconnect backoff: 1s, 2s, 4s, 8s, 16s, then 30s capped, plus jitter. The
 // terminal buffer survives reconnects (auto-reconnect never resets xterm), so
@@ -53,6 +57,7 @@ export function TerminalPage({
   const [unlocking, setUnlocking] = useState(false)
   const [panelHidden, setPanelHidden] = useState(false)
   const [cwd, setCwd] = useState("/")
+  const [tab, setTab] = useState<TerminalTab>("shell")
   // statusRef mirrors status for callbacks that outlive a render (reconnect
   // timers, keepalive) so they always check the latest 2FA state.
   const statusRef = useRef<TerminalStatus | null>(null)
@@ -478,11 +483,24 @@ export function TerminalPage({
     return (
       <div className="space-y-4">
         <PageHeader />
-        <section className="rounded-md border bg-card p-4">
-          <div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />验证 2FA 后解锁终端</div>
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">输入验证器当前显示的 6 位验证码。验证成功后，当前登录会话可在 {Math.round(status.two_factor_verification_ttl_seconds / 60)} 分钟内建立终端连接；连接期间验证会自动续期，不会因验证超时中断。</p>
-          <div className="mt-4 flex items-end gap-2"><label className="block min-w-0 flex-1 text-xs font-medium">一次性验证码<Input aria-label="终端 2FA 验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-1 font-mono tracking-[0.25em]" /></label><button type="button" onClick={() => void unlockTerminal()} disabled={unlocking} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60">{unlocking ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}解锁</button></div>
-        </section>
+        <Tabs value={tab} onValueChange={(value) => setTab(value as TerminalTab)}>
+          <TabsList>
+            <TabsTrigger value="shell">终端</TabsTrigger>
+            <TabsTrigger value="ops">运维</TabsTrigger>
+            <TabsTrigger value="docker">Docker</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {tab === "ops" ? (
+          <OpsPage onNotice={onNotice} />
+        ) : tab === "docker" ? (
+          <DockerPage onNotice={onNotice} />
+        ) : (
+          <section className="rounded-md border bg-card p-4">
+            <div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />验证 2FA 后解锁终端</div>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">输入验证器当前显示的 6 位验证码。验证成功后，当前登录会话可在 {Math.round(status.two_factor_verification_ttl_seconds / 60)} 分钟内建立终端连接；连接期间验证会自动续期，不会因验证超时中断。</p>
+            <div className="mt-4 flex items-end gap-2"><label className="block min-w-0 flex-1 text-xs font-medium">一次性验证码<Input aria-label="终端 2FA 验证码" inputMode="numeric" maxLength={6} value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-1 font-mono tracking-[0.25em]" /></label><button type="button" onClick={() => void unlockTerminal()} disabled={unlocking} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60">{unlocking ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}解锁</button></div>
+          </section>
+        )}
       </div>
     )
   }
@@ -501,75 +519,91 @@ export function TerminalPage({
         </button>
       </div>
 
-      <div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs leading-5 text-destructive">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-        <div>
-          <span className="font-medium">高风险操作提示：</span>
-          此终端以控制面进程用户身份在服务器上执行真实 Shell 命令。删除文件、修改系统配置、停止服务等操作立即生效且不可撤销。会话无空闲与寿命上限，全部会话都会写入审计日志。
-        </div>
-      </div>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as TerminalTab)}>
+        <TabsList>
+          <TabsTrigger value="shell">终端</TabsTrigger>
+          <TabsTrigger value="ops">运维</TabsTrigger>
+          <TabsTrigger value="docker">Docker</TabsTrigger>
+        </TabsList>
+      </Tabs>
 
-      <div className={cn("grid min-h-0 flex-1 gap-3", panelHidden ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-[1fr_320px]")}>
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-md border bg-card">
-          <header className="flex items-center justify-between gap-2 border-b bg-muted/60 px-3 py-2">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <TerminalSquare className="size-4 text-muted-foreground" />
-              服务器终端
-              {status?.privileged && <span className="rounded-full border border-warning-border bg-warning-muted px-2 py-0.5 text-[11px] text-warning-foreground">root PTY</span>}
-              <ConnectionBadge state={connection} />
+      {tab === "ops" ? (
+        <OpsPage onNotice={onNotice} />
+      ) : tab === "docker" ? (
+        <DockerPage onNotice={onNotice} />
+      ) : (
+        <>
+          <div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs leading-5 text-destructive">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <span className="font-medium">高风险操作提示：</span>
+              此终端以控制面进程用户身份在服务器上执行真实 Shell 命令。删除文件、修改系统配置、停止服务等操作立即生效且不可撤销。会话无空闲与寿命上限，全部会话都会写入审计日志。
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fitRef.current?.fit()}
-                className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-card"
-                title="重新适配窗口尺寸"
-              >
-                <Maximize2 className="size-3.5" />
-              </button>
-              {connection === "connected" ? (
-                <button type="button" onClick={disconnect} className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs hover:bg-card">
-                  <Square className="size-3.5" /> 断开
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => connect()}
-                  disabled={connection === "connecting" || connection === "reconnecting" || !status?.two_factor_verified}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
-                >
-                  <Play className="size-3.5" /> {connection === "connecting" ? "连接中…" : connection === "reconnecting" ? "重连中…" : "连接"}
-                </button>
-              )}
-            </div>
-          </header>
-          <div className="relative min-h-0 flex-1 bg-background">
-            <div ref={containerRef} className="absolute inset-0 p-2" />
           </div>
-        </section>
 
-        {!panelHidden && (
-          <aside className="hidden min-h-0 flex-col gap-3 rounded-md border bg-card lg:flex">
-            {connection === "connected" || connection === "reconnecting" ? (
-              <>
-                <div className="overflow-auto p-2">
-                  <HostMonitor enabled={connection === "connected"} />
+          <div className={cn("grid min-h-0 flex-1 gap-3", panelHidden ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-[1fr_320px]")}>
+            <section className="flex min-h-0 flex-col overflow-hidden rounded-md border bg-card">
+              <header className="flex items-center justify-between gap-2 border-b bg-muted/60 px-3 py-2">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <TerminalSquare className="size-4 text-muted-foreground" />
+                  服务器终端
+                  {status?.privileged && <span className="rounded-full border border-warning-border bg-warning-muted px-2 py-0.5 text-[11px] text-warning-foreground">root PTY</span>}
+                  <ConnectionBadge state={connection} />
                 </div>
-                <div className="mx-2 border-t" />
-                <div className="min-h-0 flex-1">
-                  <FilePanel path={cwd} connected={connection === "connected"} onPathChange={handlePanelPath} onNotice={onNotice} />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fitRef.current?.fit()}
+                    className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-card"
+                    title="重新适配窗口尺寸"
+                  >
+                    <Maximize2 className="size-3.5" />
+                  </button>
+                  {connection === "connected" ? (
+                    <button type="button" onClick={disconnect} className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs hover:bg-card">
+                      <Square className="size-3.5" /> 断开
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => connect()}
+                      disabled={connection === "connecting" || connection === "reconnecting" || !status?.two_factor_verified}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                    >
+                      <Play className="size-3.5" /> {connection === "connecting" ? "连接中…" : connection === "reconnecting" ? "重连中…" : "连接"}
+                    </button>
+                  )}
                 </div>
-              </>
-            ) : (
-              <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-1.5 p-4 text-center text-xs text-muted-foreground">
-                <TerminalSquare className="size-5 opacity-60" />
-                <div className="font-medium">连接后查看服务器数据</div>
-                <div className="text-[11px] opacity-70">系统监控与文件管理将在终端连接后显示</div>
+              </header>
+              <div className="relative min-h-0 flex-1 bg-background">
+                <div ref={containerRef} className="absolute inset-0 p-2" />
               </div>
+            </section>
+
+            {!panelHidden && (
+              <aside className="hidden min-h-0 flex-col gap-3 rounded-md border bg-card lg:flex">
+                {connection === "connected" || connection === "reconnecting" ? (
+                  <>
+                    <div className="overflow-auto p-2">
+                      <HostMonitor enabled={connection === "connected"} />
+                    </div>
+                    <div className="mx-2 border-t" />
+                    <div className="min-h-0 flex-1">
+                      <FilePanel path={cwd} connected={connection === "connected"} onPathChange={handlePanelPath} onNotice={onNotice} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-1.5 p-4 text-center text-xs text-muted-foreground">
+                    <TerminalSquare className="size-5 opacity-60" />
+                    <div className="font-medium">连接后查看服务器数据</div>
+                    <div className="text-[11px] opacity-70">系统监控与文件管理将在终端连接后显示</div>
+                  </div>
+                )}
+              </aside>
             )}
-          </aside>
-        )}
-      </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

@@ -494,6 +494,11 @@ func (s *Server) Handler() http.Handler {
 		// Host resource snapshot for the overview dashboard (admin-only, no 2FA
 		// required because it exposes utilization numbers, not shell authority).
 		mux.HandleFunc("/api/v1/system/resources", s.handleSystemResources)
+		// Read-only host ops surfaces (disk + docker) for the terminal page's
+		// ops sub-tabs; same auth posture as system/resources — numbers and
+		// listings only, no shell authority, no 2FA step-up.
+		mux.HandleFunc("/api/v1/system/disk", s.handleSystemDisk)
+		mux.HandleFunc("/api/v1/docker/containers", s.handleDockerContainers)
 	}
 	if s.webRoot != "" {
 		mux.Handle("/", newSPAHandler(s.webRoot))

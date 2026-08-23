@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -237,4 +238,43 @@ func (s *Store) ListChannelProviders(ctx context.Context, channelID string) ([]s
 		return nil, err
 	}
 	return ids, nil
+}
+
+// ListChannelProvidersForChannels resolves the aggregated provider ids of many
+// channels in one query so the channel list view avoids a per-channel round
+// trip. Channels without links map to an empty (non-nil) slice.
+func (s *Store) ListChannelProvidersForChannels(ctx context.Context, channelIDs []string) (map[string][]string, error) {
+	if len(channelIDs) == 0 {
+		return map[string][]string{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(channelIDs)), ",")
+	arguments := make([]any, len(channelIDs))
+	for index, id := range channelIDs {
+		arguments[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT channel_id, provider_id
+FROM channel_providers
+WHERE channel_id IN (`+placeholders+`)
+ORDER BY channel_id ASC, provider_id ASC
+`, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("list channel providers for channels: %w", err)
+	}
+	defer rows.Close()
+	links := make(map[string][]string, len(channelIDs))
+	for _, id := range channelIDs {
+		links[id] = []string{}
+	}
+	for rows.Next() {
+		var channelID, providerID string
+		if err := rows.Scan(&channelID, &providerID); err != nil {
+			return nil, err
+		}
+		links[channelID] = append(links[channelID], providerID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return links, nil
 }

@@ -27,6 +27,18 @@ var (
 	// reached. It maps to a 502 at the HTTP boundary instead of an opaque 500,
 	// and it never leaves an in-progress channel provisioned.
 	ErrProviderUnreachable = errors.New("residential provider upstream unreachable")
+	// ErrLeaseHeld reports that a declared node's exclusive lease is held by
+	// another consumer. Rotation and route changes on a leased node require the
+	// holder's lease_id. It maps to a 409 lease_held at the HTTP boundary.
+	ErrLeaseHeld = errors.New("residential node lease held by another consumer")
+	// ErrLeaseExpired reports that a claim/heartbeat/release referenced a lease
+	// that already lapsed or was never granted. It maps to a 409 lease_expired.
+	ErrLeaseExpired = errors.New("residential node lease expired or unknown")
+	// ErrAllocVersionChanged reports that a rotation/route request carried a
+	// stale expected_alloc_version, so the node was rotated by someone else
+	// since the caller last read it. It maps to a 409 alloc_version_changed and
+	// is the compare-and-swap guard against double rotation of one IP window.
+	ErrAllocVersionChanged = errors.New("residential node allocation version changed")
 )
 
 // Provider is the administrator-facing view of a vendor account. Credentials are

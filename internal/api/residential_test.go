@@ -70,14 +70,29 @@ func (s *declaredControlStubResidentialService) RotateDeclaredSession(_ context.
 	return residential.ChannelSession{Index: index, NodeName: "residential-us-01"}, s.clientSessionErr
 }
 
-func (s *declaredControlStubResidentialService) RotateDeclaredSessionByControlToken(_ context.Context, token string, index int) (residential.ControlNode, error) {
+func (s *declaredControlStubResidentialService) RotateDeclaredSessionByControlToken(_ context.Context, token string, index int, _ residential.RotateOptions) (residential.ControlNode, error) {
 	s.controlCalls = append(s.controlCalls, fmt.Sprintf("next:%s:%d", token, index))
 	return residential.ControlNode{Index: index, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential}, s.clientSessionErr
 }
 
-func (s *declaredControlStubResidentialService) SwitchDeclaredSessionRouteByControlToken(_ context.Context, token string, index int, routeMode string) (residential.ControlNode, error) {
+func (s *declaredControlStubResidentialService) SwitchDeclaredSessionRouteByControlToken(_ context.Context, token string, index int, routeMode string, _ residential.RotateOptions) (residential.ControlNode, error) {
 	s.controlCalls = append(s.controlCalls, fmt.Sprintf("route:%s:%d:%s", token, index, routeMode))
 	return residential.ControlNode{Index: index, NodeName: "residential-us-01", RouteMode: routeMode}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) ClaimDeclaredNodeByControlToken(_ context.Context, token string, index int, _ residential.LeaseRequest) (residential.ControlNode, error) {
+	s.controlCalls = append(s.controlCalls, fmt.Sprintf("claim:%s:%d", token, index))
+	return residential.ControlNode{Index: index, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) HeartbeatDeclaredNodeByControlToken(_ context.Context, token string, index int, _ residential.LeaseHeartbeatRequest) (residential.ControlNode, error) {
+	s.controlCalls = append(s.controlCalls, fmt.Sprintf("heartbeat:%s:%d", token, index))
+	return residential.ControlNode{Index: index, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential}, s.clientSessionErr
+}
+
+func (s *declaredControlStubResidentialService) ReleaseDeclaredNodeByControlToken(_ context.Context, token string, index int, _ residential.LeaseReleaseRequest) (residential.ControlNode, error) {
+	s.controlCalls = append(s.controlCalls, fmt.Sprintf("release:%s:%d", token, index))
+	return residential.ControlNode{Index: index, NodeName: "residential-us-01", RouteMode: residential.ClientRouteResidential}, s.clientSessionErr
 }
 
 func (s *declaredControlStubResidentialService) RotateChannelShareToken(context.Context, string) (residential.Channel, error) {
@@ -772,6 +787,9 @@ func TestDeclaredResidentialControlRoutes(t *testing.T) {
 	}{
 		{path: "/ctl/control-token/nodes/1/next"},
 		{path: "/ctl/control-token/nodes/1/route", body: `{"route_mode":"direct"}`},
+		{path: "/ctl/control-token/nodes/1/claim", body: `{"holder":"service-a","ttl_seconds":300}`},
+		{path: "/ctl/control-token/nodes/1/heartbeat", body: `{"lease_id":"lease-token","ttl_seconds":300}`},
+		{path: "/ctl/control-token/nodes/1/release", body: `{"lease_id":"lease-token"}`},
 		{path: "/api/v1/residential/channels/residential-channel-1/sessions/1/next"},
 		{path: "/api/v1/residential/channels/residential-channel-1/rotate-share"},
 		{path: "/api/v1/residential/channels/residential-channel-1/rotate-control"},
@@ -793,8 +811,51 @@ func TestDeclaredResidentialControlRoutes(t *testing.T) {
 			t.Errorf("POST control response Cache-Control = %q, want no-store", result.Header.Get("Cache-Control"))
 		}
 	}
-	if len(service.controlCalls) != 6 {
+	if len(service.controlCalls) != 9 {
 		t.Fatalf("control calls = %v", service.controlCalls)
+	}
+}
+
+// The unified-window guards surface as stable 409 codes on the control API.
+func TestDeclaredControlLeaseAndVersionGuardsMapTo409(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "lease held", err: residential.ErrLeaseHeld, code: "lease_held"},
+		{name: "lease expired", err: residential.ErrLeaseExpired, code: "lease_expired"},
+		{name: "alloc version changed", err: residential.ErrAllocVersionChanged, code: "alloc_version_changed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &declaredControlStubResidentialService{
+				stubResidentialService: &stubResidentialService{clientSessionErr: test.err},
+			}
+			testServer := newResidentialTestServer(t, service)
+			response, err := http.Post(
+				testServer.URL+"/ctl/control-token/nodes/1/next",
+				"application/json",
+				strings.NewReader(`{"lease_id":"stale","expected_alloc_version":1}`),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusConflict {
+				t.Fatalf("status = %d, want 409", response.StatusCode)
+			}
+			var payload struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Error.Code != test.code {
+				t.Fatalf("error code = %q, want %q", payload.Error.Code, test.code)
+			}
+		})
 	}
 }
 

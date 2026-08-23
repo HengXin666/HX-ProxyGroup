@@ -86,10 +86,29 @@ Clash / OutlookRegister 本机 Mihomo
 > HX-ProxyGroup 只复用其面板链接的订阅输出约定，住宅集成模型（Provider/Channel/Session、
 > 声明节点、control token、`dialer-proxy`、AEAD 加密信封）仍为本项目自身架构，未复制其源码。
 
+### 2.6 并发集成标准：独占租约 + 分配版本护栏
+
+- Schema v32 为 `residential_client_sessions` 增加 `lease_id`、`lease_holder`、
+  `lease_expires_at`、`alloc_version` 四列；`alloc_version` 在轮换、路由切换、
+  重新分配与空闲释放时单调 +1。
+- 新增 `/ctl/<token>/nodes/<index>/claim|heartbeat|release`：服务器端**独占租约**
+  原语，解决多个服务同时对接时"同一 IP 窗口被多个服务共享"的问题；被他人持有返回
+  `409 lease_held`，租约失效返回 `409 lease_expired`。
+- `next`/`route` 接受可选 `lease_id` + `expected_alloc_version` 护栏：版本过期返回
+  `409 alloc_version_changed`，防止"对同一 IP 窗口的重复轮换"；不带护栏的旧客户端
+  在空闲窗口上行为不变，兼容 OutlookRegister。
+- `GET /ctl/<token>/nodes` 返回每节点 `alloc_version` 与 `lease`（holder/expires_at，
+  不含能力令牌 `lease_id`）；管理端渠道视图同样暴露租约状态（不含 lease_id）。
+- 空闲释放跳过有活跃租约的节点：租约即活跃信号，避免误伤在用窗口。
+- 完整标准与集成验收清单见
+  [`RESIDENTIAL_INTEGRATION_STANDARD.md`](RESIDENTIAL_INTEGRATION_STANDARD.md)。
+
 ## 3. 已验证
 
-- `go test ./...`：437 passed，29 packages；覆盖三种住宅 WS 协议、渠道订阅、控制端点、旧全局
-  API 的 404 行为，以及 BPB VLESS/Trojan WS 节点在真实 `mihomo -t` 下的编译兼容性。
+- `go test ./...`：全量通过（30 packages），覆盖三种住宅 WS 协议、渠道订阅、控制端点、
+  旧全局 API 的 404 行为，BPB VLESS/Trojan WS 节点在真实 `mihomo -t` 下的编译兼容性，
+  以及租约 claim/heartbeat/release、`alloc_version` CAS 护栏、空闲释放跳过租约节点
+  等统一窗口并发语义。
 - `go vet ./...`、前端 TypeScript 检查和生产构建通过。
 - OutlookRegister 全量测试：100 passed；覆盖三种 URI、本地 Mihomo 生命周期、端点选择与失败清理。
 - 住宅渠道 Playwright E2E 通过：真实创建 VMess 渠道，校验代理服务页两个复制动作及剪贴板 URL，

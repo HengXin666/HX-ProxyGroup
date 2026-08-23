@@ -68,7 +68,7 @@ func TestDeclaredSessionsExportAndControlUseStableCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rotated, err := harness.service.RotateDeclaredSessionByControlToken(ctx, controlToken, 1)
+	rotated, err := harness.service.RotateDeclaredSessionByControlToken(ctx, controlToken, 1, RotateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestDeclaredControlOmitsUnallocatedResidentialEndpointUntilNext(t *testing.
 	if len(control.Nodes) != 1 || control.Nodes[0].ResidentialEndpoint != nil {
 		t.Fatal("unallocated declared node exposed a residential endpoint")
 	}
-	rotated, err := harness.service.RotateDeclaredSessionByControlToken(ctx, controlToken, 1)
+	rotated, err := harness.service.RotateDeclaredSessionByControlToken(ctx, controlToken, 1, RotateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

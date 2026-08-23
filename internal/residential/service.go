@@ -24,6 +24,7 @@ type Repository interface {
 	CreateResidentialChannel(context.Context, store.ResidentialChannelRecord) (store.ResidentialChannelRecord, error)
 	ReplaceChannelProviders(context.Context, string, []string) error
 	ListChannelProviders(context.Context, string) ([]string, error)
+	ListChannelProvidersForChannels(context.Context, []string) (map[string][]string, error)
 	GetResidentialChannel(context.Context, string) (store.ResidentialChannelRecord, error)
 	GetResidentialChannelByRotateToken(context.Context, string) (store.ResidentialChannelRecord, error)
 	GetResidentialChannelByControlToken(context.Context, string) (store.ResidentialChannelRecord, error)
@@ -38,14 +39,17 @@ type Repository interface {
 	UpsertResidentialSessionNode(context.Context, string, store.ResidentialSessionNode, time.Time) (string, error)
 	DeleteResidentialSessionNode(context.Context, string, string) error
 	ListResidentialSessionNodes(context.Context, string) ([]store.NodeConfigRecord, error)
+	CountResidentialSessionNodes(context.Context, []string) (map[string]int, error)
 	SetResidentialChannelPoolCreatedAt(context.Context, string, time.Time) error
 	DeleteResidentialSessionPool(context.Context, string) error
 	CreateResidentialClientSession(context.Context, store.ResidentialClientSessionRecord) (store.ResidentialClientSessionRecord, error)
 	GetResidentialClientSession(context.Context, string, string) (store.ResidentialClientSessionRecord, error)
 	ListResidentialClientSessions(context.Context, string) ([]store.ResidentialClientSessionRecord, error)
+	ListResidentialClientSessionsForChannels(context.Context, []string) (map[string][]store.ResidentialClientSessionRecord, error)
 	UpdateResidentialClientSessionRoute(context.Context, string, string, string, int, *time.Time) (store.ResidentialClientSessionRecord, error)
 	UpdateResidentialClientSessionAllocation(context.Context, string, string, string, time.Time, *time.Time, bool) (store.ResidentialClientSessionRecord, error)
 	ClearResidentialClientSessionAllocation(context.Context, string, string) (store.ResidentialClientSessionRecord, error)
+	SetResidentialClientSessionLease(context.Context, string, string, string, string, *time.Time) (store.ResidentialClientSessionRecord, error)
 	TouchResidentialClientSession(context.Context, string, string, time.Time) error
 	RestoreResidentialClientSessionState(context.Context, store.ResidentialClientSessionRecord) error
 	DeleteResidentialClientSession(context.Context, string, string) error

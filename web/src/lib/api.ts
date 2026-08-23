@@ -45,6 +45,10 @@ import type {
   UpdateProxyGroupRequest,
   UpdateProxyServiceRequest,
   VerifyResult,
+  AddFleetAccountRequest,
+  FleetAccount,
+  FleetStatus,
+  FleetWorker,
 } from "@/lib/types"
 
 export class ApiError extends Error {
@@ -708,9 +712,12 @@ export const api = {
   },
 
   async trafficSummaries(resourceType: TrafficResourceType, from?: Date, to?: Date): Promise<TrafficSummaryList> {
+    // The server caps summaries at 1000 rows, so a single request returns the
+    // full set for typical deployments; keep a paging loop as a safe fallback
+    // for larger inventories instead of always paying 5 sequential round trips.
     const items: TrafficSummaryList["items"] = []
-    const pageSize = 200
-    for (let offset = 0; offset < 1000; offset += pageSize) {
+    const pageSize = 1000
+    for (let offset = 0; offset < pageSize; offset += pageSize) {
       const query = new URLSearchParams({ resource_type: resourceType, limit: String(pageSize), offset: String(offset) })
       if (from) query.set("from", from.toISOString())
       if (to) query.set("to", to.toISOString())
@@ -859,5 +866,31 @@ export const api = {
     return request(`/api/v1/residential/channels/${encodeURIComponent(id)}/refresh-pool`, {
       method: "POST",
     })
+  },
+
+  // ---- Fleet（CF 渠道账号）----
+  fleetStatus(): Promise<FleetStatus> {
+    return request("/api/v1/fleet/status")
+  },
+
+  fleetAccounts(): Promise<{ accounts: FleetAccount[] }> {
+    return request("/api/v1/fleet/accounts")
+  },
+
+  fleetAddAccount(payload: AddFleetAccountRequest): Promise<FleetAccount> {
+    return request("/api/v1/fleet/accounts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  fleetDeleteAccount(id: string): Promise<{ deleted: string }> {
+    return request(`/api/v1/fleet/accounts/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    })
+  },
+
+  fleetSweep(): Promise<{ started: boolean }> {
+    return request("/api/v1/fleet/sweep", { method: "POST" })
   },
 }

@@ -4,6 +4,8 @@
 轮换出口。供应商会话和住宅 IP 是 HX-ProxyGroup 内部实现，不是客户端生命周期。
 
 完整字段契约见 [`RESIDENTIAL_V2_CONTRACT.md`](RESIDENTIAL_V2_CONTRACT.md)。
+**多服务并发对接标准（租约 + 版本护栏）见 [`RESIDENTIAL_INTEGRATION_STANDARD.md`](RESIDENTIAL_INTEGRATION_STANDARD.md)**：
+这是多个服务同时使用同一渠道时的唯一并发契约。
 
 ## 渠道订阅
 
@@ -41,13 +43,25 @@ POST /api/v1/residential/channels/<channel-id>/rotate-control
 GET  /ctl/<control-token>/nodes
 POST /ctl/<control-token>/nodes/<index>/next
 POST /ctl/<control-token>/nodes/<index>/route
+POST /ctl/<control-token>/nodes/<index>/claim
+POST /ctl/<control-token>/nodes/<index>/heartbeat
+POST /ctl/<control-token>/nodes/<index>/release
 Content-Type: application/json
 
-{"route_mode":"residential|upstream|direct"}
+{"route_mode":"residential|upstream|direct"}          # route
+{"holder":"service-a","ttl_seconds":300}              # claim
+{"lease_id":"...","ttl_seconds":300}                  # heartbeat
+{"lease_id":"..."}                                    # release
 ```
 
+`next` 与 `route` 可携带可选护栏 body：`{"lease_id":"...","expected_alloc_version":N}`。
+节点列表的每个节点包含 `alloc_version` 与 `lease`（holder/expires_at，不含
+`lease_id`）。并发语义、租约生命周期与多服务共存规则以
+[并发集成标准](RESIDENTIAL_INTEGRATION_STANDARD.md) 为准。
+
 `next` 只替换指定逻辑节点背后的住宅出口，保留客户端节点名称和认证，并通过 Mihomo Controller
-关闭该入站用户的旧连接。其他节点和连接不受影响。轮换过快返回 429，供应商容量耗尽返回 409。
+关闭该入站用户的旧连接。其他节点和连接不受影响。轮换过快返回 429，供应商容量耗尽返回 409，
+窗口被他人租约占用返回 `409 lease_held`，基于过期版本轮换返回 `409 alloc_version_changed`。
 
 节点列表不向普通订阅用户暴露出口 IP。`/ctl/` 返回的 `exit_ip` 也可能为空，因为读取列表不会
 为了填充字段发起 N 个外部探测；调用方需要真实 IP 时应从该节点的数据面代理执行出口探测。
@@ -97,16 +111,20 @@ Mihomo Controller，不实现 HTTP CONNECT、SOCKS5、VLESS、VMess 或 Trojan �
 ## OutlookRegister 调用顺序
 
 ```text
-1. GET /ctl/<token>/nodes，读取固定节点池
+1. GET /ctl/<token>/nodes，读取固定节点池（含 alloc_version 与 lease 状态）
 2. 在 OutlookRegister 进程内互斥租用一个空闲 index
-3. POST /nodes/<index>/next，刷新住宅出口
-4. API 提取渠道优先把 residential_endpoint 配置给受管本地 Mihomo；其他渠道从 endpoints[]
+3. POST /nodes/<index>/claim，向服务器认领独占租约（holder + ttl）
+4. POST /nodes/<index>/next，携带 lease_id 与 expected_alloc_version 刷新住宅出口
+5. 按 TTL/3 间隔 POST /nodes/<index>/heartbeat 续租
+6. API 提取渠道优先把 residential_endpoint 配置给受管本地 Mihomo；其他渠道从 endpoints[]
    选择 VLESS/VMess/Trojan WS 端点
-5. 从选定端点探测出口身份并运行完整 flow
-6. flow 结束后只归还本地 index，不删除服务端节点
+7. 从选定端点探测出口身份并运行完整 flow
+8. flow 结束后 POST /nodes/<index>/release 归还租约；不删除服务端节点
 ```
 
-渠道 `session_count` 和供应商 `max_concurrent_sessions` 都应不小于业务并发数。OutlookRegister
+多实例共享同一 control URL 时，服务器租约是**跨进程互斥**的唯一权威：
+两个实例对同一 index 的 `claim` 只有一个成功，另一个收到 `409 lease_held`。
+通道 `session_count` 和供应商 `max_concurrent_sessions` 都应不小于业务并发数。OutlookRegister
 的第一个本地实例优先监听 `127.0.0.1:2334`；并发或端口冲突时每个租约使用不同的随机环回端口，
 不会让多个 flow 共享无认证入口。控制 token 可执行轮换、消耗供应商配额，并在 API 提取模式读取
 临时节点鉴权，权限高于只读订阅 token，应独立轮换且不得进入截图或日志。

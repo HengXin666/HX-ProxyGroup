@@ -320,8 +320,11 @@ type residentialShareService interface {
 type residentialDeclaredControlService interface {
 	ControlNodesByToken(context.Context, string) (residential.ControlNodeList, error)
 	RotateDeclaredSession(context.Context, string, int) (residential.ChannelSession, error)
-	RotateDeclaredSessionByControlToken(context.Context, string, int) (residential.ControlNode, error)
-	SwitchDeclaredSessionRouteByControlToken(context.Context, string, int, string) (residential.ControlNode, error)
+	RotateDeclaredSessionByControlToken(context.Context, string, int, residential.RotateOptions) (residential.ControlNode, error)
+	SwitchDeclaredSessionRouteByControlToken(context.Context, string, int, string, residential.RotateOptions) (residential.ControlNode, error)
+	ClaimDeclaredNodeByControlToken(context.Context, string, int, residential.LeaseRequest) (residential.ControlNode, error)
+	HeartbeatDeclaredNodeByControlToken(context.Context, string, int, residential.LeaseHeartbeatRequest) (residential.ControlNode, error)
+	ReleaseDeclaredNodeByControlToken(context.Context, string, int, residential.LeaseReleaseRequest) (residential.ControlNode, error)
 	RotateChannelShareToken(context.Context, string) (residential.Channel, error)
 	RotateChannelControlToken(context.Context, string) (residential.Channel, error)
 }
@@ -370,16 +373,50 @@ func (s *Server) handleResidentialControlPublic(writer http.ResponseWriter, requ
 	var node residential.ControlNode
 	switch parts[3] {
 	case "next":
-		node, err = service.RotateDeclaredSessionByControlToken(request.Context(), token, index)
+		var options residential.RotateOptions
+		if decodeErr := decodeJSONBody(writer, request, &options); decodeErr != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+			return
+		}
+		node, err = service.RotateDeclaredSessionByControlToken(request.Context(), token, index, options)
 	case "route":
 		var body struct {
-			RouteMode string `json:"route_mode"`
+			RouteMode            string `json:"route_mode"`
+			LeaseID              string `json:"lease_id"`
+			ExpectedAllocVersion *int   `json:"expected_alloc_version"`
 		}
 		if decodeErr := decodeJSONBody(writer, request, &body); decodeErr != nil {
 			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
 			return
 		}
-		node, err = service.SwitchDeclaredSessionRouteByControlToken(request.Context(), token, index, body.RouteMode)
+		node, err = service.SwitchDeclaredSessionRouteByControlToken(
+			request.Context(), token, index, body.RouteMode,
+			residential.RotateOptions{
+				LeaseID:              body.LeaseID,
+				ExpectedAllocVersion: body.ExpectedAllocVersion,
+			},
+		)
+	case "claim":
+		var body residential.LeaseRequest
+		if decodeErr := decodeJSONBody(writer, request, &body); decodeErr != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+			return
+		}
+		node, err = service.ClaimDeclaredNodeByControlToken(request.Context(), token, index, body)
+	case "heartbeat":
+		var body residential.LeaseHeartbeatRequest
+		if decodeErr := decodeJSONBody(writer, request, &body); decodeErr != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+			return
+		}
+		node, err = service.HeartbeatDeclaredNodeByControlToken(request.Context(), token, index, body)
+	case "release":
+		var body residential.LeaseReleaseRequest
+		if decodeErr := decodeJSONBody(writer, request, &body); decodeErr != nil {
+			s.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+			return
+		}
+		node, err = service.ReleaseDeclaredNodeByControlToken(request.Context(), token, index, body)
 	default:
 		http.NotFound(writer, request)
 		return

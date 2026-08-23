@@ -76,6 +76,12 @@ type ChannelSession struct {
 	RotateCount   int        `json:"rotate_count"`
 	LastRotatedAt *time.Time `json:"last_rotated_at,omitempty"`
 	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	// AllocVersion and the lease fields expose the unified-window state to the
+	// administrator. lease_id is never rendered; the admin sees who holds the
+	// node window and until when.
+	AllocVersion   int        `json:"alloc_version"`
+	LeaseHolder    string     `json:"lease_holder,omitempty"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
 }
 
 type ChannelEndpoint struct {

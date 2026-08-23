@@ -50,18 +50,18 @@ export function NodesPage({ onNotice, embedded = false }: NodesPageProps) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await api.listNodes({ search: search.trim(), protocol, state })
-      setItems(result.items.map(normalizeNode))
-      const [subscriptionResult, trafficResult] = await Promise.allSettled([
-        api.listSubscriptions(),
-        api.trafficSummaries("node"),
+      const [result, subscriptionResult, trafficResult] = await Promise.all([
+        api.listNodes({ search: search.trim(), protocol, state }),
+        api.listSubscriptions().catch(() => null),
+        api.trafficSummaries("node").catch(() => null),
       ])
-      if (subscriptionResult.status === "fulfilled") {
-        setSubscriptions(subscriptionResult.value.items)
-        setExpanded((current) => current.size ? current : new Set(subscriptionResult.value.items.map((item) => item.id)))
+      setItems(result.items.map(normalizeNode))
+      if (subscriptionResult) {
+        setSubscriptions(subscriptionResult.items)
+        setExpanded((current) => current.size ? current : new Set(subscriptionResult.items.map((item) => item.id)))
       }
-      if (trafficResult.status === "fulfilled") {
-        setTraffic(new Map(trafficResult.value.items.map((item) => [item.resource_id, item])))
+      if (trafficResult) {
+        setTraffic(new Map(trafficResult.items.map((item) => [item.resource_id, item])))
       }
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "加载节点失败", "error")

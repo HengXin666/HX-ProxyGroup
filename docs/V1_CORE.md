@@ -233,6 +233,13 @@ v1 将用户提出的会话需求映射为可组合策略：
 - [x] 住宅供应商支持 CF Worker 面板（BPB-Worker-Panel）：管理员只填一个面板/raw 订阅链接到
   `worker_url`，控制面经可选出口代理拉取并解析 VLESS/Trojan WebSocket 节点，客户端主动
   `next` 才重新拉取并轮换出口地址，TTL 强制 0 不自动刷新。
+- [x] 住宅声明节点支持服务器端独占租约（`/ctl/.../claim|heartbeat|release`）：每个声明节点
+  是一个互斥 IP 窗口，多个服务并发对接时同一窗口只被一个持有者使用；被他人持有返回
+  `409 lease_held`，租约失效返回 `409 lease_expired`。
+- [x] 声明节点分配版本 `alloc_version` 单调递增，`next`/`route` 支持 `expected_alloc_version`
+  CAS 护栏：基于过期版本的轮换返回 `409 alloc_version_changed`，防止同一窗口被重复轮换；
+  不带护栏的旧客户端在空闲窗口上行为不变。
+- [x] 并发对接标准文档与集成验收清单：[住宅代理并发集成标准](RESIDENTIAL_INTEGRATION_STANDARD.md)。
 
 ### 5.4 监听端口
 

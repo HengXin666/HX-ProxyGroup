@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import {
   Archive,
   BellRing,
@@ -32,7 +32,9 @@ import { RoutingPage } from "@/pages/routing-page"
 import { ResidentialPage } from "@/pages/residential-page"
 import { RulesPage } from "@/pages/rules-page"
 import { SettingsPage } from "@/pages/settings-page"
-import { TerminalPage } from "@/pages/terminal-page"
+// The terminal bundles xterm (~200KB), so it is split into its own chunk:
+// residential, proxy-service and node pages never pay that download on load.
+const TerminalPage = lazy(() => import("@/pages/terminal-page").then((module) => ({ default: module.TerminalPage })))
 
 type Page = "overview" | "subscriptions" | "routing" | "residential" | "rules" | "settings" | "alerts" | "artifacts" | "terminal" | "about"
 type Notice = { id: number; message: string; tone: "success" | "error" }
@@ -72,6 +74,7 @@ export default function App() {
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [authGate, setAuthGate] = useState<AuthGate>({ phase: "checking" })
+  const [terminalMounted, setTerminalMounted] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem(sidebarStorageKey) === "1")
 
   useEffect(() => {
@@ -114,6 +117,12 @@ export default function App() {
     window.addEventListener("hashchange", onHashChange)
     return () => window.removeEventListener("hashchange", onHashChange)
   }, [])
+
+  // The terminal chunk is downloaded lazily on first visit; afterwards the
+  // page stays mounted across tab switches so the WebSocket session survives.
+  useEffect(() => {
+    if (page === "terminal") setTerminalMounted(true)
+  }, [page])
 
   useEffect(() => {
     let cancelled = false
@@ -294,8 +303,9 @@ export default function App() {
             </div>
           )}
           {/* TerminalPage stays mounted across page switches so the WebSocket
-              session survives: switching sidebar tabs only hides it. */}
-          <div className={page === "terminal" ? "contents" : "hidden"}><TerminalPage onNotice={showNotice} /></div>
+              session survives: switching sidebar tabs only hides it. The chunk
+              is downloaded on first visit (see terminalMounted). */}
+          {terminalMounted && <div className={page === "terminal" ? "contents" : "hidden"}><Suspense fallback={<div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">正在加载终端…</div>}><TerminalPage onNotice={showNotice} /></Suspense></div>}
         </main>
       </div>
 

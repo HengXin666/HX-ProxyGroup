@@ -461,7 +461,7 @@ func (s *Service) ListSummariesBetween(ctx context.Context, resourceType string,
 	if !validResource(Resource{Type: resourceType, ID: "range"}) || from.IsZero() || to.IsZero() || !from.Before(to) || to.Sub(from) > MaxQueryRange {
 		return nil, fmt.Errorf("%w: invalid traffic summary range", ErrInvalidQuery)
 	}
-	if limit < 1 || limit > 200 || offset < 0 {
+	if limit < 1 || limit > 1000 || offset < 0 {
 		return nil, fmt.Errorf("%w: invalid traffic summary pagination", ErrInvalidQuery)
 	}
 	records, err := s.repository.ListTrafficSummaries(ctx, resourceType, from.UTC(), to.UTC(), limit, offset)

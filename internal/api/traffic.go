@@ -23,9 +23,9 @@ func (s *Server) handleTraffic(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	if resourceID == "" {
-		limit, ok := parseBoundedInteger(request.URL.Query().Get("limit"), 100, 1, 200)
+		limit, ok := parseBoundedInteger(request.URL.Query().Get("limit"), 100, 1, 1000)
 		if !ok {
-			s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", "limit must be between 1 and 200")
+			s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", "limit must be between 1 and 1000")
 			return
 		}
 		offset, ok := parseBoundedInteger(request.URL.Query().Get("offset"), 0, 0, 1_000_000)

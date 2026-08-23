@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,18 @@ type ResidentialClientSessionRecord struct {
 	LastUsedAt            *time.Time
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
+	// AllocVersion is a per-session monotonic counter bumped on every
+	// allocation, rotation, route or release change. Consumers use it as a
+	// compare-and-swap token: a rotation submitted with a stale version is
+	// rejected instead of silently double-rotating the same IP window.
+	AllocVersion int
+	// Lease fields implement the exclusive-ownership window of the unified
+	// integration standard. A node with an unexpired lease is owned by
+	// LeaseHolder and may only be rotated or re-routed by the holder holding
+	// LeaseID.
+	LeaseID        string
+	LeaseHolder    string
+	LeaseExpiresAt *time.Time
 }
 
 // ResidentialClientRouteRecord is the compiler-facing view. NodeFingerprint
@@ -59,8 +72,9 @@ func (s *Store) CreateResidentialClientSession(
 INSERT INTO residential_client_sessions(
 		channel_id, session_id, auth_username, auth_password_encrypted,
 		session_index, declared_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-		allocated_at, expires_at, created_at, updated_at, country_code, last_used_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		allocated_at, expires_at, created_at, updated_at, country_code, last_used_at,
+		alloc_version, lease_id, lease_holder, lease_expires_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, record.ChannelID, record.SessionID, record.AuthUsername, record.AuthPasswordEncrypted,
 		record.SessionIndex, normalizedDeclaredIndex(record.DeclaredIndex),
 		record.NodeFingerprint, record.RouteMode, record.RotateCount,
@@ -68,7 +82,9 @@ INSERT INTO residential_client_sessions(
 		nullableTimeString(record.AllocatedAt), nullableTimeString(record.ExpiresAt),
 		record.CreatedAt.UTC().Format(time.RFC3339Nano),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano), record.CountryCode,
-		nullableTimeString(record.LastUsedAt))
+		nullableTimeString(record.LastUsedAt),
+		record.AllocVersion, record.LeaseID, record.LeaseHolder,
+		nullableTimeString(record.LeaseExpiresAt))
 	if err != nil {
 		if isUniqueConstraint(err) {
 			return ResidentialClientSessionRecord{}, ErrConflict
@@ -85,7 +101,8 @@ func (s *Store) GetResidentialClientSession(
 	record, err := scanResidentialClientSession(s.db.QueryRowContext(ctx, `
 	SELECT channel_id, session_id, auth_username, auth_password_encrypted,
 	       session_index, declared_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-	       allocated_at, expires_at, created_at, updated_at, country_code, last_used_at
+	       allocated_at, expires_at, created_at, updated_at, country_code, last_used_at,
+	       alloc_version, lease_id, lease_holder, lease_expires_at
 FROM residential_client_sessions
 WHERE channel_id = ? AND session_id = ?
 `, channelID, sessionID))
@@ -105,7 +122,8 @@ func (s *Store) ListResidentialClientSessions(
 	rows, err := s.db.QueryContext(ctx, `
 	SELECT channel_id, session_id, auth_username, auth_password_encrypted,
 	       session_index, declared_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
-	       allocated_at, expires_at, created_at, updated_at, country_code, last_used_at
+	       allocated_at, expires_at, created_at, updated_at, country_code, last_used_at,
+	       alloc_version, lease_id, lease_holder, lease_expires_at
 FROM residential_client_sessions
 WHERE channel_id = ?
 ORDER BY created_at ASC, session_id ASC
@@ -128,6 +146,52 @@ ORDER BY created_at ASC, session_id ASC
 	return records, nil
 }
 
+// ListResidentialClientSessionsForChannels returns every client session of the
+// given channels in one query, keyed by channel id. Channels without sessions
+// map to an empty (non-nil) slice. This lets the channel list view render
+// allocation counts without a query per channel.
+func (s *Store) ListResidentialClientSessionsForChannels(
+	ctx context.Context,
+	channelIDs []string,
+) (map[string][]ResidentialClientSessionRecord, error) {
+	if len(channelIDs) == 0 {
+		return map[string][]ResidentialClientSessionRecord{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(channelIDs)), ",")
+	arguments := make([]any, len(channelIDs))
+	for index, id := range channelIDs {
+		arguments[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `
+	SELECT channel_id, session_id, auth_username, auth_password_encrypted,
+	       session_index, declared_index, node_fingerprint, route_mode, rotate_count, last_rotated_at,
+	       allocated_at, expires_at, created_at, updated_at, country_code, last_used_at,
+	       alloc_version, lease_id, lease_holder, lease_expires_at
+FROM residential_client_sessions
+WHERE channel_id IN (`+placeholders+`)
+ORDER BY channel_id ASC, created_at ASC, session_id ASC
+`, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("list residential client sessions for channels: %w", err)
+	}
+	defer rows.Close()
+	byChannel := make(map[string][]ResidentialClientSessionRecord, len(channelIDs))
+	for _, id := range channelIDs {
+		byChannel[id] = []ResidentialClientSessionRecord{}
+	}
+	for rows.Next() {
+		record, err := scanResidentialClientSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan residential client session for channel: %w", err)
+		}
+		byChannel[record.ChannelID] = append(byChannel[record.ChannelID], record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate residential client sessions for channels: %w", err)
+	}
+	return byChannel, nil
+}
+
 // ListResidentialClientRoutes uses the node assigned directly to each logical
 // session. The pool-index join is retained only for pre-v19 compatibility.
 func (s *Store) ListResidentialClientRoutes(ctx context.Context) ([]ResidentialClientRouteRecord, error) {
@@ -142,6 +206,7 @@ SELECT cs.channel_id, cs.session_id, cs.auth_username, cs.auth_password_encrypte
        cs.session_index, cs.declared_index, cs.node_fingerprint, cs.route_mode,
        cs.rotate_count, cs.last_rotated_at,
 	       cs.allocated_at, cs.expires_at, cs.created_at, cs.updated_at, cs.country_code,
+       cs.alloc_version, cs.lease_id, cs.lease_holder, cs.lease_expires_at,
        c.listener_id, COALESCE(c.direct_listener_id, ''),
        COALESCE(NULLIF(cs.node_fingerprint, ''), p.fingerprint, ''),
        COALESCE(upstream.name, ''), c.enabled
@@ -160,7 +225,7 @@ ORDER BY cs.channel_id ASC, cs.session_id ASC
 	records := make([]ResidentialClientRouteRecord, 0)
 	for rows.Next() {
 		var record ResidentialClientRouteRecord
-		var lastRotatedAt, allocatedAt, expiresAt sql.NullString
+		var lastRotatedAt, allocatedAt, expiresAt, leaseExpiresAt sql.NullString
 		var createdAt, updatedAt string
 		var enabled int
 		if err := rows.Scan(
@@ -169,6 +234,7 @@ ORDER BY cs.channel_id ASC, cs.session_id ASC
 			&record.NodeFingerprint, &record.RouteMode,
 			&record.RotateCount, &lastRotatedAt, &allocatedAt, &expiresAt,
 			&createdAt, &updatedAt, &record.CountryCode,
+			&record.AllocVersion, &record.LeaseID, &record.LeaseHolder, &leaseExpiresAt,
 			&record.ListenerID, &record.DirectListenerID, &record.NodeFingerprint,
 			&record.UpstreamGroup, &enabled,
 		); err != nil {
@@ -185,6 +251,10 @@ ORDER BY cs.channel_id ASC, cs.session_id ASC
 		record.ExpiresAt, err = parseNullableTime(expiresAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse residential client route expiry time: %w", err)
+		}
+		record.LeaseExpiresAt, err = parseNullableTime(leaseExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse residential client route lease expiry time: %w", err)
 		}
 		record.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		record.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
@@ -214,7 +284,8 @@ SET route_mode = ?, session_index = ?,
     node_fingerprint = CASE WHEN ? = 'residential' THEN node_fingerprint ELSE '' END,
     allocated_at = CASE WHEN ? = 'residential' THEN allocated_at ELSE '' END,
     expires_at = CASE WHEN ? = 'residential' THEN expires_at ELSE '' END,
-    rotate_count = rotate_count + ?, last_rotated_at = ?, updated_at = ?
+    rotate_count = rotate_count + ?, last_rotated_at = ?, updated_at = ?,
+    alloc_version = alloc_version + 1
 WHERE channel_id = ? AND session_id = ?
 `, routeMode, sessionIndex, routeMode, routeMode, routeMode, rotateIncrement, nullableTimeString(rotatedAt),
 		now.Format(time.RFC3339Nano), channelID, sessionID)
@@ -247,7 +318,7 @@ UPDATE residential_client_sessions
 SET route_mode = 'residential', session_index = -1, node_fingerprint = ?,
     allocated_at = ?, expires_at = ?, rotate_count = rotate_count + ?,
     last_rotated_at = CASE WHEN ? = 1 THEN ? ELSE last_rotated_at END,
-    updated_at = ?
+    updated_at = ?, alloc_version = alloc_version + 1
 WHERE channel_id = ? AND session_id = ?
 `, fingerprint, allocatedAt.UTC().Format(time.RFC3339Nano), nullableTimeString(expiresAt),
 		increment, increment, allocatedAt.UTC().Format(time.RFC3339Nano),
@@ -275,11 +346,14 @@ func (s *Store) RestoreResidentialClientSessionState(
 	result, err := s.db.ExecContext(ctx, `
 UPDATE residential_client_sessions
 SET route_mode = ?, session_index = ?, node_fingerprint = ?, rotate_count = ?,
-    last_rotated_at = ?, allocated_at = ?, expires_at = ?, updated_at = ?
+    last_rotated_at = ?, allocated_at = ?, expires_at = ?, updated_at = ?,
+    alloc_version = ?, lease_id = ?, lease_holder = ?, lease_expires_at = ?
 WHERE channel_id = ? AND session_id = ?
 `, record.RouteMode, record.SessionIndex, record.NodeFingerprint, record.RotateCount,
 		nullableTimeString(record.LastRotatedAt), nullableTimeString(record.AllocatedAt),
 		nullableTimeString(record.ExpiresAt), record.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		record.AllocVersion, record.LeaseID, record.LeaseHolder,
+		nullableTimeString(record.LeaseExpiresAt),
 		record.ChannelID, record.SessionID)
 	if err != nil {
 		return fmt.Errorf("restore residential client session state: %w", err)
@@ -304,7 +378,8 @@ func (s *Store) ClearResidentialClientSessionAllocation(
 ) (ResidentialClientSessionRecord, error) {
 	result, err := s.db.ExecContext(ctx, `
 UPDATE residential_client_sessions
-SET node_fingerprint = '', allocated_at = '', expires_at = '', updated_at = ?
+SET node_fingerprint = '', allocated_at = '', expires_at = '', updated_at = ?,
+    alloc_version = alloc_version + 1, lease_id = '', lease_holder = '', lease_expires_at = ''
 WHERE channel_id = ? AND session_id = ?
 `, time.Now().UTC().Format(time.RFC3339Nano), channelID, sessionID)
 	if err != nil {
@@ -397,7 +472,7 @@ type residentialClientSessionScanner interface {
 
 func scanResidentialClientSession(scanner residentialClientSessionScanner) (ResidentialClientSessionRecord, error) {
 	var record ResidentialClientSessionRecord
-	var lastRotatedAt, allocatedAt, expiresAt, lastUsedAt sql.NullString
+	var lastRotatedAt, allocatedAt, expiresAt, lastUsedAt, leaseExpiresAt sql.NullString
 	var createdAt, updatedAt string
 	if err := scanner.Scan(
 		&record.ChannelID, &record.SessionID, &record.AuthUsername,
@@ -405,6 +480,7 @@ func scanResidentialClientSession(scanner residentialClientSessionScanner) (Resi
 		&record.NodeFingerprint, &record.RouteMode,
 		&record.RotateCount, &lastRotatedAt, &allocatedAt, &expiresAt, &createdAt, &updatedAt,
 		&record.CountryCode, &lastUsedAt,
+		&record.AllocVersion, &record.LeaseID, &record.LeaseHolder, &leaseExpiresAt,
 	); err != nil {
 		return ResidentialClientSessionRecord{}, err
 	}
@@ -425,7 +501,38 @@ func scanResidentialClientSession(scanner residentialClientSessionScanner) (Resi
 	if err != nil {
 		return ResidentialClientSessionRecord{}, err
 	}
+	record.LeaseExpiresAt, err = parseNullableTime(leaseExpiresAt)
+	if err != nil {
+		return ResidentialClientSessionRecord{}, err
+	}
 	record.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	record.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 	return record, nil
+}
+
+// SetResidentialClientSessionLease writes the exclusive-ownership lease of a
+// declared node. An empty leaseID releases the lease; otherwise holder,
+// leaseID and expiry are set as one atomic update.
+func (s *Store) SetResidentialClientSessionLease(
+	ctx context.Context,
+	channelID, sessionID, holder, leaseID string,
+	expiresAt *time.Time,
+) (ResidentialClientSessionRecord, error) {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE residential_client_sessions
+SET lease_id = ?, lease_holder = ?, lease_expires_at = ?, updated_at = ?
+WHERE channel_id = ? AND session_id = ?
+`, leaseID, holder, nullableTimeString(expiresAt),
+		time.Now().UTC().Format(time.RFC3339Nano), channelID, sessionID)
+	if err != nil {
+		return ResidentialClientSessionRecord{}, fmt.Errorf("set residential client session lease: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return ResidentialClientSessionRecord{}, fmt.Errorf("read residential client session lease result: %w", err)
+	}
+	if rowsAffected != 1 {
+		return ResidentialClientSessionRecord{}, ErrNotFound
+	}
+	return s.GetResidentialClientSession(ctx, channelID, sessionID)
 }

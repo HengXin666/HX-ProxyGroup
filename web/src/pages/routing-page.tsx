@@ -69,6 +69,17 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
 
   useEffect(() => { void load() }, [load])
 
+  // Resolve each service's member list once per data load instead of on every
+  // render; with thousands of nodes this filter chain is the page's hot path.
+  const serviceNodes = useMemo(() => {
+    const byListener = new Map<string, NodeRecord[]>()
+    for (const listener of listeners) {
+      const group = groups.find((item) => item.id === listener.proxy_group_id)
+      byListener.set(listener.id, resolveServiceNodes(group, nodes))
+    }
+    return byListener
+  }, [groups, listeners, nodes])
+
   async function apply() {
     setBusy(true)
     try {
@@ -115,7 +126,7 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
           {listeners.length === 0 ? <EmptyState /> : <div className="min-h-0 flex-1 divide-y overflow-y-auto">{listeners.map((listener) => {
             const group = groups.find((item) => item.id === listener.proxy_group_id)
             const residential = residentialChannels.find((channel) => channel.listener_id === listener.id)
-            return <ServiceRow key={listener.id} listener={listener} group={group} groups={groups} routingRules={routingRules} nodes={resolveServiceNodes(group, nodes)} subscriptions={subscriptions} allNodes={nodes} residential={residential} expanded={expanded.has(listener.id)} editing={editing === listener.id} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(listener.id)) next.delete(listener.id); else next.add(listener.id); return next })} onEdit={() => { setExpanded((current) => new Set(current).add(listener.id)); setEditing(listener.id) }} onCloseEdit={() => setEditing(null)} onRoutingChanged={setRoutingRules} onChanged={async () => { setEditing(null); await load() }} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
+            return <ServiceRow key={listener.id} listener={listener} group={group} groups={groups} routingRules={routingRules} nodes={serviceNodes.get(listener.id) ?? []} subscriptions={subscriptions} allNodes={nodes} residential={residential} expanded={expanded.has(listener.id)} editing={editing === listener.id} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(listener.id)) next.delete(listener.id); else next.add(listener.id); return next })} onEdit={() => { setExpanded((current) => new Set(current).add(listener.id)); setEditing(listener.id) }} onCloseEdit={() => setEditing(null)} onRoutingChanged={setRoutingRules} onChanged={async () => { setEditing(null); await load() }} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
           })}</div>}
         </section>
         <CreateProxyServiceForm nodes={nodes} subscriptions={subscriptions} onCreated={load} onNotice={onNotice} />

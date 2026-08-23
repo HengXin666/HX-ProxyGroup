@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/store"
@@ -21,6 +22,14 @@ type ControlNode struct {
 	ExitIP      string            `json:"exit_ip,omitempty"`
 	CountryCode string            `json:"country_code,omitempty"`
 	RouteMode   string            `json:"route_mode"`
+	// AllocVersion is the monotonic allocation counter of this node. It is
+	// bumped on every rotation, route switch and (re)allocation; consumers pass
+	// it back as expected_alloc_version to detect concurrent rotation.
+	AllocVersion int `json:"alloc_version"`
+	// Lease is the exclusive-ownership state of this node window. LeaseID is
+	// only present in claim/heartbeat responses; the node pool list never
+	// renders another consumer's capability token.
+	Lease *ControlLease `json:"lease,omitempty"`
 	// ResidentialEndpoint is the vendor endpoint assigned to this logical
 	// node. It is only rendered by the control-token API; subscription and
 	// administrator views use separate DTOs which cannot carry this secret.
@@ -109,6 +118,7 @@ func (s *Service) RotateDeclaredSessionByControlToken(
 	ctx context.Context,
 	token string,
 	index int,
+	options RotateOptions,
 ) (ControlNode, error) {
 	channel, err := s.controlChannel(ctx, token)
 	if err != nil {
@@ -117,7 +127,7 @@ func (s *Service) RotateDeclaredSessionByControlToken(
 	if err := validateDeclaredIndex(channel, index); err != nil {
 		return ControlNode{}, err
 	}
-	if _, err := s.RotateClientSessionByToken(ctx, channel.RotateToken, declaredSessionID(index)); err != nil {
+	if _, err := s.rotateClientSessionByToken(ctx, channel.RotateToken, declaredSessionID(index), options); err != nil {
 		return ControlNode{}, err
 	}
 	return s.controlNodeView(ctx, channel, index)
@@ -128,6 +138,7 @@ func (s *Service) SwitchDeclaredSessionRouteByControlToken(
 	token string,
 	index int,
 	routeMode string,
+	options RotateOptions,
 ) (ControlNode, error) {
 	channel, err := s.controlChannel(ctx, token)
 	if err != nil {
@@ -136,11 +147,12 @@ func (s *Service) SwitchDeclaredSessionRouteByControlToken(
 	if err := validateDeclaredIndex(channel, index); err != nil {
 		return ControlNode{}, err
 	}
-	if _, err := s.SwitchClientSessionRouteByToken(
+	if _, err := s.switchClientSessionRouteByToken(
 		ctx,
 		channel.RotateToken,
 		declaredSessionID(index),
 		routeMode,
+		options,
 	); err != nil {
 		return ControlNode{}, err
 	}
@@ -221,11 +233,18 @@ func (s *Service) controlNodeViewWithResidentialEndpoints(
 		return ControlNode{}, mapStoreError(err)
 	}
 	node := ControlNode{
-		Index:       index,
-		NodeName:    DeclaredNodeName(channel.Name, index),
-		Endpoints:   []ControlEndpoint{},
-		CountryCode: session.CountryCode,
-		RouteMode:   session.RouteMode,
+		Index:        index,
+		NodeName:     DeclaredNodeName(channel.Name, index),
+		Endpoints:    []ControlEndpoint{},
+		CountryCode:  session.CountryCode,
+		RouteMode:    session.RouteMode,
+		AllocVersion: session.AllocVersion,
+	}
+	if leaseActive(session, s.now()) {
+		node.Lease = &ControlLease{
+			Holder:    session.LeaseHolder,
+			ExpiresAt: session.LeaseExpiresAt,
+		}
 	}
 	password, err := s.cipher.Open(
 		session.AuthPasswordEncrypted,
@@ -387,7 +406,7 @@ func declaredSessionView(
 	record store.ResidentialClientSessionRecord,
 	index int,
 ) ChannelSession {
-	return ChannelSession{
+	view := ChannelSession{
 		Index:         index,
 		SessionID:     record.SessionID,
 		NodeName:      DeclaredNodeName(channel.Name, index),
@@ -399,5 +418,11 @@ func declaredSessionView(
 		RotateCount:   record.RotateCount,
 		LastRotatedAt: record.LastRotatedAt,
 		LastUsedAt:    record.LastUsedAt,
+		AllocVersion:  record.AllocVersion,
 	}
+	if leaseActive(record, time.Now().UTC()) {
+		view.LeaseHolder = record.LeaseHolder
+		view.LeaseExpiresAt = record.LeaseExpiresAt
+	}
+	return view
 }

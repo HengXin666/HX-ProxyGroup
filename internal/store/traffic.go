@@ -128,7 +128,7 @@ FROM traffic_totals WHERE resource_type = ? AND resource_id = ?
 }
 
 func (s *Store) ListTrafficTotals(ctx context.Context, resourceType string, limit, offset int) ([]TrafficTotalRecord, error) {
-	if !validTrafficResource(resourceType) || limit < 1 || limit > 200 || offset < 0 {
+	if !validTrafficResource(resourceType) || limit < 1 || limit > 1000 || offset < 0 {
 		return nil, errors.New("invalid traffic totals query")
 	}
 	rows, err := s.db.QueryContext(ctx, `
@@ -167,7 +167,7 @@ func (s *Store) ListTrafficSummaries(
 	from, to time.Time,
 	limit, offset int,
 ) ([]TrafficTotalRecord, error) {
-	if !validTrafficResource(resourceType) || from.IsZero() || to.IsZero() || !from.Before(to) || limit < 1 || limit > 200 || offset < 0 {
+	if !validTrafficResource(resourceType) || from.IsZero() || to.IsZero() || !from.Before(to) || limit < 1 || limit > 1000 || offset < 0 {
 		return nil, errors.New("invalid traffic summaries query")
 	}
 	rows, err := s.db.QueryContext(ctx, `

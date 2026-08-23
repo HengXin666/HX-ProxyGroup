@@ -227,6 +227,46 @@ ORDER BY display_name ASC, id ASC
 	return records, nil
 }
 
+// CountResidentialSessionNodes returns the pooled node count per channel in a
+// single grouped query. The channel list view only needs pool sizes, so this
+// avoids materializing every encrypted node config just to count them.
+func (s *Store) CountResidentialSessionNodes(ctx context.Context, channelIDs []string) (map[string]int, error) {
+	if len(channelIDs) == 0 {
+		return map[string]int{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(channelIDs)), ",")
+	arguments := make([]any, len(channelIDs))
+	for index, id := range channelIDs {
+		arguments[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT origin_ref, COUNT(*)
+FROM nodes
+WHERE origin = ? AND origin_ref IN (`+placeholders+`) AND lifecycle_state NOT IN ('disabled', 'retired')
+GROUP BY origin_ref
+`, append([]any{ResidentialOrigin}, arguments...)...)
+	if err != nil {
+		return nil, fmt.Errorf("count residential session nodes: %w", err)
+	}
+	defer rows.Close()
+	counts := make(map[string]int, len(channelIDs))
+	for _, id := range channelIDs {
+		counts[id] = 0
+	}
+	for rows.Next() {
+		var channelID string
+		var count int
+		if err := rows.Scan(&channelID, &count); err != nil {
+			return nil, fmt.Errorf("scan residential session node count: %w", err)
+		}
+		counts[channelID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate residential session node counts: %w", err)
+	}
+	return counts, nil
+}
+
 // DeleteResidentialSessionPool removes every pooled node of one channel. It is
 // used when a channel is deleted, after the group and listener are gone.
 func (s *Store) DeleteResidentialSessionPool(ctx context.Context, channelID string) error {

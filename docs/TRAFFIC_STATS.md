@@ -40,10 +40,10 @@ GET /api/v1/traffic?resource_type=residential_channel&limit=100&offset=0
 按时间范围汇总入口、代理组、节点或住宅渠道：
 
 ```text
-GET /api/v1/traffic?resource_type=listener&from=<RFC3339>&to=<RFC3339>&limit=200&offset=0
+GET /api/v1/traffic?resource_type=listener&from=<RFC3339>&to=<RFC3339>&limit=1000&offset=0
 ```
 
-该接口返回范围内上传、下载、连接数和峰值活动连接；范围必须同时提供 `from`/`to`，最长 30 天，分页最多 200 条。总览使用它读取每个入口的历史累计和当天汇总。
+该接口返回范围内上传、下载、连接数和峰值活动连接；范围必须同时提供 `from`/`to`，最长 30 天，分页最多 1000 条（与节点列表上限一致），前端默认单次取满，避免多次往返。总览使用它读取每个入口的历史累计和当天汇总。
 
 单个资源的趋势与累计值：
 

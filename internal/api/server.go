@@ -508,7 +508,7 @@ func (s *Server) Handler() http.Handler {
 		s.registerAuthRoutes(mux)
 		handler = s.requireAuth(handler)
 	}
-	return s.requestContext(s.securityHeaders(handler))
+	return s.requestContext(s.securityHeaders(gzipMiddleware(handler)))
 }
 
 func (s *Server) handleSystemInfo(writer http.ResponseWriter, request *http.Request) {
@@ -740,6 +740,12 @@ func (s *Server) handleError(writer http.ResponseWriter, request *http.Request, 
 		s.writeAPIError(writer, request, http.StatusBadGateway, "provider_unreachable", err.Error())
 	case errors.Is(err, residential.ErrRateLimited):
 		s.writeAPIError(writer, request, http.StatusTooManyRequests, "rotate_rate_limited", err.Error())
+	case errors.Is(err, residential.ErrLeaseHeld):
+		s.writeAPIError(writer, request, http.StatusConflict, "lease_held", err.Error())
+	case errors.Is(err, residential.ErrLeaseExpired):
+		s.writeAPIError(writer, request, http.StatusConflict, "lease_expired", err.Error())
+	case errors.Is(err, residential.ErrAllocVersionChanged):
+		s.writeAPIError(writer, request, http.StatusConflict, "alloc_version_changed", err.Error())
 	case errors.Is(err, residential.ErrInvalid):
 		s.writeAPIError(writer, request, http.StatusUnprocessableEntity, "validation_failed", err.Error())
 	case errors.Is(err, residential.ErrNotFound):

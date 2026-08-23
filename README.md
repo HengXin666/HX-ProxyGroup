@@ -221,6 +221,10 @@ Proxy Group。实际数据面链路为：
   不改变订阅。
 - **自动化**：`/ctl/<control-token>/nodes` 提供声明节点池，`/nodes/<index>/next` 指定节点换 IP。
   OutlookRegister 在本地互斥租用节点，结束时只归还本地租约，不删除服务端节点。
+  多个服务并发对接时使用服务器端独占租约（`/nodes/<index>/claim|heartbeat|release`）与
+  `expected_alloc_version` 版本护栏：每个声明节点是一个互斥 IP 窗口，被他人持有时返回
+  `409 lease_held`，基于过期版本轮换返回 `409 alloc_version_changed`。完整并发契约与
+  集成验收清单见 [住宅代理并发集成标准](docs/RESIDENTIAL_INTEGRATION_STANDARD.md)。
 - **复制入口**：在「代理服务」页面的住宅渠道服务行分别选择“复制 Clash / Mihomo 订阅”或
   “复制自动化控制 URL”；「住宅代理」页面只负责供应商、渠道和声明节点管理。
 
@@ -463,6 +467,7 @@ npm run build
 | [流量统计](docs/TRAFFIC_STATS.md) | 聚合粒度、查询、保留策略和精度边界 |
 | [Cloudflare / 雷池](docs/CLOUDFLARE.md) | WebSocket 入口、反向代理和公网边界 |
 | [备份与导出](docs/BACKUP_EXPORT.md) | Artifact、Online Backup 与秘密处理 |
+| [住宅代理并发集成标准](docs/RESIDENTIAL_INTEGRATION_STANDARD.md) | 统一窗口模型、租约、版本护栏与多服务对接契约 |
 | [v2 能力](docs/V2.md) | 规则流水线、认证、告警、调度与浏览器终端 |
 | [安全策略](SECURITY.md) | 漏洞报告、部署边界与浏览器终端威胁模型 |
 

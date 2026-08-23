@@ -55,16 +55,23 @@ func (s *Store) ListLatestNodeHealthResults(ctx context.Context, nodeIDs []strin
 	for index, id := range nodeIDs {
 		arguments[index] = id
 	}
+	// The window function picks the newest row per (node, test_url) in one
+	// pass over the matching checks, replacing the previous per-row NOT EXISTS
+	// scan that degraded as quality history accumulated.
 	rows, err := s.db.QueryContext(ctx, `
-SELECT q.id, q.node_id, q.checked_at, q.success, q.latency_ms, q.test_url, q.error_code, q.error_message
-FROM node_quality_checks q
-WHERE q.node_id IN (`+placeholders+`)
-  AND NOT EXISTS (
-      SELECT 1 FROM node_quality_checks newer
-      WHERE newer.node_id = q.node_id AND newer.test_url = q.test_url
-        AND (newer.checked_at > q.checked_at OR (newer.checked_at = q.checked_at AND newer.id > q.id))
-  )
-ORDER BY q.node_id, q.test_url
+SELECT id, node_id, checked_at, success, latency_ms, test_url, error_code, error_message
+FROM (
+    SELECT q.id, q.node_id, q.checked_at, q.success, q.latency_ms,
+           q.test_url, q.error_code, q.error_message,
+           ROW_NUMBER() OVER (
+               PARTITION BY q.node_id, q.test_url
+               ORDER BY q.checked_at DESC, q.id DESC
+           ) AS position
+    FROM node_quality_checks q
+    WHERE q.node_id IN (`+placeholders+`)
+)
+WHERE position = 1
+ORDER BY node_id, test_url
 `, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("list latest node health results: %w", err)

@@ -132,6 +132,45 @@ Content-Type: application/json
 消费 WS 协议 URI，应由客户端受管的本地 Mihomo 或 sing-box 落地。`GET nodes` 会更新声明节点
 最后使用时间。未知、禁用、不属于 sticky 声明渠道的 token 和越界 index 统一返回 404。
 
+节点池中的每个节点携带统一窗口状态：
+
+```json
+{
+  "index": 1,
+  "alloc_version": 7,
+  "lease": { "holder": "service-a", "expires_at": "2026-08-23T10:05:00Z" }
+}
+```
+
+- `alloc_version`：窗口分配版本，每次轮换/路由切换/重新分配 +1。
+- `lease`：独占租约状态，列表永不返回 `lease_id`（能力令牌只发给持有者）。
+- 窗口空闲（`lease == null`）或 `lease.holder` 为自己时可直接操作；被他人持有时
+  轮换/路由返回 `409 lease_held`。
+
+### 4.1 独占租约（统一窗口）
+
+每个声明节点是一个互斥的 IP 窗口。租约接口：
+
+```http
+POST /ctl/<control-token>/nodes/<index>/claim      {"holder":"service-a","ttl_seconds":300}
+POST /ctl/<control-token>/nodes/<index>/heartbeat  {"lease_id":"...","ttl_seconds":300}
+POST /ctl/<control-token>/nodes/<index>/release    {"lease_id":"..."}
+```
+
+- `claim`：窗口空闲或同一 holder 时授予/刷新；其他 holder 持有返回 `409 lease_held`。
+- `heartbeat`：仅持有者凭 `lease_id` 续租；失效返回 `409 lease_expired`。
+- `release`：幂等归还；旧 lease_id 不会清除更新的租约。
+- `ttl_seconds`：60..86400，缺省 300。
+
+`next` 与 `route` 接受可选护栏 `{"lease_id":"...","expected_alloc_version":N}`：
+
+- `lease_id`：窗口被他人持有时必须携带自己的能力令牌。
+- `expected_alloc_version`：CAS 护栏，版本过期返回 `409 alloc_version_changed`，
+  防止对同一窗口的重复轮换。
+
+多服务并发对接的完整规则见
+[住宅代理并发集成标准](RESIDENTIAL_INTEGRATION_STANDARD.md)。
+
 `residential_endpoint` 仅由 API 提取供应商在节点已分配后返回，并且只存在于高权限 `/ctl/`
 响应。客户端可用它在本机直接落地住宅 `IP:port`，使 VPS 只负责申请节点。账密网关不下发供应商
 主凭据；`/sub/`、管理员列表和请求日志都不包含该字段。CF Worker 面板供应商同样不返回该字段：
@@ -174,10 +213,12 @@ OutlookRegister 的推荐配置是：
 ## 7. Token 与日志安全
 
 - `/sub/` 的 share token 允许读取客户端凭据；`/ctl/` 的 control token 还允许消耗供应商配额和
-  切换路由，两者都按密码管理并只通过 HTTPS 传输。
+  切换路由，两者都按密码管理并只通过 HTTPS 传输。租约 `lease_id` 与 control token 同级敏感。
 - 两种 token 按渠道独立轮换，旧链接立即失效。
 - 请求日志记录 `/sub/[redacted]`、`/ctl/[redacted]`、`/rot/[redacted]`，不记录完整 URL。
 - API 客户端只能依赖 HTTP 状态码和稳定 `error.code`，不能解析错误消息字符串。
+  统一窗口相关的稳定错误码：`409 lease_held`、`409 lease_expired`、
+  `409 alloc_version_changed`、`429 rotate_rate_limited`。
 
 ## 8. 兼容接口
 

@@ -267,15 +267,11 @@ func (s *Service) createDeclaredSession(
 // address, not the egress address, so reporting one would require a probe per
 // session on every channel read.
 func (s *Service) declaredSessionViews(
-	ctx context.Context,
 	channel store.ResidentialChannelRecord,
+	sessions []store.ResidentialClientSessionRecord,
 ) ([]ChannelSession, error) {
 	if channel.SessionCount < 1 {
 		return nil, nil
-	}
-	sessions, err := s.repository.ListResidentialClientSessions(ctx, channel.ID)
-	if err != nil {
-		return nil, err
 	}
 	byIndex := make(map[int]store.ResidentialClientSessionRecord, len(sessions))
 	for _, session := range sessions {
@@ -300,6 +296,11 @@ func (s *Service) declaredSessionViews(
 			view.RotateCount = session.RotateCount
 			view.LastRotatedAt = session.LastRotatedAt
 			view.LastUsedAt = session.LastUsedAt
+			view.AllocVersion = session.AllocVersion
+			if leaseActive(session, s.now()) {
+				view.LeaseHolder = session.LeaseHolder
+				view.LeaseExpiresAt = session.LeaseExpiresAt
+			}
 		}
 		views = append(views, view)
 	}
@@ -364,6 +365,11 @@ func declaredSessionIdle(
 		return false
 	}
 	if session.RouteMode != ClientRouteResidential || session.NodeFingerprint == "" {
+		return false
+	}
+	// A node under an active lease is owned by a consumer and counts as in
+	// use even without data-plane traffic: the lease is the liveness signal.
+	if leaseActive(session, now) {
 		return false
 	}
 	// A session that has never been used still counts from its allocation

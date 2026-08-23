@@ -722,3 +722,39 @@ export interface ResidentialRotationResult {
   rotated_at: string
   pool_refreshed: boolean
 }
+
+// ---- Fleet（CF 渠道账号）----
+export interface FleetWorker {
+  worker_name: string
+  canonical_url: string
+  provider_id: string
+  failures: number
+  last_check: string
+  last_detail: string
+}
+
+export interface FleetAccount {
+  id: string
+  email: string
+  status: string
+  banned_at: string
+  workers: FleetWorker[]
+}
+
+export interface FleetSummary {
+  at: string
+  accounts?: Array<{ email: string; status: string; workers?: string[]; healthy?: number }>
+  total_workers?: number
+}
+
+export interface FleetStatus {
+  accounts: FleetAccount[]
+  total_workers: number
+  last_summary: FleetSummary | null
+}
+
+export interface AddFleetAccountRequest {
+  email: string
+  cf_account_id: string
+  api_token: string
+}

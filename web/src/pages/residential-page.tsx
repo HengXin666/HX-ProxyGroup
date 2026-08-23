@@ -12,6 +12,7 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 import { ResidentialSessionsDialog } from "@/components/residential-sessions-dialog"
+import { CFAccountGroup } from "@/components/cf-account-group"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -353,6 +354,7 @@ export function ResidentialPage({
         </TabsContent>
 
         <TabsContent value="providers" className="space-y-4">
+          <CFAccountGroup onNotice={onNotice} />
           <div className="flex items-center justify-end">
             <Button size="sm" onClick={() => { setEditingProvider(null); setProviderDialogOpen(true) }}>
               <Plus className="mr-1 size-3.5" />

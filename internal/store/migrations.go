@@ -808,6 +808,23 @@ INSERT INTO channel_providers (channel_id, provider_id)
     SELECT id, provider_id FROM residential_channels;
 `,
 	},
+	{
+		version: 32,
+		name:    "residential_node_lease_and_alloc_version",
+		// 20260823 用户决策：住宅代理并发集成标准——每个声明节点是一个独占 IP
+		// 窗口。服务端维护节点租约（holder/lease_id/lease_expires_at）与单调
+		// 递增 alloc_version，供多服务并发对接时互斥认领与轮换 CAS。
+		sql: `
+ALTER TABLE residential_client_sessions
+    ADD COLUMN lease_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE residential_client_sessions
+    ADD COLUMN lease_holder TEXT NOT NULL DEFAULT '';
+ALTER TABLE residential_client_sessions
+    ADD COLUMN lease_expires_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE residential_client_sessions
+    ADD COLUMN alloc_version INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

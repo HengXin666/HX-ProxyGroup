@@ -248,6 +248,17 @@ func (s *Service) RotateClientSessionByToken(
 	ctx context.Context,
 	token, sessionID string,
 ) (ClientSession, error) {
+	return s.rotateClientSessionByToken(ctx, token, sessionID, RotateOptions{})
+}
+
+// rotateClientSessionByToken performs a rotation guarded by the unified-window
+// lease and allocation-version checks. The guard runs inside the same mutex
+// critical section as the rotation, so check-then-act is atomic.
+func (s *Service) rotateClientSessionByToken(
+	ctx context.Context,
+	token, sessionID string,
+	options RotateOptions,
+) (ClientSession, error) {
 	s.clientSessionMutex.Lock()
 	defer s.clientSessionMutex.Unlock()
 	channel, err := s.clientSessionChannel(ctx, token, sessionID)
@@ -264,6 +275,9 @@ func (s *Service) RotateClientSessionByToken(
 	if current.RouteMode != ClientRouteResidential {
 		return ClientSession{}, fmt.Errorf("%w: client session is routed direct", ErrInvalid)
 	}
+	if err := s.checkSessionGuard(current, options); err != nil {
+		return ClientSession{}, err
+	}
 	provider, err := s.repository.GetResidentialProvider(ctx, channel.ProviderID)
 	if err != nil {
 		return ClientSession{}, mapStoreError(err)
@@ -279,6 +293,17 @@ func (s *Service) SwitchClientSessionRouteByToken(
 	ctx context.Context,
 	token, sessionID, routeMode string,
 ) (ClientSession, error) {
+	return s.switchClientSessionRouteByToken(ctx, token, sessionID, routeMode, RotateOptions{})
+}
+
+// switchClientSessionRouteByToken is the guarded variant of route switching:
+// it enforces the lease and allocation-version checks under the session mutex
+// before any route mutation.
+func (s *Service) switchClientSessionRouteByToken(
+	ctx context.Context,
+	token, sessionID, routeMode string,
+	options RotateOptions,
+) (ClientSession, error) {
 	s.clientSessionMutex.Lock()
 	defer s.clientSessionMutex.Unlock()
 	channel, err := s.clientSessionChannel(ctx, token, sessionID)
@@ -292,6 +317,9 @@ func (s *Service) SwitchClientSessionRouteByToken(
 	current, err := s.repository.GetResidentialClientSession(ctx, channel.ID, sessionID)
 	if err != nil {
 		return ClientSession{}, mapStoreError(err)
+	}
+	if err := s.checkSessionGuard(current, options); err != nil {
+		return ClientSession{}, err
 	}
 	if current.RouteMode == routeMode {
 		return s.clientSessionView(ctx, current, false)

@@ -69,6 +69,10 @@ func (s *Server) handleFleetStatus(writer http.ResponseWriter, request *http.Req
 		view := accountView{
 			ID: account.ID, Email: account.Email,
 			Status: account.Status, BannedAt: account.BannedAt,
+			// Non-nil so the JSON contract always exposes workers as an array
+			// ([]), never null. A nil slice serializes to null, which crashes
+			// the fleet UI's workers.filter().
+			Workers: []workerView{},
 		}
 		for _, record := range workers {
 			view.Workers = append(view.Workers, workerView{

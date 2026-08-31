@@ -40,7 +40,17 @@ export function CFAccountGroup({ onNotice }: CFAccountGroupProps) {
 
   const load = useCallback(async () => {
     try {
-      setStatus(await api.fleetStatus())
+      const status = await api.fleetStatus()
+      // Defensive: the fleet contract exposes workers as an array, but a stale
+      // backend may serialize it as null; keep rendering robust either way.
+      const normalized: FleetStatus = {
+        ...status,
+        accounts: (status.accounts ?? []).map((account) => ({
+          ...account,
+          workers: account.workers ?? [],
+        })),
+      }
+      setStatus(normalized)
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "加载 CF 账号失败", "error")
     } finally {

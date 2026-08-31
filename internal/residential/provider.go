@@ -486,9 +486,10 @@ func (s *Service) normalizeProvider(
 	ttl := input.SessionTTLSeconds
 	if ttl == 0 {
 		ttl = 600
-		if vendor == "bestproxy" {
-			// BestProxy's `life` parameter is measured in minutes, unlike the
-			// generic provider field name, and its documented range is short.
+		if vendor == "bestproxy" || vendor == "rapidproxy" {
+			// BestProxy's `life` and RapidProxy's `stime` parameters are
+			// measured in minutes, unlike the generic provider field name, and
+			// their documented range is short.
 			ttl = 60
 		}
 	}
@@ -503,6 +504,9 @@ func (s *Service) normalizeProvider(
 	}
 	if vendor == "bestproxy" && strings.Contains(template, "_life-") && (ttl < 1 || ttl > 120) {
 		return normalizedProvider{}, fmt.Errorf("%w: BestProxy life must be between 1 and 120 minutes", ErrInvalid)
+	}
+	if vendor == "rapidproxy" && rotationMode == RotationSessionTemplate && (ttl < 1 || ttl > 180) {
+		return normalizedProvider{}, fmt.Errorf("%w: RapidProxy stime must be between 1 and 180 minutes", ErrInvalid)
 	}
 	maxSessions := input.MaxConcurrentSessions
 	if maxSessions == 0 {

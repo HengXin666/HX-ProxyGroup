@@ -67,6 +67,24 @@ var presets = []Preset{
 			"不同客户端会话获得独立出口 IP。保存后用「测试连接」确认出口 IP。",
 	},
 	{
+		Vendor:            "rapidproxy",
+		Label:             "RapidProxy",
+		Protocol:          "http",
+		GatewayHost:       "us.rapidproxy.io",
+		GatewayPort:       5001,
+		UsernameTemplate:  "{user}-residential-{region}-session-{session}-stime-{ttl}",
+		RotationMode:      RotationSessionTemplate,
+		SessionTTLSeconds: 60,
+		PoolSize:          8,
+		Verified:          true,
+		DocURL:            "https://www.rapidproxy.io",
+		Notes: "RapidProxy 动态住宅粘性账号语法（已在 hx-auto-outlook 工作凭据中验证）：" +
+			"`账号-residential-国家-session-会话ID-stime-分钟`。网关默认 us.rapidproxy.io:5001；" +
+			"国家/地区代码原样保留（如 US、GLOBAL）；stime 单位为分钟，官方粘性范围 1-180，" +
+			"session_ttl_seconds 建议填 60-600；客户端建立逻辑会话时系统才生成会话 ID，" +
+			"不同客户端会话获得独立出口 IP。保存后用「测试连接」确认出口 IP。",
+	},
+	{
 		Vendor:            "generic-sticky",
 		Label:             "通用 · 粘滞会话网关",
 		Protocol:          "http",

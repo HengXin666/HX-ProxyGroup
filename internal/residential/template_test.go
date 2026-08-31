@@ -183,6 +183,70 @@ func TestBestProxyPresetRendersVerifiedGatewaySyntax(t *testing.T) {
 	}
 }
 
+// The RapidProxy preset renders the dialect `user-residential-region-session-<id>-stime-<minutes>`
+// the operator's own working curl creds use: hxloli666-residential-GLOBAL-session-...-stime-10.
+func TestRapidProxyPresetIsRegisteredAndVerified(t *testing.T) {
+	t.Parallel()
+
+	preset, found := PresetByVendor("rapidproxy")
+	if !found {
+		t.Fatal("PresetByVendor(\"rapidproxy\") not found")
+	}
+	if !preset.Verified {
+		t.Fatal("RapidProxy preset syntax is verified and must stay verified")
+	}
+	if !TemplateUsesSession(preset.UsernameTemplate) {
+		t.Fatal("RapidProxy preset must support sticky sessions for rotation")
+	}
+	if preset.GatewayHost != "us.rapidproxy.io" || preset.GatewayPort != 5001 {
+		t.Fatalf("RapidProxy preset gateway = %s:%d, want us.rapidproxy.io:5001", preset.GatewayHost, preset.GatewayPort)
+	}
+	if preset.RotationMode != RotationSessionTemplate {
+		t.Fatalf("RapidProxy preset rotation = %q, want session-template", preset.RotationMode)
+	}
+}
+
+func TestRapidProxyPresetRendersGatewaySyntax(t *testing.T) {
+	t.Parallel()
+
+	preset, found := PresetByVendor("rapidproxy")
+	if !found {
+		t.Fatal("PresetByVendor(\"rapidproxy\") not found")
+	}
+	rendered, err := Render(preset.UsernameTemplate, Variables{
+		User:    "hxloli666",
+		Region:  "GLOBAL",
+		Session: "42441522",
+		TTL:     "10",
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	const want = "hxloli666-residential-GLOBAL-session-42441522-stime-10"
+	if rendered != want {
+		t.Fatalf("Render() = %q, want %q", rendered, want)
+	}
+}
+
+func TestRapidProxyPresetRendersCountryCode(t *testing.T) {
+	t.Parallel()
+
+	preset, _ := PresetByVendor("rapidproxy")
+	rendered, err := Render(preset.UsernameTemplate, Variables{
+		User:    "acct123",
+		Region:  "US",
+		Session: "stable12345",
+		TTL:     "60",
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	const want = "acct123-residential-US-session-stable12345-stime-60"
+	if rendered != want {
+		t.Fatalf("Render() = %q, want %q", rendered, want)
+	}
+}
+
 // Region codes like BestProxy's area parameter are case-significant to the
 // vendor, so uppercase two-letter country codes must survive validation.
 func TestValidateRegionPreservesCase(t *testing.T) {

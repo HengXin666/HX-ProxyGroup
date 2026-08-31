@@ -591,6 +591,47 @@ func TestExpiredClientSessionRotatesAllocationAndKeepsCredentials(t *testing.T) 
 	}
 }
 
+// RapidProxy stores its sticky session time in the username (`stime`) in
+// minutes. The generic TTL field defaults to 60 and is validated against the
+// vendor's 1-180 minute range at provider save time.
+func TestRapidProxyProviderDefaultsAndValidatesStime(t *testing.T) {
+	t.Parallel()
+	harness := newHarness(t)
+	ctx := context.Background()
+
+	// A RapidProxy provider with no explicit TTL falls back to 60 minutes (the
+	// preset default), not the generic 600-second default.
+	provider, err := harness.service.CreateProvider(ctx, CreateProviderRequest{
+		Name: "rapid-1", Vendor: "rapidproxy", Protocol: "http",
+		GatewayHost:      "us.rapidproxy.io",
+		GatewayPort:      5001,
+		Credentials:      &Credentials{Username: "acct", Password: "secret"},
+		UsernameTemplate: "{user}-residential-{region}-session-{session}-stime-{ttl}",
+		RotationMode:     RotationSessionTemplate,
+		DefaultRegion:    "GLOBAL",
+	})
+	if err != nil {
+		t.Fatalf("CreateProvider(RapidProxy) error = %v", err)
+	}
+	if got, want := provider.SessionTTLSeconds, 60; got != want {
+		t.Fatalf("RapidProxy default stime = %d, want %d", got, want)
+	}
+
+	// stime below the documented 1-180 minute range is rejected.
+	if _, err := harness.service.CreateProvider(ctx, CreateProviderRequest{
+		Name: "rapid-bad", Vendor: "rapidproxy", Protocol: "http",
+		GatewayHost:       "us.rapidproxy.io",
+		GatewayPort:       5001,
+		Credentials:       &Credentials{Username: "acct", Password: "secret"},
+		UsernameTemplate:  "{user}-residential-{region}-session-{session}-stime-{ttl}",
+		RotationMode:      RotationSessionTemplate,
+		SessionTTLSeconds: 200,
+		DefaultRegion:     "GLOBAL",
+	}); err == nil {
+		t.Fatal("RapidProxy provider with out-of-range stime 200 succeeded")
+	}
+}
+
 func TestExpiredClientSessionCanBeConfiguredToExpire(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 1, 8, 0, 0, 0, time.UTC)

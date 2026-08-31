@@ -198,7 +198,9 @@ Proxy Group。实际数据面链路为：
 
 - **供应商**：三种接入方式。
   - 账密网关（粘滞会话）：填网关地址、子用户账号密码，用户名模板自动拼
-    `账号_area-国家_life-分钟_session-会话ID`；同一会话 ID 出口 IP 不变，换 ID 即换 IP。
+    `账号_area-国家_life-分钟_session-会话ID`（BestProxy）或
+    `账号-residential-国家-session-会话ID-stime-分钟`（RapidProxy）；同一会话 ID
+    出口 IP 不变，换 ID 即换 IP。
   - API 提取：粘贴厂商面板的完整提取链接到 `api_url`，客户端会话建立或换 IP 时
     实时请求新的 `IP:port` 节点，无需网关账号密码（BestProxy API 提取已内置预设）。
     提取链接可能包含 `app_key`，服务端使用 AEAD 加密保存，管理 API 只返回“已配置”状态。
@@ -260,8 +262,8 @@ HTTP/SOCKS 入口。每个渠道对外使用雷池 HTTPS 443 下自己的订阅
 
 每个声明节点单独记录供应商 TTL。供应商可配置到期后释放分配，或保留客户端认证并实时换一个
 住宅 IP；后台维护任务以有界批次处理到期与空闲分配，不依赖客户端重新拉订阅。
-BestProxy 的 `life` 按分钟计算，API 提取链接中的 `life` 参数优先于表单里的 TTL；通用供应商
-的 `session_ttl_seconds` 按秒计算。
+BestProxy 的 `life` 和 RapidProxy 的 `stime` 均按分钟计算（前者 1-120，后者 1-180），
+API 提取链接中的 `life` 参数优先于表单里的 TTL；通用供应商的 `session_ttl_seconds` 按秒计算。
 
 保存供应商后先用「测试连接」确认出口 IP 真实可用，再创建渠道。
 
@@ -467,6 +469,7 @@ npm run build
 | [流量统计](docs/TRAFFIC_STATS.md) | 聚合粒度、查询、保留策略和精度边界 |
 | [Cloudflare / 雷池](docs/CLOUDFLARE.md) | WebSocket 入口、反向代理和公网边界 |
 | [备份与导出](docs/BACKUP_EXPORT.md) | Artifact、Online Backup 与秘密处理 |
+| [住宅代理 AI 对接指南](docs/RESIDENTIAL_AI_QUICKSTART.md) | 给 AI/自动化的极简订阅对接与每次先 next 的轮换要点 |
 | [住宅代理并发集成标准](docs/RESIDENTIAL_INTEGRATION_STANDARD.md) | 统一窗口模型、租约、版本护栏与多服务对接契约 |
 | [v2 能力](docs/V2.md) | 规则流水线、认证、告警、调度与浏览器终端 |
 | [安全策略](SECURITY.md) | 漏洞报告、部署边界与浏览器终端威胁模型 |

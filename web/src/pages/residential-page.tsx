@@ -664,7 +664,7 @@ function ProviderDialog({
       sessionTTL: String(preset.session_ttl_seconds),
       maxSessions: "64",
       expiryPolicy: "rotate",
-      defaultRegion: preset.vendor === "bestproxy" ? "US" : "",
+      defaultRegion: preset.vendor === "bestproxy" ? "US" : (preset.vendor === "rapidproxy" ? "GLOBAL" : ""),
       defaultRegionMode: "fixed",
       defaultRandomRegions: "",
     })
@@ -783,8 +783,8 @@ function ProviderDialog({
                   )}
                 </SelectContent>
               </Select>
-              {form.rotationMode !== "cf-worker" && (form.vendor === "bestproxy" || form.vendor === "bestproxy-api") && form.protocol !== "http" && (
-                <span className="text-[11px] text-amber-600">BestProxy 出口节点按 HTTP 代理使用，请选回 HTTP</span>
+              {form.rotationMode !== "cf-worker" && (form.vendor === "bestproxy" || form.vendor === "bestproxy-api" || form.vendor === "rapidproxy") && form.protocol !== "http" && (
+                <span className="text-[11px] text-amber-600">{form.vendor === "rapidproxy" ? "RapidProxy" : "BestProxy"} 出口节点按 HTTP 代理使用，请选回 HTTP</span>
               )}
             </label>
 
@@ -840,7 +840,7 @@ function ProviderDialog({
                   用户名模板
                   <Input value={form.usernameTemplate} onChange={(event) => update("usernameTemplate", event.target.value)} className="font-mono" />
                   <span className="text-[11px] text-muted-foreground">
-                    支持 {"{user}"} {"{session}"} {"{region}"} {"{country}"} {"{city}"} {"{ttl}"}；BestProxy 预设为 {"{user}_area-{region}_life-{ttl}_session-{session}"}，默认地区 US 可按需修改。
+                    支持 {"{user}"} {"{session}"} {"{region}"} {"{country}"} {"{city}"} {"{ttl}"}；BestProxy 预设为 {"{user}_area-{region}_life-{ttl}_session-{session}"}，RapidProxy 预设为 {"{user}-residential-{region}-session-{session}-stime-{ttl}"}，默认地区可按需修改。
                   </span>
                 </label>
               </>
@@ -872,7 +872,7 @@ function ProviderDialog({
             </label>
 
             <label className="grid gap-1 text-xs">
-              {form.vendor === "bestproxy" ? "life（分钟）" : "会话 TTL（秒）"}
+              {form.vendor === "bestproxy" ? "life（分钟）" : form.vendor === "rapidproxy" ? "stime（分钟）" : "会话 TTL（秒）"}
               <Input value={form.sessionTTL} onChange={(event) => update("sessionTTL", event.target.value)} inputMode="numeric" />
             </label>
             <label className="grid gap-1 text-xs">

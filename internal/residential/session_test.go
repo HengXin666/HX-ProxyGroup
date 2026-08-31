@@ -33,6 +33,14 @@ func TestSessionPoolRefreshAgeUsesVendorLifetimeUnits(t *testing.T) {
 	if got, want := SessionPoolLifetime(generic), 10*time.Minute; got != want {
 		t.Fatalf("generic lifetime = %s, want %s", got, want)
 	}
+
+	rapid := Provider{Vendor: "rapidproxy", RotationMode: RotationSessionTemplate, SessionTTLSeconds: 60}
+	if got, want := SessionPoolLifetime(rapid), 60*time.Minute; got != want {
+		t.Fatalf("RapidProxy lifetime = %s, want %s", got, want)
+	}
+	if got, want := SessionPoolRefreshAge(rapid), 48*time.Minute; got != want {
+		t.Fatalf("RapidProxy refresh age = %s, want %s", got, want)
+	}
 }
 
 // Residential gateways such as BestProxy constrain the sticky session id to

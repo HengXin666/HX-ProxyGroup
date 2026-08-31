@@ -15,8 +15,9 @@ import (
 )
 
 // SessionPoolLifetime returns the vendor lifetime represented by one rendered
-// residential session. BestProxy's `life` value is measured in minutes; the
-// generic provider field uses seconds as its name suggests.
+// residential session. BestProxy's `life` and RapidProxy's `stime` values are
+// measured in minutes; the generic provider field uses seconds as its name
+// suggests.
 func SessionPoolLifetime(provider Provider) time.Duration {
 	if provider.SessionTTLSeconds <= 0 || provider.RotationMode == RotationPerRequest {
 		return 0
@@ -32,7 +33,7 @@ func SessionPoolLifetime(provider Provider) time.Duration {
 		}
 	}
 	unit := time.Second
-	if strings.EqualFold(provider.Vendor, "bestproxy") {
+	if strings.EqualFold(provider.Vendor, "bestproxy") || strings.EqualFold(provider.Vendor, "rapidproxy") {
 		unit = time.Minute
 	}
 	return time.Duration(ttl) * unit

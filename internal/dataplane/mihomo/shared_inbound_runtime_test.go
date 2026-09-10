@@ -71,9 +71,13 @@ func TestSharedInboundRoutesOnePortPerService(t *testing.T) {
 		_, _ = command.Process.Wait()
 	}()
 
-	waitForPort(t, port, 5*time.Second)
+	waitForPort(t, port, 10*time.Second)
 
-	direct := proxiedStatus(t, port, "svc-group-a", "pass-a", origin.URL)
+	// The listening socket can accept a connection before the rule engine has
+	// finished loading; a 502 in that window is a startup artifact, not a
+	// routing failure. Retry until the direct service answers, exactly as a
+	// client would.
+	direct := waitForStatus(t, port, "svc-group-a", "pass-a", origin.URL, http.StatusNoContent, 10*time.Second)
 	if direct != http.StatusNoContent {
 		t.Fatalf("service-a through the shared port = %d, want %d", direct, http.StatusNoContent)
 	}
@@ -85,6 +89,23 @@ func TestSharedInboundRoutesOnePortPerService(t *testing.T) {
 	// public surface and it authenticates every member.
 	if status := proxiedStatus(t, port, "svc-group-a", "wrong", origin.URL); status == http.StatusNoContent {
 		t.Fatal("an invalid password reached the direct exit")
+	}
+}
+
+// waitForStatus polls until the request reaches the expected status or the
+// deadline expires, then returns the last observed status. Mihomo accepts
+// connections slightly before it finishes loading its rules, so a configuration
+// test must allow that window instead of asserting on the first response.
+func waitForStatus(t *testing.T, port int, username, password, target string, expected int, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	last := 0
+	for {
+		last = proxiedStatus(t, port, username, password, target)
+		if last == expected || time.Now().After(deadline) {
+			return last
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

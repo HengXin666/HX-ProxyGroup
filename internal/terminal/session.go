@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,10 +77,87 @@ func (s *trackedSession) Close(cause string) {
 	}
 }
 
+// CwdReporter is implemented by PTY sessions that can report the shell's real
+// working directory from the kernel. The web UI follows it, so no probe command
+// is ever typed into the user's session and the shell history stays clean.
+type CwdReporter interface {
+	Cwd() (string, error)
+}
+
+// Cwd reads the shell process's working directory from /proc. It is a
+// directory the *shell* changed into, so it is correct for bash, zsh, fish and
+// plain sh alike, and for subshells whose parent stayed put.
+func (s *ptySession) Cwd() (string, error) {
+	if s.command == nil || s.command.Process == nil {
+		return "", errors.New("shell process is not running")
+	}
+	return processCwd(s.command.Process.Pid, s.childPid())
+}
+
+// childPid returns the foreground process group leader when the shell has
+// spawned a child (an interactive program, a pipeline). The shell's own cwd is
+// still authoritative, so this is only used to keep the read cheap.
+func (s *ptySession) childPid() int {
+	if s.pty == nil {
+		return 0
+	}
+	pid, err := unix.IoctlGetInt(int(s.pty.Fd()), unix.TIOCGPGRP)
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+// processCwd resolves /proc/<pid>/cwd. Errors are returned so callers can fall
+// back to the last known directory instead of guessing.
+func processCwd(pid, foregroundGroup int) (string, error) {
+	if pid <= 0 {
+		return "", errors.New("invalid shell process id")
+	}
+	target, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+	if err == nil {
+		if resolved := usableCwd(target); resolved != "" {
+			return resolved, nil
+		}
+	}
+	// The shell process may have exited while a foreground child still holds
+	// the terminal; fall back to that child's directory before giving up.
+	if foregroundGroup > 0 && foregroundGroup != pid {
+		childTarget, childErr := os.Readlink("/proc/" + strconv.Itoa(foregroundGroup) + "/cwd")
+		if childErr != nil {
+			return "", childErr
+		}
+		if resolved := usableCwd(childTarget); resolved != "" {
+			return resolved, nil
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return "", errors.New("shell process has no usable working directory")
+}
+
+func usableCwd(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" || !filepath.IsAbs(target) || strings.ContainsRune(target, 0) {
+		return ""
+	}
+	return target
+}
+
+// Cwd forwards to the wrapped session so lifecycle bookkeeping never hides the
+// kernel-reported directory.
+func (s *trackedSession) Cwd() (string, error) {
+	if reporter, ok := s.Session.(CwdReporter); ok {
+		return reporter.Cwd()
+	}
+	return "", errors.New("session does not report its working directory")
+}
+
 // startShell launches the login shell inside a new PTY. startDir is the
 // optionally persisted last session directory; it wins over HOME when valid so
 // a reconnect or re-login resumes where the previous session ended.
-func startShell(shell string, environment []string, persistHistory bool, startDir string) (*os.File, *exec.Cmd, error) {
+func startShell(shell string, environment []string, persistHistory bool, startDir, runtimeDirectory string) (*os.File, *exec.Cmd, error) {
 	shell = strings.TrimSpace(shell)
 	if shell == "" {
 		shell = os.Getenv("SHELL")
@@ -90,8 +168,18 @@ func startShell(shell string, environment []string, persistHistory bool, startDi
 	if _, err := os.Stat(shell); err != nil {
 		shell = "/bin/sh"
 	}
-	command := exec.Command(shell)
-	command.Env = safeShellEnvironment(environment, shell, persistHistory)
+	// Shell integration is injected without editing the user's rc files: bash
+	// gets a generated --rcfile that sources the original one, zsh gets a
+	// ZDOTDIR shim. It only turns on OSC 7 reporting; no probe command is ever
+	// typed on the user's behalf.
+	family := shellFamily(shell)
+	var scriptPath string
+	var integrationEnv []string
+	if !ShellIntegrationDisabled(environment) {
+		scriptPath, integrationEnv = writeShellIntegration(runtimeDirectory, shell)
+	}
+	command := exec.Command(shell, integrationArgs(family, scriptPath, environment)...)
+	command.Env = safeShellEnvironment(environment, shell, persistHistory, scriptPath, integrationEnv)
 	command.Dir = resolveShellStartDir(startDir, environmentValue(environment, "HOME"))
 	ptyFile, err := pty.Start(command)
 	if err != nil {
@@ -133,7 +221,7 @@ func newPTYSession(ptyFile *os.File, command *exec.Cmd) *ptySession {
 // safeShellEnvironment prevents application credentials or deployment
 // controls from leaking into an interactive shell. It receives only
 // conventional locale and identity values, regardless of the PTY backend.
-func safeShellEnvironment(environment []string, shell string, persistHistory bool) []string {
+func safeShellEnvironment(environment []string, shell string, persistHistory bool, integrationScript string, integrationEnv []string) []string {
 	allowed := map[string]struct{}{
 		"HOME": {}, "USER": {}, "LOGNAME": {}, "PATH": {}, "LANG": {}, "TZ": {},
 	}
@@ -150,6 +238,26 @@ func safeShellEnvironment(environment []string, shell string, persistHistory boo
 	values["TERM"] = "xterm-256color"
 	values["COLORTERM"] = "truecolor"
 	values["SHELL"] = shell
+	// Hand the shell integration shim the original rc locations before the
+	// generated file replaces the shell's startup path.
+	if integrationScript != "" {
+		switch shellFamily(shell) {
+		case "bash":
+			values["HX_ORIGINAL_BASHRC"] = bashOriginalRc(environment)
+		case "zsh":
+			if dir := environmentValue(environment, "ZDOTDIR"); dir != "" {
+				values["HX_ORIGINAL_ZDOTDIR"] = dir
+			} else if home := environmentValue(environment, "HOME"); home != "" {
+				values["HX_ORIGINAL_ZDOTDIR"] = home
+			}
+		}
+	}
+	for _, entry := range integrationEnv {
+		name, value, found := strings.Cut(entry, "=")
+		if found && name != "" {
+			values[name] = value
+		}
+	}
 	if persistHistory {
 		if strings.Contains(shell, "zsh") {
 			if home := environmentValue(environment, "HOME"); home != "" {
@@ -165,7 +273,11 @@ func safeShellEnvironment(environment []string, shell string, persistHistory boo
 		values["HISTFILE"] = "/dev/null"
 	}
 	result := make([]string, 0, len(values))
-	for _, name := range []string{"HOME", "USER", "LOGNAME", "PATH", "LANG", "TZ", "TERM", "COLORTERM", "SHELL", "HISTFILE", "SAVEHIST", "HISTSIZE"} {
+	for _, name := range []string{
+		"HOME", "USER", "LOGNAME", "PATH", "LANG", "TZ", "TERM", "COLORTERM", "SHELL",
+		"HISTFILE", "SAVEHIST", "HISTSIZE", "HISTCONTROL", "HIST_IGNORE_SPACE", "ZDOTDIR",
+		"HX_ORIGINAL_BASHRC", "HX_ORIGINAL_ZDOTDIR",
+	} {
 		if value, ok := values[name]; ok {
 			result = append(result, name+"="+value)
 			delete(values, name)
@@ -175,6 +287,38 @@ func safeShellEnvironment(environment []string, shell string, persistHistory boo
 		result = append(result, name+"="+value)
 	}
 	return result
+}
+
+// integrationArgs picks the shell flags that source the generated fragrment
+// while preserving the user's own interactive configuration.
+func integrationArgs(family, scriptPath string, environment []string) []string {
+	if scriptPath == "" {
+		return nil
+	}
+	switch family {
+	case "bash":
+		// --rcfile replaces ~/.bashrc, so the generated file sources the
+		// original first (HX_ORIGINAL_BASHRC). Without a readable original the
+		// shell still starts with the OSC 7 hook installed.
+		return []string{"--rcfile", scriptPath}
+	default:
+		return nil
+	}
+}
+
+// bashOriginalRc resolves the rc file an interactive bash would have read, so
+// the generated shim can source it before installing the OSC 7 hook.
+func bashOriginalRc(environment []string) string {
+	if home := environmentValue(environment, "HOME"); home != "" {
+		candidate := filepath.Join(home, ".bashrc")
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate
+		}
+	}
+	if info, err := os.Stat("/etc/bash.bashrc"); err == nil && info.Mode().IsRegular() {
+		return "/etc/bash.bashrc"
+	}
+	return ""
 }
 
 func environmentValue(environment []string, target string) string {

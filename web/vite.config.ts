@@ -15,6 +15,40 @@ export default defineConfig(({ mode }) => {
         "@": path.resolve(process.cwd(), "src"),
       },
     },
+    build: {
+      // Vite 8 builds with rolldown, which replaces Rollup's `manualChunks`
+      // with `output.codeSplitting.groups`. Pinning the three shared vendor
+      // families into their own chunks keeps the eager entry from carrying
+      // them and lets a page chunk reuse a still-cached vendor chunk instead
+      // of re-downloading shared deps.
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              // React core + its scheduler. Highest priority so nothing else
+              // can claim these modules.
+              { name: "vendor-react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 30 },
+              // Radix primitives and their floating-ui / aria helper deps.
+              { name: "vendor-radix", test: /node_modules[\\/](@radix-ui|@floating-ui|aria-hidden|react-remove-scroll|react-remove-scroll-bar|react-style-singleton|use-callback-ref|use-sidecar|get-nonce|detect-node-es)[\\/]/, priority: 20 },
+              // Icon set: large and shared by nearly every page, so it is a
+              // dedicated cacheable chunk.
+              { name: "vendor-icons", test: /node_modules[\\/]lucide-react[\\/]/, priority: 20 },
+              // Everything else from node_modules (clsx, tailwind-merge,
+              // class-variance-authority, ...) in one long-lived vendor chunk.
+              // xterm is excluded on purpose: it must stay reachable only from
+              // the lazily imported terminal page, otherwise this chunk becomes
+              // an eager dependency of the entry and is preloaded on first
+              // paint for every visit.
+              {
+                name: "vendor",
+                test: (id: string) => id.includes("node_modules") && !id.includes("xterm"),
+                priority: 1,
+              },
+            ],
+          },
+        },
+      },
+    },
     server: {
       strictPort: true,
       proxy: {

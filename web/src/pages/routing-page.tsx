@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { strategyMeta } from "@/lib/proxy-groups"
-import type { DataPlaneStatus, ListenerKind, ListenerRecord, NodeRecord, ProxyGroup, ProxyGroupStrategy, ResidentialChannel, RoutingAction, RoutingRulesConfig, RoutingRuleSet, Subscription } from "@/lib/types"
+import type { DataPlaneStatus, ListenerKind, ListenerRecord, NodeRecord, ProxyGroup, ProxyGroupStrategy, ResidentialChannel, RoutingAction, RoutingRulesConfig, RoutingRuleSet, SharedInboundSettings, Subscription } from "@/lib/types"
 import { cn, formatDate } from "@/lib/utils"
 
 interface RoutingPageProps {
@@ -41,6 +41,9 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
   const [residentialChannels, setResidentialChannels] = useState<ResidentialChannel[]>([])
   const [status, setStatus] = useState<DataPlaneStatus | null>(null)
   const [routingRules, setRoutingRules] = useState<RoutingRulesConfig>({ rule_sets: [] })
+  // Shared-inbound settings decide whether a new service opens its own port or
+  // joins the one-client entry points; the banner and the create form read it.
+  const [sharedInbound, setSharedInbound] = useState<SharedInboundSettings | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<{ listener: ListenerRecord; group?: ProxyGroup } | null>(null)
@@ -50,16 +53,21 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [nodeResult, subscriptionResult, groupResult, listenerResult, statusResult, ruleResult, residentialResult] = await Promise.all([
-        api.listNodes(), api.listSubscriptions(), api.listProxyGroups(), api.listListeners(), api.dataPlaneStatus(), api.routingRules(), api.listResidentialChannels(),
+      const [nodeResult, subscriptionResult, groupResult, listenerResult, statusResult, ruleResult, residentialResult, settingsResult] = await Promise.all([
+        api.listNodes(), api.listSubscriptions(), api.listProxyGroups(), api.listListeners(), api.dataPlaneStatus(), api.routingRules(), api.listResidentialChannels(), api.globalSettings(),
       ])
       setNodes(nodeResult.items.filter((item) => !["disabled", "retired"].includes(item.lifecycle_state)))
       setSubscriptions(subscriptionResult.items.filter((item) => item.enabled))
       setGroups(groupResult.items)
-      setListeners(listenerResult.items)
+      // Members of a shared entry point keep their own row (their credential
+      // and group live there) and are listed as services like any other. The
+      // aggregate carrier row is filtered out: it holds no credential and no
+      // group of its own, so it must never be editable or deletable.
+      setListeners(listenerResult.items.filter((item) => !item.shared_inbound_aggregate))
       setResidentialChannels(residentialResult.items)
       setStatus(statusResult)
       setRoutingRules(ruleResult)
+      setSharedInbound(settingsResult.shared_inbound ?? null)
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "加载代理服务失败", "error")
     } finally {
@@ -120,6 +128,15 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
 
       <div className="shrink-0"><DataPlaneBand status={status} loading={loading} /></div>
 
+      {sharedInbound?.mode === "shared" && (
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-info-border bg-info-muted px-3 py-2 text-xs text-info-foreground">
+          <Cable className="size-3.5 shrink-0" />
+          <span className="font-medium">共享入口已启用</span>
+          <span className="text-muted-foreground">{`全部 HTTP / SOCKS5 / Mixed 服务共用本机 ${sharedInbound.mixed_bind_address || "0.0.0.0"}:${sharedInbound.mixed_port || 7890}，全部 VLESS / VMess / Trojan 服务共用内部端口 ${sharedInbound.ws_port || 7891}`}{sharedInbound.ws_public_host ? `（公网 ${sharedInbound.ws_public_host}:${sharedInbound.ws_public_port || 443}）` : "（未配置公网域名，订阅暂不可用）"}。</span>
+          <span className="text-muted-foreground">1 个客户端进程即可覆盖所有代理组与协议；在「全局配置 → 性能与运行」可关闭。</span>
+        </div>
+      )}
+
       <div className="grid gap-4 lg:min-h-0 lg:flex-1 xl:grid-cols-[minmax(0,1.2fr)_minmax(390px,0.8fr)]">
         <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card">
           <PanelHeader title="服务列表" description="入口与节点策略保持一一对应" count={listeners.length} />
@@ -129,7 +146,7 @@ export function RoutingPage({ onNotice }: RoutingPageProps) {
             return <ServiceRow key={listener.id} listener={listener} group={group} groups={groups} routingRules={routingRules} nodes={serviceNodes.get(listener.id) ?? []} subscriptions={subscriptions} allNodes={nodes} residential={residential} expanded={expanded.has(listener.id)} editing={editing === listener.id} onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(listener.id)) next.delete(listener.id); else next.add(listener.id); return next })} onEdit={() => { setExpanded((current) => new Set(current).add(listener.id)); setEditing(listener.id) }} onCloseEdit={() => setEditing(null)} onRoutingChanged={setRoutingRules} onChanged={async () => { setEditing(null); await load() }} onDelete={() => setDeleteTarget({ listener, group })} onNotice={onNotice} />
           })}</div>}
         </section>
-        <CreateProxyServiceForm nodes={nodes} subscriptions={subscriptions} onCreated={load} onNotice={onNotice} />
+        <CreateProxyServiceForm nodes={nodes} subscriptions={subscriptions} sharedInbound={sharedInbound} onCreated={load} onNotice={onNotice} />
       </div>
 
       <ConfirmDialog open={deleteTarget !== null} title="删除代理服务" description={`将关闭 ${deleteTarget?.listener.bind_address ?? ""}:${deleteTarget?.listener.port ?? ""}，并删除其专属节点策略。`} busy={busy} onCancel={() => setDeleteTarget(null)} onConfirm={() => void removeService()} />
@@ -226,7 +243,7 @@ function ServiceRow({ listener, group, groups, routingRules, nodes, subscription
       <div className="flex min-w-0 items-start gap-2.5">
         <Button variant="ghost" size="icon" className="size-7" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={expanded ? "收起节点" : "展开节点"}>{expanded ? <ChevronDown /> : <ChevronRight />}</Button>
         <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground"><Cable className="size-4" /></div>
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{residential?.name || group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge>{residential && <Badge variant="outline">住宅会话</Badge>}<Badge variant={healthyCount === memberCount && memberCount > 0 ? "success" : "warning"}>{healthyCount}/{memberCount} 可用</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">本机 {listener.bind_address}:{listener.port}{endpointAddress(listener, publicEndpoint) ? ` · 公网 ${endpointAddress(listener, publicEndpoint)}` : " · 未配置公网端点"}</div></div>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium">{residential?.name || group?.name || listener.name}</span><Badge variant="outline">{listener.kind.toUpperCase()}</Badge>{listener.shared_inbound && <Badge variant="outline">共享入口</Badge>}{residential && <Badge variant="outline">住宅会话</Badge>}<Badge variant={healthyCount === memberCount && memberCount > 0 ? "success" : "warning"}>{healthyCount}/{memberCount} 可用</Badge><Badge variant={listener.auth_configured ? "warning" : "secondary"}>{listener.auth_configured ? "账号认证" : "无认证"}</Badge></div><div className="mt-1 font-mono text-[11px] text-muted-foreground">本机 {listener.bind_address}:{listener.port}{endpointAddress(listener, publicEndpoint) ? ` · 公网 ${endpointAddress(listener, publicEndpoint)}` : " · 未配置公网端点"}</div></div>
       </div>
       <div className="min-w-0"><div className="flex items-center gap-1.5 text-xs font-medium"><Network className="size-3.5" />{group ? strategyLabel(group.strategy) : "组已缺失"}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={sourceText}>{sourceText}</div></div>
       <div className="w-full lg:w-[200px]">
@@ -306,7 +323,10 @@ function ServiceMember({ name, protocol, state, latency, source }: { name: strin
   return <div className="grid gap-2 border-b px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[minmax(180px,1fr)_90px_110px_90px_minmax(100px,0.7fr)] sm:items-center"><span className="truncate font-medium" title={name}>{name}</span><Badge variant="outline">{protocol}</Badge><Badge variant={state === "healthy" || state === "可用" ? "success" : state === "quarantined" ? "warning" : "secondary"}>{state}</Badge><span className="tabular-nums text-muted-foreground">{latency == null ? "未测试" : `${latency} ms`}</span><span className="truncate text-muted-foreground" title={source}>{source}</span></div>
 }
 
-function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: { nodes: NodeRecord[]; subscriptions: Subscription[]; onCreated: () => Promise<void>; onNotice: RoutingPageProps["onNotice"] }) {
+function CreateProxyServiceForm({ nodes, subscriptions, sharedInbound, onCreated, onNotice }: { nodes: NodeRecord[]; subscriptions: Subscription[]; sharedInbound: SharedInboundSettings | null; onCreated: () => Promise<void>; onNotice: RoutingPageProps["onNotice"] }) {
+  // In shared mode the bind address and port belong to the aggregate listener,
+  // so the form shows them read-only and the backend derives the real endpoint.
+  const shared = sharedInbound?.mode === "shared"
   const [name, setName] = useState("")
   const [strategy, setStrategy] = useState<ProxyGroupStrategy>("manual")
   const [sourceMode, setSourceMode] = useState<"direct" | "rule" | "manual">("direct")
@@ -358,7 +378,7 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
       })
       setName("")
       await onCreated()
-      onNotice(`代理服务已启动：${bindAddress}:${port}`)
+      onNotice(shared ? `代理服务已加入共享入口：${username.trim()}` : `代理服务已启动：${bindAddress}:${port}`)
     } catch (error) { onNotice(error instanceof Error ? error.message : "创建代理服务失败", "error") }
     finally { setSubmitting(false) }
   }
@@ -393,7 +413,7 @@ function CreateProxyServiceForm({ nodes, subscriptions, onCreated, onNotice }: {
           <div className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Gauge className="size-4 text-info" />当前指标预计命中 {estimated} 个节点</div>
         </> : <Field label={`固定节点（已选 ${selectedNodes.length}）`}><CheckList items={nodes.map((item) => ({ id: item.id, label: `${item.display_name} · ${item.last_latency_ms == null ? "未测试" : `${item.last_latency_ms}ms`}` }))} selected={selectedNodes} onChange={setSelectedNodes} empty="暂无活动节点" /></Field>}
         <Field label="出站策略"><ChipSet values={strategies} current={strategy} onChange={setStrategy} /></Field>
-        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field><div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced} required />{!advanced && nonLoopback && !authEnabled && <span className="block text-xs text-destructive">非环回监听地址（如 0.0.0.0）必须启用用户名密码认证</span>}{!advanced && nonLoopback && authEnabled && <span className="block text-xs text-muted-foreground">监听 0.0.0.0 供内网 / Docker 容器访问，公网由防火墙保护</span>}</Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path（固定前缀 /__hx-proxy__/）"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/__hx-proxy__/hx-proxy" required /></Field></div>}{!advanced && <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="公网主机名 / IP（可选）"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="VPS 公网地址" /></Field><Field label="公网端口"><Input type="number" min={1} max={65535} value={publicPort} onChange={(event) => setPublicPort(event.target.value)} placeholder={String(port)} /></Field></div>}{!advanced && publicHost.trim() && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={publicTLS} onCheckedChange={(value) => setPublicTLS(value === true)} />公网 HTTP 端点使用 TLS</label>}{!advanced && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={authEnabled} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用用户名密码认证</label>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
+        <div className="border-t pt-3"><div className="mb-3 text-xs font-semibold">入口与登录</div><div className="space-y-3"><Field label="入口协议"><ChipSet values={kinds} current={kind} onChange={changeKind} /></Field>{shared ? <div className="flex items-start gap-2 rounded-md border border-info-border bg-info-muted px-3 py-2 text-xs text-info-foreground"><Cable className="mt-0.5 size-3.5 shrink-0" /><span>共享入口模式：本服务将复用现有入口（{advanced ? `VLESS / VMess / Trojan 内部端口 ${sharedInbound?.ws_port || 7891}` : `Mixed 端口 ${sharedInbound?.mixed_port || 7890}`}），按用户名自动分流，不会再占用新的端口。</span></div> : null}<div className="grid grid-cols-[1fr_110px] gap-2"><Field label="绑定 IP"><Input value={bindAddress} onChange={(event) => setBindAddress(event.target.value)} disabled={advanced || shared} required />{!advanced && nonLoopback && !authEnabled && <span className="block text-xs text-destructive">非环回监听地址（如 0.0.0.0）必须启用用户名密码认证</span>}{!advanced && nonLoopback && authEnabled && <span className="block text-xs text-muted-foreground">监听 0.0.0.0 供内网 / Docker 容器访问，公网由防火墙保护</span>}</Field><Field label="本地端口"><Input type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} disabled={shared} required /></Field></div>{advanced && <div className="grid grid-cols-[1fr_140px] gap-2"><Field label="Cloudflare 域名"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="proxy.example.com" required /></Field><Field label="WebSocket Path（固定前缀 /__hx-proxy__/）"><Input value={wsPath} onChange={(event) => setWSPath(event.target.value)} placeholder="/__hx-proxy__/hx-proxy" required /></Field></div>}{!advanced && <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="公网主机名 / IP（可选）"><Input value={publicHost} onChange={(event) => setPublicHost(event.target.value)} placeholder="VPS 公网地址" /></Field><Field label="公网端口"><Input type="number" min={1} max={65535} value={publicPort} onChange={(event) => setPublicPort(event.target.value)} placeholder={String(port)} /></Field></div>}{!advanced && publicHost.trim() && <label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={publicTLS} onCheckedChange={(value) => setPublicTLS(value === true)} />公网 HTTP 端点使用 TLS</label>}{!advanced && <><label className="flex items-center gap-2 rounded-md border bg-muted/60 px-3 py-2 text-xs"><Checkbox checked={authEnabled || shared} disabled={shared} onCheckedChange={(value) => setAuthEnabled(value === true)} />启用账号认证</label>{shared && <p className="text-xs text-muted-foreground">共享入口必须启用账号认证：Mihomo 依靠登录名把每个服务分流到它自己的代理组。</p>}</>}{authEnabled && <div className="grid grid-cols-2 gap-2"><Field label={advanced ? "用户备注" : "用户名"}><Input value={username} onChange={(event) => setUsername(event.target.value)} required /></Field><Field label={kind === "vless" || kind === "vmess" ? "UUID" : "密码"}><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field></div>}</div></div>
         <Button type="submit" disabled={submitting || !name.trim() || !validSource || (nonLoopback && !authEnabled) || (authEnabled && (!username.trim() || !password)) || (advanced && (!publicHost.trim() || !wsPath.startsWith("/")))} className="w-full">{submitting ? <LoaderCircle className="animate-spin" /> : <Plus />}创建并启动</Button>
       </div>
     </form>

@@ -21,6 +21,8 @@ type remoteSession struct {
 	readMutex     sync.Mutex
 	readCallMutex sync.Mutex
 	readErr       error
+	cwd           string
+	cwdMutex      sync.Mutex
 	pending       []byte
 	output        chan []byte
 	stop          chan struct{}
@@ -101,6 +103,10 @@ func (s *remoteSession) readLoop() {
 		switch kind {
 		case frameReady:
 			s.finishReady(nil)
+		case frameCwd:
+			s.cwdMutex.Lock()
+			s.cwd = string(payload)
+			s.cwdMutex.Unlock()
 		case frameMode:
 			if len(payload) != 2 {
 				s.setReadError(errors.New("invalid terminal mode frame"))
@@ -183,6 +189,18 @@ func (s *remoteSession) Resize(columns, rows int) error {
 	binary.BigEndian.PutUint32(payload[:4], uint32(columns))
 	binary.BigEndian.PutUint32(payload[4:], uint32(rows))
 	return s.send(frameResize, payload)
+}
+
+// Cwd reports the directory the helper read from the shell process. It lets
+// the control plane follow the root shell without asking the shell to run a
+// command, which is what kept polluting the administrator's history.
+func (s *remoteSession) Cwd() (string, error) {
+	s.cwdMutex.Lock()
+	defer s.cwdMutex.Unlock()
+	if s.cwd == "" {
+		return "", errors.New("shell directory is not known yet")
+	}
+	return s.cwd, nil
 }
 
 func (s *remoteSession) Close(_ string) {

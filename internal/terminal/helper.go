@@ -32,6 +32,10 @@ const (
 	frameMode       byte = 13
 	frameError      byte = 14
 	frameExecResult byte = 15
+	// frameCwd carries the shell's kernel-reported working directory so the
+	// control plane can follow it without typing a probe command into the
+	// user's session. It only flows helper -> control plane.
+	frameCwd byte = 16
 
 	// Dedicated helper connections for file operations. Each operation uses
 	// one connection: the control plane sends a request frame, the helper
@@ -87,6 +91,10 @@ type HelperConfig struct {
 	MaxSessions    int
 	UpdaterPath    string
 	PersistHistory bool
+	// RuntimeDirectory is where the generated shell-integration startup files
+	// are written. The helper runs as root, so this must be a directory the
+	// unprivileged control plane and the shell can both read.
+	RuntimeDirectory string
 }
 
 // RunHelper serves root PTYs until ctx is cancelled. It is deliberately kept
@@ -311,7 +319,7 @@ func serveHelperConnection(ctx context.Context, connection net.Conn, config Help
 			return
 		}
 		defer func() { <-ptySem }()
-		serveHelperPTYSession(ctx, connection, config.Shell, config.PersistHistory, payload)
+		serveHelperPTYSession(ctx, connection, config.Shell, config.PersistHistory, config.RuntimeDirectory, payload)
 		return
 	default:
 		_ = connection.Close()
@@ -348,8 +356,8 @@ func decodeOpenCwd(payload []byte) string {
 	return request.Cwd
 }
 
-func serveHelperPTYSession(ctx context.Context, connection net.Conn, shell string, persistHistory bool, openPayload []byte) {
-	ptyFile, command, err := startShell(shell, os.Environ(), persistHistory, decodeOpenCwd(openPayload))
+func serveHelperPTYSession(ctx context.Context, connection net.Conn, shell string, persistHistory bool, runtimeDirectory string, openPayload []byte) {
+	ptyFile, command, err := startShell(shell, os.Environ(), persistHistory, decodeOpenCwd(openPayload), runtimeDirectory)
 	if err != nil {
 		_ = writeFrame(connection, frameError, []byte("start privileged terminal: "+err.Error()))
 		_ = connection.Close()
@@ -374,6 +382,9 @@ func serveHelperPTYSession(ctx context.Context, connection net.Conn, shell strin
 			count, readErr := session.Read(buffer)
 			if count > 0 {
 				if err := writer.mode(session); err != nil {
+					return
+				}
+				if err := writer.cwd(session); err != nil {
 					return
 				}
 				if err := writer.send(frameOutput, buffer[:count]); err != nil {
@@ -419,6 +430,28 @@ func serveHelperPTYSession(ctx context.Context, connection net.Conn, shell strin
 type helperWriter struct {
 	connection net.Conn
 	mutex      sync.Mutex
+	lastCwd    string
+}
+
+// cwd forwards the shell's working directory to the control plane when it
+// changed. It is a pure read of /proc/<pid>/cwd on the privileged side: the
+// root shell's directory is not readable by the sandboxed control plane, and
+// no command is ever written into the PTY to discover it.
+func (w *helperWriter) cwd(session *ptySession) error {
+	current, err := session.Cwd()
+	if err != nil || current == "" {
+		return nil
+	}
+	w.mutex.Lock()
+	changed := current != w.lastCwd
+	if changed {
+		w.lastCwd = current
+	}
+	w.mutex.Unlock()
+	if !changed {
+		return nil
+	}
+	return w.send(frameCwd, []byte(current))
 }
 
 func (w *helperWriter) send(kind byte, payload []byte) error {

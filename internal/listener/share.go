@@ -144,6 +144,21 @@ func (s *Service) exportRecord(
 		}
 		transport.WSPath = normalizedPath
 	}
+	// A member of a shared inbound publishes the aggregate entry point: its own
+	// recorded bind address is the internal Mihomo port and must never leak
+	// into a subscription.
+	if owner := SharedInboundOwnerOf(record); owner != "" && s.sharedEndpoints != nil {
+		spec, ok := s.sharedEndpoints()
+		if !ok {
+			return ShareExport{}, ErrShareDisabled
+		}
+		aggregateEndpoint, sharedHost, sharedPort, reachable := ResolveSharedEndpoint(spec, record, requestHost)
+		if !reachable {
+			return ShareExport{}, ErrShareDisabled
+		}
+		endpoint = aggregateEndpoint
+		return NewShareExport(record.Name, record.Kind, sharedHost, sharedPort, nodes, transport, endpoint), nil
+	}
 	host := exportHost(record.BindAddress, requestHost)
 	port := record.Port
 	if endpoint.Host == "" && isLoopbackBind(record.BindAddress) {

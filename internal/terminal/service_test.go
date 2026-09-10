@@ -222,7 +222,7 @@ func TestSafeShellEnvironmentDropsApplicationSecrets(t *testing.T) {
 		"HX_PROXYGROUP_MASTER_KEY=must-not-leak",
 		"DATABASE_URL=sqlite-secret",
 		"AUTHORIZATION=Bearer-secret",
-	}, "/bin/sh", false)
+	}, "/bin/sh", false, "", nil)
 	joined := strings.Join(environment, "\n")
 	for _, secret := range []string{"must-not-leak", "sqlite-secret", "Bearer-secret", "HX_PROXYGROUP_MASTER_KEY", "DATABASE_URL", "AUTHORIZATION"} {
 		if strings.Contains(joined, secret) {
@@ -240,7 +240,7 @@ func TestStartShellResumesRequestedDirectory(t *testing.T) {
 	home := t.TempDir()
 	startDir := t.TempDir()
 
-	file, command, err := startShell("/bin/sh", []string{"HOME=" + home}, false, startDir)
+	file, command, err := startShell("/bin/sh", []string{"HOME=" + home}, false, startDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestStartShellResumesRequestedDirectory(t *testing.T) {
 	// A vanished or relative start dir must fall back to HOME, never be
 	// passed through to the shell.
 	for _, invalid := range []string{filepath.Join(startDir, "does-not-exist"), "relative/dir", "", "/tmp/\x00bad"} {
-		file, command, err = startShell("/bin/sh", []string{"HOME=" + home}, false, invalid)
+		file, command, err = startShell("/bin/sh", []string{"HOME=" + home}, false, invalid, "")
 		if err != nil {
 			t.Fatalf("startShell(%q): %v", invalid, err)
 		}
@@ -372,19 +372,19 @@ func TestSafeShellEnvironmentPersistsHistory(t *testing.T) {
 		"PATH=/usr/bin:/bin",
 	}
 	// Bash keeps its default ~/.bash_history when history is enabled.
-	joined := strings.Join(safeShellEnvironment(base, "/bin/bash", true), "\n")
+	joined := strings.Join(safeShellEnvironment(base, "/bin/bash", true, "", nil), "\n")
 	if strings.Contains(joined, "HISTFILE=/dev/null") {
 		t.Fatalf("enabled history must not point HISTFILE at /dev/null: %s", joined)
 	}
 	// zsh needs an explicit HISTFILE plus SAVEHIST to persist history.
-	joined = strings.Join(safeShellEnvironment(base, "/bin/zsh", true), "\n")
+	joined = strings.Join(safeShellEnvironment(base, "/bin/zsh", true, "", nil), "\n")
 	for _, expected := range []string{"HISTFILE=/srv/hx/.zsh_history", "SAVEHIST=10000", "HISTSIZE=2000"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("zsh history environment missing %q: %s", expected, joined)
 		}
 	}
 	// The no-history lockdown is preserved when explicitly disabled.
-	joined = strings.Join(safeShellEnvironment(base, "/bin/zsh", false), "\n")
+	joined = strings.Join(safeShellEnvironment(base, "/bin/zsh", false, "", nil), "\n")
 	if !strings.Contains(joined, "HISTFILE=/dev/null") {
 		t.Fatalf("disabled history must keep HISTFILE=/dev/null: %s", joined)
 	}

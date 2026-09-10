@@ -30,6 +30,10 @@ type Repository interface {
 	RotateListenerShareToken(context.Context, string, string) (store.ListenerRecord, error)
 	DeleteListener(context.Context, string, int) error
 	GetProxyGroup(context.Context, string) (store.ProxyGroupRecord, error)
+	// ListProxyGroups anchors a shared-inbound listener to an enabled group.
+	// Every member is routed by an IN-USER rule, so the anchor is only a
+	// schema-valid reference and never carries traffic of its own.
+	ListProxyGroups(context.Context) ([]store.ProxyGroupRecord, error)
 }
 
 type Cipher interface {
@@ -74,10 +78,20 @@ type Listener struct {
 	Transport      Transport      `json:"transport"`
 	PublicEndpoint PublicEndpoint `json:"public_endpoint"`
 	SharePath      string         `json:"share_path,omitempty"`
-	Enabled        bool           `json:"enabled"`
-	Version        int            `json:"version"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	// SharedInbound marks this listener as a member of an aggregate entry
+	// point ("standard" for the Mixed family, "websocket" for the
+	// VLESS/VMess/Trojan family). Empty keeps the historical dedicated port
+	// behaviour. Members still own their own credential, protocol and group.
+	SharedInbound string `json:"shared_inbound,omitempty"`
+	// SharedInboundAggregate marks the single carrier row of an aggregate
+	// family. It is a control-plane resource, not a service: it holds no
+	// credential and no group of its own, so the UI must not offer it for
+	// editing or deletion.
+	SharedInboundAggregate bool      `json:"shared_inbound_aggregate,omitempty"`
+	Enabled                bool      `json:"enabled"`
+	Version                int       `json:"version"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type CreateRequest struct {
@@ -89,7 +103,9 @@ type CreateRequest struct {
 	Auth           *Auth          `json:"auth,omitempty"`
 	Transport      Transport      `json:"transport,omitempty"`
 	PublicEndpoint PublicEndpoint `json:"public_endpoint,omitempty"`
-	Enabled        *bool          `json:"enabled,omitempty"`
+	// SharedInbound marks the listener as a member of an aggregate entry point.
+	SharedInbound string `json:"shared_inbound,omitempty"`
+	Enabled       *bool  `json:"enabled,omitempty"`
 }
 
 type UpdateRequest struct {
@@ -103,7 +119,9 @@ type UpdateRequest struct {
 	Transport      Transport      `json:"transport,omitempty"`
 	PublicEndpoint PublicEndpoint `json:"public_endpoint,omitempty"`
 	ClearAuth      bool           `json:"clear_auth,omitempty"`
-	Enabled        bool           `json:"enabled"`
+	// SharedInbound marks the listener as a member of an aggregate entry point.
+	SharedInbound string `json:"shared_inbound,omitempty"`
+	Enabled       bool   `json:"enabled"`
 }
 
 type Service struct {
@@ -111,6 +129,16 @@ type Service struct {
 	cipher     Cipher
 	reconciler Reconciler
 	now        func() time.Time
+	// sharedEndpoints resolves the shared-inbound configuration at export
+	// time. It is optional so packages that only use dedicated listeners can
+	// skip it.
+	sharedEndpoints SharedEndpointProvider
+}
+
+// SetSharedEndpointProvider installs the resolver used by subscription export
+// to advertise the aggregate entry point instead of an internal port.
+func (s *Service) SetSharedEndpointProvider(provider SharedEndpointProvider) {
+	s.sharedEndpoints = provider
 }
 
 func NewService(repository Repository, cipher Cipher, reconciler Reconciler) (*Service, error) {
@@ -139,6 +167,10 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Listener, 
 	if err != nil {
 		return Listener{}, err
 	}
+	sharedInbound, err := normalizeSharedInboundOwner(request.SharedInbound)
+	if err != nil {
+		return Listener{}, err
+	}
 	shareToken, err := newShareToken()
 	if err != nil {
 		return Listener{}, err
@@ -156,6 +188,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (Listener, 
 		TransportJSON:       normalized.TransportJSON,
 		PublicEndpointJSON:  normalized.PublicEndpointJSON,
 		ShareToken:          shareToken,
+		SharedInbound:       sharedInbound,
 		Enabled:             normalized.Enabled,
 		Version:             1,
 		CreatedAt:           now,
@@ -207,6 +240,10 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	if err != nil {
 		return Listener{}, err
 	}
+	sharedInbound, err := normalizeSharedInboundOwner(request.SharedInbound)
+	if err != nil {
+		return Listener{}, err
+	}
 	// Capture the pre-update record (with a defensive copy of the auth
 	// ciphertext slice) so a data plane apply failure can restore it.
 	original := existing
@@ -222,6 +259,7 @@ func (s *Service) Update(ctx context.Context, id string, request UpdateRequest) 
 	existing.AuthConfigEncrypted = normalized.AuthConfigEncrypted
 	existing.TransportJSON = normalized.TransportJSON
 	existing.PublicEndpointJSON = normalized.PublicEndpointJSON
+	existing.SharedInbound = sharedInbound
 	existing.Enabled = normalized.Enabled
 	existing.UpdatedAt = s.now().UTC()
 	updated, err := s.repository.UpdateListener(ctx, existing, request.Version)
@@ -384,20 +422,22 @@ func fromRecord(record store.ListenerRecord) Listener {
 		}
 	}
 	return Listener{
-		ID:             record.ID,
-		Name:           record.Name,
-		Kind:           record.Kind,
-		BindAddress:    record.BindAddress,
-		Port:           record.Port,
-		ProxyGroupID:   record.ProxyGroupID,
-		AuthConfigured: record.AuthMode != "none" && len(record.AuthConfigEncrypted) > 0,
-		Transport:      transport,
-		PublicEndpoint: publicEndpoint,
-		SharePath:      sharePath,
-		Enabled:        record.Enabled,
-		Version:        record.Version,
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
+		ID:                     record.ID,
+		Name:                   record.Name,
+		Kind:                   record.Kind,
+		BindAddress:            record.BindAddress,
+		Port:                   record.Port,
+		ProxyGroupID:           record.ProxyGroupID,
+		AuthConfigured:         record.AuthMode != "none" && len(record.AuthConfigEncrypted) > 0,
+		Transport:              transport,
+		PublicEndpoint:         publicEndpoint,
+		SharePath:              sharePath,
+		SharedInbound:          record.SharedInbound,
+		SharedInboundAggregate: IsSharedInboundAggregate(record),
+		Enabled:                record.Enabled,
+		Version:                record.Version,
+		CreatedAt:              record.CreatedAt,
+		UpdatedAt:              record.UpdatedAt,
 	}
 }
 
@@ -547,6 +587,11 @@ func validPublicHost(host string) bool {
 	return true
 }
 
+// ValidUUID reports whether a value is a canonical UUID. The data-plane
+// compiler validates shared-inbound credentials with the same rule the service
+// enforces at write time.
+func ValidUUID(value string) bool { return validUUID(value) }
+
 func validUUID(value string) bool {
 	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
 		return false
@@ -564,6 +609,19 @@ func validUUID(value string) bool {
 
 func associatedData(id string) []byte {
 	return []byte("listener:" + id)
+}
+
+// normalizeSharedInboundOwner validates the aggregate family marker so an
+// unknown value can never reach the database CHECK constraint.
+func normalizeSharedInboundOwner(owner string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(owner))
+	if trimmed == "" {
+		return "", nil
+	}
+	if !IsSharedInboundOwner(trimmed) {
+		return "", fmt.Errorf("%w: shared_inbound must be %q, %q, or empty", ErrInvalid, SharedInboundStandardOwner, SharedInboundWebSocketOwner)
+	}
+	return trimmed, nil
 }
 
 func mapStoreError(err error) error {

@@ -825,6 +825,68 @@ ALTER TABLE residential_client_sessions
     ADD COLUMN alloc_version INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		version: 33,
+		name:    "shared_inbound_membership",
+		// 20260910 用户决策：不再为每个代理服务绑定独立端口。共享入口模式下
+		// 多个服务复用同一个 Mixed / WebSocket 监听端口，靠 Mihomo 的 IN-USER
+		// 规则分流；本列标记该 listener 属于哪个聚合家族，成员身份仍由每条
+		// listener 自己的分组、协议与凭据决定。
+		sql: `
+-- Rebuild in the create/copy/drop/rename order so no other table is ever
+-- rewritten to reference a temporary name while the rebuild is in flight.
+CREATE TABLE listeners_next (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    listener_type TEXT NOT NULL,
+    bind_address TEXT NOT NULL,
+    port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    proxy_group_id TEXT NOT NULL REFERENCES proxy_groups(id) ON DELETE RESTRICT,
+    auth_policy_encrypted BLOB,
+    transport_json TEXT NOT NULL DEFAULT '{}',
+    tls_policy_encrypted BLOB,
+    limits_json TEXT NOT NULL DEFAULT '{}',
+    public_endpoint_json TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'mixed'
+        CHECK (kind IN ('http', 'socks', 'mixed', 'vless', 'vmess', 'trojan')),
+    auth_mode TEXT NOT NULL DEFAULT 'none'
+        CHECK (auth_mode IN ('none', 'userpass')),
+    auth_config_encrypted BLOB,
+    share_token TEXT NOT NULL DEFAULT '',
+    shared_inbound TEXT NOT NULL DEFAULT ''
+        CHECK (shared_inbound IN ('', 'standard', 'websocket'))
+) STRICT;
+
+INSERT INTO listeners_next(
+    id, name, listener_type, bind_address, port, proxy_group_id,
+    auth_policy_encrypted, transport_json, tls_policy_encrypted, limits_json,
+    public_endpoint_json, enabled, version, created_at, updated_at, kind,
+    auth_mode, auth_config_encrypted, share_token, shared_inbound
+)
+SELECT
+    id, name, listener_type, bind_address, port, proxy_group_id,
+    auth_policy_encrypted, transport_json, tls_policy_encrypted, limits_json,
+    public_endpoint_json, enabled, version, created_at, updated_at, kind,
+    auth_mode, auth_config_encrypted, share_token, ''
+FROM listeners;
+
+DROP TABLE listeners;
+ALTER TABLE listeners_next RENAME TO listeners;
+
+-- Dedicated listeners still must not collide on one endpoint, but members of
+-- a shared inbound intentionally share theirs, so the constraint becomes
+-- partial.
+CREATE UNIQUE INDEX listeners_dedicated_endpoint
+    ON listeners(bind_address, port)
+    WHERE shared_inbound = '';
+CREATE UNIQUE INDEX listeners_share_token ON listeners(share_token);
+`,
+		disableForeignKeys: true,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

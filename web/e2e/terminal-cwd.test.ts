@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { createTypedCdTracker, detectPwdOutput, normalizePath, parentPath, parseFirstWord, quoteForShell, resolveCdTarget } from "../src/lib/terminal-cwd.ts"
+import { createOsc7Scanner, detectOsc7Directory, normalizePath, parentPath, quoteForShell } from "../src/lib/terminal-cwd.ts"
 
 test("normalizePath collapses slashes and resolves dot segments", () => {
   assert.equal(normalizePath("//home//user/"), "/home/user")
@@ -9,40 +9,6 @@ test("normalizePath collapses slashes and resolves dot segments", () => {
   assert.equal(normalizePath("home/./docs"), "home/docs")
   assert.equal(normalizePath("/"), "/")
   assert.equal(normalizePath(""), ".")
-})
-
-test("resolveCdTarget handles absolute, relative, and ambiguous targets", () => {
-  assert.equal(resolveCdTarget("/home/user", "/tmp"), "/tmp")
-  assert.equal(resolveCdTarget("/home/user", "docs"), "/home/user/docs")
-  assert.equal(resolveCdTarget("/home/user", ".."), "/home")
-  assert.equal(resolveCdTarget("/home/user", ""), null)
-  assert.equal(resolveCdTarget("/home/user", "-"), null)
-  assert.equal(resolveCdTarget("/home/user", "~/docs"), null)
-  assert.equal(resolveCdTarget("/home/user", "$HOME"), null)
-})
-
-test("parseFirstWord handles bare, quoted, and escaped words", () => {
-  assert.equal(parseFirstWord("/tmp"), "/tmp")
-  assert.equal(parseFirstWord("'/tmp/a b'"), "/tmp/a b")
-  assert.equal(parseFirstWord(`'/home/It'\\''s'`), "/home/It's")
-  assert.equal(parseFirstWord('"/tmp/a b"'), "/tmp/a b")
-  assert.equal(parseFirstWord("'/tmp/a b"), null) // unterminated quote
-  assert.equal(parseFirstWord(""), "")
-  assert.equal(parseFirstWord("   "), "")
-})
-
-test("detectPwdOutput extracts the pwd result line", () => {
-  assert.equal(detectPwdOutput("/home/user\r\n"), "/home/user")
-  assert.equal(detectPwdOutput("user@host:~$ pwd\r\n/home/user\r\n"), "/home/user")
-  assert.equal(detectPwdOutput("/home/user$ pwd\r\n/home/user\r\n"), "/home/user")
-  assert.equal(detectPwdOutput("user@host:~$ pwd\r\n/\r\n"), "/")
-  assert.equal(detectPwdOutput("banner text\n"), null)
-  assert.equal(detectPwdOutput(""), null)
-})
-
-test("detectPwdOutput matches a path split across accumulated frames", () => {
-  assert.equal(detectPwdOutput("user@host:~$ pwd\r\n/home/us"), null)
-  assert.equal(detectPwdOutput("user@host:~$ pwd\r\n/home/user\r\n"), "/home/user")
 })
 
 test("quoteForShell wraps paths safely", () => {
@@ -58,85 +24,49 @@ test("parentPath mirrors server filepath.Dir semantics", () => {
   assert.equal(parentPath(""), null)
 })
 
-test("typed cd tracker resolves plain cd lines", () => {
-  let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
-  assert.deepEqual(tracker.feed("c"), { type: "none" })
-  assert.deepEqual(tracker.feed("d"), { type: "none" })
-  assert.deepEqual(tracker.feed(" /tmp"), { type: "none" })
-  const action = tracker.feed("\r")
-  assert.deepEqual(action, { type: "cd", target: "/tmp" })
-  cwd = action.type === "cd" ? action.target : cwd
-
-  assert.deepEqual(tracker.feed("cd docs\r"), { type: "cd", target: "/tmp/docs" })
-  assert.deepEqual(tracker.feed("cd /var/www\r"), { type: "cd", target: "/var/www" })
+// The panel follows the shell through OSC 7 and the server-side /proc read.
+// These tests pin the parser, because a regression here would make the panel
+// silently stop following cd — and the previous "fix" for that was to type pwd
+// into the user's shell, which is exactly what we must never do again.
+test("detectOsc7Directory reads the standard BEL-terminated sequence", () => {
+  assert.equal(detectOsc7Directory("\x1b]7;file://host/home/user\x07"), "/home/user")
+  assert.equal(detectOsc7Directory("prompt\x1b]7;file://host/\x07$ "), "/")
 })
 
-test("typed cd tracker probes for ambiguous targets", () => {
-  let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
-  assert.deepEqual(tracker.feed("cd\r"), { type: "probe" })
-  assert.deepEqual(tracker.feed("cd ~/docs\r"), { type: "probe" })
-  assert.deepEqual(tracker.feed("cd $HOME\r"), { type: "probe" })
-  assert.deepEqual(tracker.feed("cd -\r"), { type: "probe" })
-  assert.deepEqual(tracker.feed("cd /tmp && ls\r"), { type: "probe" })
+test("detectOsc7Directory reads the ESC-backslash terminated sequence", () => {
+  assert.equal(detectOsc7Directory("\x1b]7;file://host/var/www\x1b\\"), "/var/www")
 })
 
-test("typed cd tracker probes when readline rewrote the line", () => {
-  let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
-  // Tab completion: the shell rewrites `cd /va` to the completed path.
-  assert.deepEqual(tracker.feed("cd /va\t\r"), { type: "probe" })
-  // Arrow-key autosuggestion acceptance followed by Enter.
-  assert.deepEqual(tracker.feed("cd /va\x1b[C\r"), { type: "probe" })
-  // Bracketed paste (xterm wraps pastes when readline enables it).
-  assert.deepEqual(tracker.feed("\x1b[200~cd /tmp\x1b[201~\r"), { type: "cd", target: "/tmp" })
-  // Paste with Enter inside the wrapper.
-  assert.deepEqual(tracker.feed("\x1b[200~cd /var\r\x1b[201~"), { type: "cd", target: "/var" })
-  // Multi-line paste reports the final line.
-  assert.deepEqual(tracker.feed("ls -la\ncd /opt\n"), { type: "cd", target: "/opt" })
+test("detectOsc7Directory decodes percent-escaped paths", () => {
+  assert.equal(detectOsc7Directory("\x1b]7;file://host/home/a%20b\x07"), "/home/a b")
 })
 
-test("typed cd tracker ignores non-cd commands", () => {
-  const tracker = createTypedCdTracker({ currentCwd: () => "/root" })
-  assert.deepEqual(tracker.feed("ls\r"), { type: "none" })
-  assert.deepEqual(tracker.feed("vim /tmp/a.txt\r"), { type: "none" })
-  assert.deepEqual(tracker.feed("ls -la /var\r"), { type: "none" })
-  assert.deepEqual(tracker.feed("\r"), { type: "none" }) // empty line: nothing ran
+test("detectOsc7Directory ignores unrelated output", () => {
+  assert.equal(detectOsc7Directory("plain output\n"), null)
+  assert.equal(detectOsc7Directory("\x1b]0;title\x07"), null)
+  assert.equal(detectOsc7Directory(""), null)
 })
 
-test("typed cd tracker probes unknown and directory-changing commands", () => {
-  const tracker = createTypedCdTracker({ currentCwd: () => "/root" })
-  assert.deepEqual(tracker.feed("z foo\r"), { type: "probe" })
-  assert.deepEqual(tracker.feed("pushd /opt\r"), { type: "probe" })
-  assert.deepEqual(tracker.feed("popd\r"), { type: "probe" })
-  assert.deepEqual(tracker.feed("QQQQcd /x\r"), { type: "probe" })
-  // A line rewritten by completion probes even for a safe command.
-  assert.deepEqual(tracker.feed("ls\t\r"), { type: "probe" })
+test("detectOsc7Directory returns the last sequence in a chunk", () => {
+  const chunk = "\x1b]7;file://host/home\x07filler\x1b]7;file://host/tmp\x07"
+  assert.equal(detectOsc7Directory(chunk), "/tmp")
 })
 
-test("typed cd tracker blocks probes after a raw-mode command", () => {
-  // Inside vim/less the tracker must never emit a probe: sending pwd would
-  // type into the application.  The blocked flag is set on Enter of a
-  // raw-app command (vim/less/top/htop/...) and cleared by clearBlocked().
-  const tracker = createTypedCdTracker({ currentCwd: () => "/root" })
-  // Start vim (raw-app command sets blocked).
-  assert.deepEqual(tracker.feed("vim foo\r"), { type: "none" })
-  // Now blocked: ambiguous cd targets should NOT probe.
-  assert.deepEqual(tracker.feed("cd /va\t\r"), { type: "none" })
-  assert.deepEqual(tracker.feed("cd ~\r"), { type: "none" })
-  assert.deepEqual(tracker.feed("cd\r"), { type: "none" })
-  // Unblock (vim exited).
-  tracker.clearBlocked()
-  // Now probes fire again.
-  assert.deepEqual(tracker.feed("cd /tmp\r"), { type: "cd", target: "/tmp" })
-  assert.deepEqual(tracker.feed("cd ~\r"), { type: "probe" })
+test("osc7 scanner reassembles a sequence split across frames", () => {
+  const scanner = createOsc7Scanner()
+  assert.equal(scanner.feed("\x1b]7;file://host/home/us"), null)
+  assert.equal(scanner.feed("er/docs\x07"), "/home/user/docs")
 })
-test("typed cd tracker handles backspace editing", () => {
-  let cwd = "/root"
-  const tracker = createTypedCdTracker({ currentCwd: () => cwd })
-  assert.deepEqual(tracker.feed("cd /tmp\x7f\x7f\r"), { type: "cd", target: "/t" })
-  // Backspacing down to a lone `c` still looks like a possible cd prefix, so
-  // the tracker probes instead of guessing.
-  assert.deepEqual(tracker.feed("cd /x\x7f\x7f\x7f\r"), { type: "probe" })
+
+test("osc7 scanner does not re-report a consumed directory", () => {
+  const scanner = createOsc7Scanner()
+  assert.equal(scanner.feed("\x1b]7;file://host/tmp\x07"), "/tmp")
+  assert.equal(scanner.feed("more output"), null)
+})
+
+test("osc7 scanner stays quiet on plain output", () => {
+  const scanner = createOsc7Scanner()
+  for (const chunk of ["total 4\n", "drwxr-xr-x 2 root root\n", "$ "]) {
+    assert.equal(scanner.feed(chunk), null)
+  }
 })

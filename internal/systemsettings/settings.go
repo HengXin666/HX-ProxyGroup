@@ -83,6 +83,9 @@ type Settings struct {
 	// accounts (API tokens) it deploys/probes/recreates worker endpoints and
 	// switches accounts when one is banned.
 	Fleet FleetSettings `json:"fleet"`
+	// SharedInbound collapses N proxy services onto one Mixed port and one
+	// WebSocket port family so clients no longer need one process per group.
+	SharedInbound SharedInboundSettings `json:"shared_inbound"`
 }
 
 // FleetSettings gates the built-in CF worker fleet maintainer.
@@ -142,6 +145,7 @@ func Default() Settings {
 			FindProcessMode:   "off",
 			LogLevel:          "warning",
 		},
+		SharedInbound: DefaultSharedInbound(),
 		Fleet: FleetSettings{
 			Enabled:                false,
 			FleetSize:              10,
@@ -207,6 +211,29 @@ func migrateLegacyProbeDefaults(settings *Settings) {
 		settings.Quality.TestURL = defaultTestURL
 		settings.Quality.TimeoutSeconds = 10
 	}
+	migrateLegacySharedInbound(settings)
+}
+
+// migrateLegacySharedInbound keeps an upgraded installation on its existing
+// dedicated ports. A stored document that predates the shared inbound section
+// decodes to the zero value, which defaults to the historical per-service
+// behaviour; only a document that already carries the new defaults may adopt
+// them. Reading back a stored document is therefore never a silent port move.
+func migrateLegacySharedInbound(settings *Settings) {
+	if settings.SharedInbound.Mode != "" {
+		return
+	}
+	settings.SharedInbound.Mode = SharedInboundPerService
+	defaults := DefaultSharedInbound()
+	if strings.TrimSpace(settings.SharedInbound.MixedBindAddress) == "" {
+		settings.SharedInbound.MixedBindAddress = defaults.MixedBindAddress
+	}
+	if settings.SharedInbound.MixedPort == 0 {
+		settings.SharedInbound.MixedPort = defaults.MixedPort
+	}
+	if settings.SharedInbound.WSPort == 0 {
+		settings.SharedInbound.WSPort = defaults.WSPort
+	}
 }
 
 func Save(ctx context.Context, repository Repository, settings Settings) error {
@@ -221,16 +248,56 @@ func Save(ctx context.Context, repository Repository, settings Settings) error {
 	return repository.SetMetadata(ctx, MetadataKey, string(encoded))
 }
 
+// PreApplyFunc runs after the settings are persisted and before the data
+// plane is asked to compile. It lets a settings change materialize the
+// resources the new configuration depends on (for example the aggregate
+// listeners of the shared inbound) inside the same atomic apply and rollback.
+type PreApplyFunc func(context.Context) error
+
+// Option customizes the settings service.
+type Option func(*Service) error
+
+// WithPreApply installs the pre-apply hook.
+func WithPreApply(hook PreApplyFunc) Option {
+	return func(service *Service) error {
+		service.preApply = hook
+		return nil
+	}
+}
+
 type Service struct {
 	repository Repository
 	applier    Applier
+	preApply   PreApplyFunc
 }
 
-func NewService(repository Repository, applier Applier) (*Service, error) {
+func NewService(repository Repository, applier Applier, options ...Option) (*Service, error) {
 	if repository == nil {
 		return nil, errors.New("settings repository is required")
 	}
-	return &Service{repository: repository, applier: applier}, nil
+	service := &Service{repository: repository, applier: applier}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(service); err != nil {
+			return nil, err
+		}
+	}
+	return service, nil
+}
+
+// apply runs the pre-apply convergence hook and then the data-plane apply.
+func (s *Service) apply(ctx context.Context) error {
+	if s.preApply != nil {
+		if err := s.preApply(ctx); err != nil {
+			return err
+		}
+	}
+	if s.applier == nil {
+		return nil
+	}
+	return s.applier.Apply(ctx)
 }
 
 func (s *Service) Get(ctx context.Context) (Settings, error) {
@@ -249,13 +316,10 @@ func (s *Service) Update(ctx context.Context, settings Settings) (Settings, erro
 	if err := Save(ctx, s.repository, settings); err != nil {
 		return Settings{}, err
 	}
-	if s.applier == nil {
-		return settings, nil
-	}
-	if err := s.applier.Apply(ctx); err != nil {
+	if err := s.apply(ctx); err != nil {
 		rollbackErr := Save(ctx, s.repository, previous)
 		if rollbackErr == nil {
-			rollbackErr = s.applier.Apply(ctx)
+			rollbackErr = s.apply(ctx)
 		}
 		return Settings{}, fmt.Errorf("apply global settings: %w; rollback: %v", err, rollbackErr)
 	}
@@ -334,6 +398,9 @@ func Validate(settings Settings) error {
 			return fmt.Errorf("%w: provision.token must be 1-32 lowercase chars, digits, - or _", ErrInvalid)
 		}
 	}
+	if err := validateSharedInbound(settings.SharedInbound); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -351,6 +418,7 @@ func normalize(settings *Settings) {
 	if !settings.Provision.Enabled {
 		settings.Provision.Token = ""
 	}
+	normalizeSharedInbound(&settings.SharedInbound)
 }
 
 func trimList(values []string) {

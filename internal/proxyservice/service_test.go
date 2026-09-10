@@ -8,6 +8,8 @@ import (
 
 	"github.com/HengXin666/HX-ProxyGroup/internal/listener"
 	"github.com/HengXin666/HX-ProxyGroup/internal/proxygroup"
+	"github.com/HengXin666/HX-ProxyGroup/internal/store"
+	"github.com/HengXin666/HX-ProxyGroup/internal/systemsettings"
 )
 
 type fakeGroups struct {
@@ -59,6 +61,10 @@ func (listeners *fakeListeners) Create(_ context.Context, request listener.Creat
 	return listener.Listener{ID: "listener-1", ProxyGroupID: request.ProxyGroupID}, nil
 }
 
+func (listeners *fakeListeners) EnsureSharedInbounds(context.Context, listener.SharedInboundSpec, []store.ProxyGroupRecord, []listener.SharedInboundMember) ([]listener.Listener, error) {
+	return nil, nil
+}
+
 func (listeners *fakeListeners) Update(_ context.Context, _ string, request listener.UpdateRequest) (listener.Listener, error) {
 	if listeners.err != nil {
 		return listener.Listener{}, listeners.err
@@ -67,11 +73,14 @@ func (listeners *fakeListeners) Update(_ context.Context, _ string, request list
 }
 
 func TestCreateBindsListenerToGroup(t *testing.T) {
-	service, err := NewService(&fakeGroups{}, &fakeListeners{})
+	service, err := NewService(&fakeGroups{}, &fakeListeners{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := service.Create(context.Background(), CreateRequest{Listener: ListenerCreateRequest{Port: 7890}})
+	created, err := service.Create(context.Background(), CreateRequest{Listener: ListenerCreateRequest{
+		Port: 7890,
+		Auth: &listener.Auth{Username: "hx-user", Password: "hx-pass"},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,9 +89,47 @@ func TestCreateBindsListenerToGroup(t *testing.T) {
 	}
 }
 
+// TestCreateRejectsSharedMemberWithoutCredentials pins the shared-inbound rule
+// that a member must be selectable by username: without credentials Mihomo
+// would accept every connection on the aggregate port.
+func TestCreateRejectsSharedMemberWithoutCredentials(t *testing.T) {
+	service, err := NewService(&fakeGroups{}, &fakeListeners{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Create(context.Background(), CreateRequest{Listener: ListenerCreateRequest{Port: 7890}}); err == nil {
+		t.Fatal("Create() error = nil, want a credential requirement")
+	}
+}
+
+// TestCreateUsesDedicatedPortWhenSharedInboundDisabled keeps the historical
+// per-port behaviour working after an upgrade.
+func TestCreateUsesDedicatedPortWhenSharedInboundDisabled(t *testing.T) {
+	settings := &fakeSettings{mode: systemsettings.SharedInboundPerService}
+	service, err := NewService(&fakeGroups{}, &fakeListeners{}, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Create(context.Background(), CreateRequest{Listener: ListenerCreateRequest{
+		Kind: "mixed", BindAddress: "127.0.0.1", Port: 7890,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fakeSettings struct {
+	mode systemsettings.SharedInboundMode
+}
+
+func (settings *fakeSettings) Get(context.Context) (systemsettings.Settings, error) {
+	current := systemsettings.Default()
+	current.SharedInbound.Mode = settings.mode
+	return current, nil
+}
+
 func TestCreateRemovesGroupWhenListenerFails(t *testing.T) {
 	groups := &fakeGroups{}
-	service, err := NewService(groups, &fakeListeners{err: errors.New("port conflict")})
+	service, err := NewService(groups, &fakeListeners{err: errors.New("port conflict")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +141,7 @@ func TestCreateRemovesGroupWhenListenerFails(t *testing.T) {
 
 func TestUpdateBindsUpdatedListenerToGroup(t *testing.T) {
 	groups := &fakeGroups{stored: proxygroup.Group{ID: "group-1", Version: 1, Name: "original"}}
-	service, err := NewService(groups, &fakeListeners{})
+	service, err := NewService(groups, &fakeListeners{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +169,7 @@ func TestUpdateBindsUpdatedListenerToGroup(t *testing.T) {
 
 func TestUpdateRollsBackGroupWhenListenerFails(t *testing.T) {
 	groups := &fakeGroups{stored: proxygroup.Group{ID: "group-1", Version: 1, Name: "original"}}
-	service, err := NewService(groups, &fakeListeners{err: errors.New("port conflict")})
+	service, err := NewService(groups, &fakeListeners{err: errors.New("port conflict")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

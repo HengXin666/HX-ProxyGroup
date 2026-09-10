@@ -150,6 +150,7 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	listenerConfigs := make([]map[string]any, 0, len(listeners))
 	endpoints := make([]Endpoint, 0, len(listeners))
 	residentialFallbackRules := make([]string, 0)
+	sharedInboundRules := make([]string, 0)
 	usedEndpoints := make(map[string]string)
 	usedEdgeRoutes := make(map[string]string)
 	routesByListener := make(map[string][]store.ResidentialClientRouteRecord)
@@ -165,8 +166,10 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 			routesByListener[route.DirectListenerID] = append(routesByListener[route.DirectListenerID], route)
 		}
 	}
+	// Directly bound listeners compile first so their port and edge-route
+	// uniqueness is validated before the aggregate listeners are merged in.
 	for _, record := range listeners {
-		if !record.Enabled {
+		if !record.Enabled || listener.SharedInboundOwnerOf(record) != "" {
 			continue
 		}
 		group, exists := enabledGroups[record.ProxyGroupID]
@@ -208,6 +211,40 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 			Port:        record.Port,
 		})
 	}
+	// One client, many services: the aggregate listeners carry every managed
+	// service behind two ports. Members are selected by their service-scoped
+	// username, so each service keeps its own credential, protocol and group.
+	sharedListeners, sharedRules, err := c.compileSharedInbounds(settings, listeners, enabledGroups)
+	if err != nil {
+		return Compiled{}, err
+	}
+	sharedInboundRules = append(sharedInboundRules, sharedRules...)
+	for _, shared := range sharedListeners {
+		// Every protocol of one aggregate family deliberately shares one bind
+		// address and port: Mihomo demultiplexes the protocols on that single
+		// socket, which is what lets one client URL carry all of them. Only a
+		// collision with a listener from a *different* family is an error.
+		owner := listener.SharedInboundOwnerOf(shared.record)
+		endpointKey := fmt.Sprintf("%s:%d", shared.record.BindAddress, shared.record.Port)
+		if other, exists := usedEndpoints[endpointKey]; exists && other != owner {
+			return Compiled{}, fmt.Errorf("listeners %q and %q use the same endpoint %s", other, shared.record.Name, endpointKey)
+		}
+		usedEndpoints[endpointKey] = owner
+		if shared.edgeKey != "" {
+			if other, exists := usedEdgeRoutes[shared.edgeKey]; exists {
+				return Compiled{}, fmt.Errorf("listeners %q and %q use the same public WebSocket route", other, shared.record.Name)
+			}
+			usedEdgeRoutes[shared.edgeKey] = shared.record.Name
+		}
+		listenerConfigs = append(listenerConfigs, shared.config)
+		endpoints = append(endpoints, Endpoint{
+			ID:          shared.record.ID,
+			Name:        shared.record.Name,
+			Kind:        shared.record.Kind,
+			BindAddress: shared.record.BindAddress,
+			Port:        shared.record.Port,
+		})
+	}
 	if err := validateNoListenerLoop(proxies, listenerConfigs); err != nil {
 		return Compiled{}, err
 	}
@@ -216,6 +253,11 @@ func (c *Compiler) Compile(ctx context.Context) (Compiled, error) {
 	if err != nil {
 		return Compiled{}, err
 	}
+	// Service selection runs before the administrator's site routing: a member
+	// username must always reach its own proxy group, whatever the
+	// destination, otherwise two services sharing one port would leak into
+	// each other's egress.
+	compiledRules = append(compiledRules, sharedInboundRules...)
 	compiledRules = append(compiledRules, routingrules.Compile(routeConfig, groups, listeners, listenerConfigName)...)
 	compiledRules = append(compiledRules, residentialFallbackRules...)
 	compiledRules = append(compiledRules, "MATCH,DIRECT")

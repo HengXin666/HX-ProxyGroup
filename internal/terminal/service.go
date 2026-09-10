@@ -83,6 +83,10 @@ type Config struct {
 	// CwdStore optionally persists the last shell directory per administrator
 	// (nil disables directory resume).
 	CwdStore CwdStore
+	// RuntimeDirectory is where the generated shell-integration startup files
+	// live. When empty, shell integration is skipped and the panel relies on
+	// the kernel-reported directory alone.
+	RuntimeDirectory string
 	// UpdaterPath enables the fixed-command privileged update request. The
 	// helper validates this root-owned executable before scheduling it.
 	UpdaterPath string
@@ -250,7 +254,7 @@ func (s *Service) Open(ctx context.Context, actor, remote string) (Session, erro
 	} else {
 		var ptyFile *os.File
 		var command *exec.Cmd
-		ptyFile, command, err = startShell(s.config.Shell, os.Environ(), s.config.PersistHistory, startDir)
+		ptyFile, command, err = startShell(s.config.Shell, os.Environ(), s.config.PersistHistory, startDir, s.config.RuntimeDirectory)
 		if err == nil {
 			base = newPTYSession(ptyFile, command)
 			shellName = command.Path

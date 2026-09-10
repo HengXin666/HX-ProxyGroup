@@ -180,7 +180,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	settingsService, err := systemsettings.NewService(database, mihomoManager)
+	// settingsService is created with a post-apply hook that converges the
+	// shared inbound before the data plane compiles: moving a service between
+	// dedicated ports and the shared entry points must publish the aggregate
+	// listeners in the same apply, never in a second one.
+	settingsService, err := systemsettings.NewService(database, mihomoManager, systemsettings.WithPreApply(settingsSharedInboundHook()))
 	if err != nil {
 		return err
 	}
@@ -196,10 +200,23 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	proxyService, err := proxyservice.NewService(proxyGroupService, listenerService)
+	proxyService, err := proxyservice.NewService(proxyGroupService, listenerService, settingsService)
 	if err != nil {
 		return err
 	}
+	sharedInboundMigrator, err := newSharedInboundMigrator(database, listenerService, settingsService)
+	if err != nil {
+		return err
+	}
+	// A settings change must both move existing services onto the shared entry
+	// points and converge the aggregate rows inside the same atomic apply.
+	sharedInboundHook = func(ctx context.Context) error {
+		if _, err := sharedInboundMigrator.Reconcile(ctx); err != nil {
+			return err
+		}
+		return proxyService.ConvergeSharedInbound(ctx)
+	}
+	listenerService.SetSharedEndpointProvider(sharedInboundEndpointProvider(settingsService))
 	residentialService, err := residential.NewService(
 		database,
 		secretBox,
@@ -305,6 +322,10 @@ func run(logger *slog.Logger) error {
 		UpdaterPath:      "/usr/local/sbin/hx-proxygroup-install",
 		PersistHistory:   cfg.TerminalHistory,
 		CwdStore:         database,
+		// The generated shell-integration startup files live next to the
+		// runtime configuration. It is the directory the root helper and the
+		// control plane already share.
+		RuntimeDirectory: filepath.Dir(cfg.RuntimeConfigPath),
 	}, logger)
 	if err != nil {
 		return err
@@ -512,6 +533,7 @@ func runTerminalHelper(logger *slog.Logger, arguments []string) error {
 	flags.IntVar(&config.MaxSessions, "terminal-max-sessions", 2, "maximum helper sessions")
 	flags.StringVar(&config.UpdaterPath, "updater", "/usr/local/sbin/hx-proxygroup-install", "fixed automatic updater executable")
 	flags.BoolVar(&config.PersistHistory, "terminal-persist-history", true, "persist shell command history between sessions")
+	flags.StringVar(&config.RuntimeDirectory, "terminal-runtime-directory", "/var/lib/hx-proxygroup/runtime", "directory for the generated shell-integration startup files")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}

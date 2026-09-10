@@ -20,25 +20,60 @@ import {
 } from "lucide-react"
 
 import { ThemeToggle } from "@/components/theme-toggle"
+// AuthPage is the only page kept in the eager graph: it is the first
+// interactive screen when the control plane is unauthenticated, so lazily
+// loading it would flash a fallback on top of the login form. Everything else
+// is split so first paint only pays for the shell.
+import { AuthPage } from "@/pages/auth-page"
 import { api, setCsrfToken, setUnauthenticatedHandler } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import { AlertsPage } from "@/pages/alerts-page"
-import { AboutPage } from "@/pages/about-page"
-import { ArtifactsPage } from "@/pages/artifacts-page"
-import { AuthPage } from "@/pages/auth-page"
-import { InventoryPage } from "@/pages/inventory-page"
-import { OverviewPage } from "@/pages/overview-page"
-import { RoutingPage } from "@/pages/routing-page"
-import { ResidentialPage } from "@/pages/residential-page"
-import { RulesPage } from "@/pages/rules-page"
-import { SettingsPage } from "@/pages/settings-page"
-// The terminal bundles xterm (~200KB), so it is split into its own chunk:
-// residential, proxy-service and node pages never pay that download on load.
-const TerminalPage = lazy(() => import("@/pages/terminal-page").then((module) => ({ default: module.TerminalPage })))
 
 type Page = "overview" | "subscriptions" | "routing" | "residential" | "rules" | "settings" | "alerts" | "artifacts" | "terminal" | "about"
 type Notice = { id: number; message: string; tone: "success" | "error" }
 const sidebarStorageKey = "hx-proxygroup.sidebar-collapsed"
+
+// One loader per page, shared by React.lazy (render path) and preloadPage
+// (hover/focus prefetch). A second import() of the same specifier is free: the
+// module registry returns the already-resolved promise, so the browser never
+// downloads a chunk twice.
+const pageLoaders = {
+  overview: () => import("@/pages/overview-page"),
+  subscriptions: () => import("@/pages/inventory-page"),
+  routing: () => import("@/pages/routing-page"),
+  residential: () => import("@/pages/residential-page"),
+  rules: () => import("@/pages/rules-page"),
+  settings: () => import("@/pages/settings-page"),
+  alerts: () => import("@/pages/alerts-page"),
+  artifacts: () => import("@/pages/artifacts-page"),
+  terminal: () => import("@/pages/terminal-page"),
+  about: () => import("@/pages/about-page"),
+}
+
+// The terminal bundles xterm (~200KB), so it is split into its own chunk:
+// residential, proxy-service and node pages never pay that download on load.
+const TerminalPage = lazy(() => pageLoaders.terminal().then((module) => ({ default: module.TerminalPage })))
+const OverviewPage = lazy(() => pageLoaders.overview().then((module) => ({ default: module.OverviewPage })))
+const InventoryPage = lazy(() => pageLoaders.subscriptions().then((module) => ({ default: module.InventoryPage })))
+const RoutingPage = lazy(() => pageLoaders.routing().then((module) => ({ default: module.RoutingPage })))
+const ResidentialPage = lazy(() => pageLoaders.residential().then((module) => ({ default: module.ResidentialPage })))
+const RulesPage = lazy(() => pageLoaders.rules().then((module) => ({ default: module.RulesPage })))
+const SettingsPage = lazy(() => pageLoaders.settings().then((module) => ({ default: module.SettingsPage })))
+const AlertsPage = lazy(() => pageLoaders.alerts().then((module) => ({ default: module.AlertsPage })))
+const ArtifactsPage = lazy(() => pageLoaders.artifacts().then((module) => ({ default: module.ArtifactsPage })))
+const AboutPage = lazy(() => pageLoaders.about().then((module) => ({ default: module.AboutPage })))
+
+const preloadedPages = new Set<Page>()
+// Starts downloading a page chunk without rendering it. Called from sidebar
+// hover/focus so the click usually resolves against an already-loaded module.
+function preloadPage(id: Page) {
+  if (preloadedPages.has(id)) return
+  preloadedPages.add(id)
+  pageLoaders[id]().catch(() => {
+    // A failed prefetch must stay silent and be retryable: the real
+    // navigation issues its own import() and surfaces the error there.
+    preloadedPages.delete(id)
+  })
+}
 
 const pages: Array<{
   id: Page
@@ -174,7 +209,13 @@ export default function App() {
   }
 
   if (authGate.phase === "required") {
-    return <AuthPage configured={authGate.configured} onAuthenticated={() => void refreshAuth()} />
+    // AuthPage is eager, so this Suspense boundary only exists to keep the
+    // gate structurally uniform; the fallback mirrors the checking screen.
+    return (
+      <Suspense fallback={<AuthFallback />}>
+        <AuthPage configured={authGate.configured} onAuthenticated={() => void refreshAuth()} />
+      </Suspense>
+    )
   }
 
   return (
@@ -209,6 +250,7 @@ export default function App() {
               item={item}
               active={item.id === page}
               onClick={() => navigate(item.id)}
+              onPreload={() => preloadPage(item.id)}
               collapsed={sidebarCollapsed}
             />
           ))}
@@ -263,6 +305,8 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => navigate(item.id)}
+                  onMouseEnter={() => preloadPage(item.id)}
+                  onFocus={() => preloadPage(item.id)}
                   className={cn(
                     "inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground",
                     page === item.id && "bg-accent text-accent-foreground",
@@ -291,15 +335,17 @@ export default function App() {
 
           {page !== "terminal" && (
             <div key={page} className={cn("page-enter", page === "routing" && "lg:h-full")}>
-              {page === "overview" && <OverviewPage onNotice={showNotice} />}
-              {page === "subscriptions" && <InventoryPage initialView={window.location.hash.includes("nodes") ? "nodes" : "subscriptions"} onNotice={showNotice} />}
-              {page === "routing" && <RoutingPage onNotice={showNotice} />}
-              {page === "residential" && <ResidentialPage onNotice={showNotice} />}
-              {page === "rules" && <RulesPage onNotice={showNotice} />}
-              {page === "settings" && <SettingsPage onNotice={showNotice} username={authGate.username} onSignedOut={requireLogin} />}
-              {page === "alerts" && <AlertsPage onNotice={showNotice} />}
-              {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
-              {page === "about" && <AboutPage onNotice={showNotice} />}
+              <Suspense fallback={<PageFallback />}>
+                {page === "overview" && <OverviewPage onNotice={showNotice} />}
+                {page === "subscriptions" && <InventoryPage initialView={window.location.hash.includes("nodes") ? "nodes" : "subscriptions"} onNotice={showNotice} />}
+                {page === "routing" && <RoutingPage onNotice={showNotice} />}
+                {page === "residential" && <ResidentialPage onNotice={showNotice} />}
+                {page === "rules" && <RulesPage onNotice={showNotice} />}
+                {page === "settings" && <SettingsPage onNotice={showNotice} username={authGate.username} onSignedOut={requireLogin} />}
+                {page === "alerts" && <AlertsPage onNotice={showNotice} />}
+                {page === "artifacts" && <ArtifactsPage onNotice={showNotice} />}
+                {page === "about" && <AboutPage onNotice={showNotice} />}
+              </Suspense>
             </div>
           )}
           {/* TerminalPage stays mounted across page switches so the WebSocket
@@ -331,15 +377,35 @@ export default function App() {
   )
 }
 
+// Keeps the same muted, centered treatment as the terminal loader so route
+// chunks resolve without a visible layout jump.
+function PageFallback() {
+  return (
+    <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
+      正在加载页面…
+    </div>
+  )
+}
+
+function AuthFallback() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+      正在加载登录…
+    </div>
+  )
+}
+
 function SidebarItem({
   item,
   active,
   onClick,
+  onPreload,
   collapsed,
 }: {
   item: (typeof pages)[number]
   active: boolean
   onClick: () => void
+  onPreload: () => void
   collapsed: boolean
 }) {
   const Icon = item.icon
@@ -347,6 +413,8 @@ function SidebarItem({
     <button
       type="button"
       onClick={onClick}
+      onMouseEnter={onPreload}
+      onFocus={onPreload}
       aria-label={collapsed ? item.label : undefined}
       className={cn(
         "group relative flex w-full items-center rounded-md text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",

@@ -20,10 +20,14 @@ type ListenerRecord struct {
 	TransportJSON       string
 	PublicEndpointJSON  string
 	ShareToken          string
-	Enabled             bool
-	Version             int
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// SharedInbound marks this listener as a member of an aggregate entry
+	// point ("standard" or "websocket"). Empty keeps the historical dedicated
+	// port behaviour.
+	SharedInbound string
+	Enabled       bool
+	Version       int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 func (s *Store) CreateListener(ctx context.Context, record ListenerRecord) (ListenerRecord, error) {
@@ -31,8 +35,9 @@ func (s *Store) CreateListener(ctx context.Context, record ListenerRecord) (List
 INSERT INTO listeners(
     id, name, listener_type, kind, bind_address, port, proxy_group_id,
     auth_policy_encrypted, auth_mode, auth_config_encrypted,
-    transport_json, public_endpoint_json, share_token, enabled, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    transport_json, public_endpoint_json, share_token, shared_inbound,
+    enabled, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		record.ID,
 		record.Name,
@@ -47,6 +52,7 @@ INSERT INTO listeners(
 		record.TransportJSON,
 		record.PublicEndpointJSON,
 		record.ShareToken,
+		record.SharedInbound,
 		boolToInteger(record.Enabled),
 		record.Version,
 		record.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -102,7 +108,7 @@ UPDATE listeners
 SET
     name = ?, listener_type = ?, kind = ?, bind_address = ?, port = ?, proxy_group_id = ?,
     auth_policy_encrypted = ?, auth_mode = ?, auth_config_encrypted = ?,
-    transport_json = ?, public_endpoint_json = ?, enabled = ?,
+    transport_json = ?, public_endpoint_json = ?, shared_inbound = ?, enabled = ?,
     version = version + 1, updated_at = ?
 WHERE id = ? AND version = ?
 `,
@@ -117,6 +123,7 @@ WHERE id = ? AND version = ?
 		record.AuthConfigEncrypted,
 		record.TransportJSON,
 		record.PublicEndpointJSON,
+		record.SharedInbound,
 		boolToInteger(record.Enabled),
 		record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		record.ID,
@@ -163,7 +170,7 @@ const listenerSelect = `
 SELECT
     id, name, kind, bind_address, port, proxy_group_id, auth_mode,
     auth_config_encrypted, transport_json, public_endpoint_json,
-    share_token, enabled, version, created_at, updated_at
+    share_token, shared_inbound, enabled, version, created_at, updated_at
 FROM listeners`
 
 // GetListenerByShareToken resolves the public subscription-export token.
@@ -219,6 +226,7 @@ func scanListener(source scanner) (ListenerRecord, error) {
 		&record.TransportJSON,
 		&record.PublicEndpointJSON,
 		&record.ShareToken,
+		&record.SharedInbound,
 		&enabled,
 		&record.Version,
 		&createdAt,

@@ -88,6 +88,63 @@ type terminalModeMessage struct {
 	Canonical bool   `json:"canonical"`
 }
 
+// terminalCwdMessage carries the shell's kernel-reported working directory.
+// The server pushes it so the browser never has to type a probe command into
+// the user's session, which is what used to fill the shell history with pwd.
+type terminalCwdMessage struct {
+	Type string `json:"type"`
+	Cwd  string `json:"cwd"`
+}
+
+var (
+	// terminalCwdPollInterval bounds how often the shell's directory is read.
+	// A prompt returns immediately after cd, so a short interval keeps the file
+	// panel responsive without measurable cost (one readlink).
+	terminalCwdPollInterval = 900 * time.Millisecond
+	// terminalCwdPingInterval is how often an unchanged directory is still
+	// announced, so a client that reconnects or missed a frame converges.
+	terminalCwdPingInterval = 15 * time.Second
+)
+
+// streamShellCwd pushes the shell's working directory to the browser. It reads
+// the directory from the kernel (or the shell's own OSC 7 report once the
+// frontend forwards it) and never writes anything into the PTY.
+func streamShellCwd(socketCtx context.Context, connection *websocket.Conn, shell terminal.Session, done chan<- struct{}) {
+	defer close(done)
+	reporter, ok := shell.(terminal.CwdReporter)
+	if !ok {
+		return
+	}
+	lastSent := ""
+	lastSentAt := time.Time{}
+	ticker := time.NewTicker(terminalCwdPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-socketCtx.Done():
+			return
+		case <-ticker.C:
+			current, err := reporter.Cwd()
+			if err != nil || current == "" {
+				continue
+			}
+			now := time.Now()
+			if current == lastSent && now.Sub(lastSentAt) < terminalCwdPingInterval {
+				continue
+			}
+			payload, _ := json.Marshal(terminalCwdMessage{Type: "cwd", Cwd: current})
+			writeCtx, writeCancel := context.WithTimeout(socketCtx, 10*time.Second)
+			writeErr := connection.Write(writeCtx, websocket.MessageText, payload)
+			writeCancel()
+			if writeErr != nil {
+				return
+			}
+			lastSent = current
+			lastSentAt = now
+		}
+	}
+}
+
 var (
 	terminalAuthRevalidateInterval = 30 * time.Second
 	// terminalHeartbeatInterval / terminalHeartbeatTimeout drive the server
@@ -204,6 +261,12 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 		}
 	}()
 
+	// Shell directory -> WebSocket control frame. This replaces the old client
+	// side pwd probe: the browser follows the kernel-reported directory, so no
+	// command is ever typed into the user's shell and the history stays clean.
+	cwdDone := make(chan struct{})
+	go streamShellCwd(socketCtx, connection, shell, cwdDone)
+
 	// Heartbeat the peer so a silently dead connection (packet loss, NAT drop)
 	// is detected promptly: the session slot is freed and a later reconnect is
 	// not blocked by the session cap. Browsers auto-respond to pings; when the
@@ -308,5 +371,6 @@ func (s *Server) handleTerminalSocket(writer http.ResponseWriter, request *http.
 	<-outputDone
 	<-authDone
 	<-heartbeatDone
+	<-cwdDone
 	_ = connection.Close(websocket.StatusNormalClosure, "bye")
 }

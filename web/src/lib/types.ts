@@ -199,6 +199,26 @@ export interface GlobalSettings {
     find_process_mode: "off" | "strict" | "always"
     log_level: "silent" | "error" | "warning" | "info" | "debug"
   }
+  // Shared inbound publishes every service on one Mixed port and one
+  // WebSocket port family, so a single client process reaches every group and
+  // protocol through two URLs. "per_service" keeps the historical dedicated
+  // port per service.
+  shared_inbound: SharedInboundSettings
+}
+
+export type SharedInboundMode = "per_service" | "shared"
+
+export interface SharedInboundSettings {
+  mode: SharedInboundMode
+  mixed_bind_address?: string
+  mixed_port?: number
+  ws_port?: number
+  mixed_public_host?: string
+  mixed_public_port?: number
+  mixed_public_tls?: boolean
+  ws_public_host?: string
+  ws_public_port?: number
+  include_in_per_service?: boolean
 }
 
 export interface RoutingRule {
@@ -308,11 +328,21 @@ export interface ListenerRecord {
   transport: ListenerTransport
   public_endpoint: ListenerPublicEndpoint
   share_path?: string
+  /** Set when the listener is a member of a shared entry point. */
+  shared_inbound?: SharedInboundOwner
+  /**
+   * True for the single carrier row of an aggregate family. It is a
+   * control-plane resource, not a service, so the UI hides it from the service
+   * list and never offers it for editing or deletion.
+   */
+  shared_inbound_aggregate?: boolean
   enabled: boolean
   version: number
   created_at: string
   updated_at: string
 }
+
+export type SharedInboundOwner = "standard" | "websocket"
 
 export interface ListenerList {
   items: ListenerRecord[]

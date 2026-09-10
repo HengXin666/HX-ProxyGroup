@@ -11,7 +11,7 @@ import { HostMonitor } from "@/components/terminal/host-monitor"
 import { OpsPage } from "@/components/terminal/ops-page"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { createTypedCdTracker, detectPwdOutput, quoteForShell } from "@/lib/terminal-cwd"
+import { createOsc7Scanner, quoteForShell } from "@/lib/terminal-cwd"
 import { subscribeTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
@@ -43,13 +43,11 @@ export function TerminalPage({
   const reconnectAttemptRef = useRef(0)
   const lastPongRef = useRef(0)
   const cwdRef = useRef("/")
-  // Tracked by the typed-cd tracker to unblock probes after a raw-mode
-  // application (vim/less/htop) exits — the tracker clears its internal
-  // blocked flag when this method is called.
-  const typedCdRef = useRef<{ clearBlocked: () => void } | null>(null)
-  const pwdPendingRef = useRef(false)
-  const pwdDeadlineRef = useRef(0)
-  const pwdBufferRef = useRef("")
+  // Rolling PTY-output buffer that recognizes the OSC 7 sequence the shell
+  // integration emits after every prompt. It is a *read-only* signal: the page
+  // never types a probe command into the session, so the shell history stays
+  // free of lines the user did not write.
+  const osc7Ref = useRef<ReturnType<typeof createOsc7Scanner> | null>(null)
   const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const [status, setStatus] = useState<TerminalStatus | null>(null)
   const [connection, setConnection] = useState<ConnectionState>("idle")
@@ -309,26 +307,11 @@ export function TerminalPage({
       sendResize()
       terminal.focus()
       startKeepalive(socket)
-      // Ask the shell where it started so the file panel matches immediately.
-      // The probe is time-bounded, not frame-bounded: a slow shell banner may
-      // split the `pwd` echo and result across many frames.
-      pwdPendingRef.current = true
-      pwdDeadlineRef.current = Date.now() + 4000
-      pwdBufferRef.current = ""
-      socket.send(JSON.stringify({ type: "input", data: "pwd\n" }))
+      // The directory arrives from the server (kernel cwd of the shell) and
+      // from the shell's own OSC 7 report; nothing is written to the PTY.
       if (isReconnect) {
         terminal.write("\r\n\x1b[32m[已重新连接]\x1b[0m\r\n")
       }
-    }
-    // Ask the shell for its current directory again. Used when a `cd` target
-    // cannot be resolved from what the user typed (bare `cd`, `~`, `$VAR`, `-`).
-    const reprobePwd = () => {
-      const socket = socketRef.current
-      if (!socket || socket.readyState !== WebSocket.OPEN || pwdPendingRef.current) return
-      pwdPendingRef.current = true
-      pwdDeadlineRef.current = Date.now() + 4000
-      pwdBufferRef.current = ""
-      socket.send(JSON.stringify({ type: "input", data: "pwd\n" }))
     }
     socket.onmessage = (event) => {
       // A stale socket must not write late output into the new session.
@@ -336,32 +319,26 @@ export function TerminalPage({
       if (event.data instanceof ArrayBuffer) {
         const bytes = new Uint8Array(event.data)
         terminal.write(bytes)
+        // The shell integration emits OSC 7 after every prompt. Parsing it
+        // here is what makes the file panel follow `cd` without the page ever
+        // typing a probe command into the session.
         const text = decoder.decode(bytes, { stream: true })
-        if (!pwdPendingRef.current) return
-        // The shell may split the `pwd` echo/result across many frames (a slow
-        // banner, the prompt redraw, ...); accumulate until the path line appears
-        // or the time budget runs out.
-        pwdBufferRef.current += text
-        const target = detectPwdOutput(pwdBufferRef.current)
-        if (target) {
-          pwdPendingRef.current = false
-          updateCwd(target)
-        } else if (Date.now() > pwdDeadlineRef.current) {
-          pwdPendingRef.current = false
+        if (text.includes("\x1b]7;")) {
+          const directory = osc7Ref.current?.feed(text) ?? null
+          if (directory && directory !== cwdRef.current) updateCwd(directory)
         }
         return
       }
       if (typeof event.data === "string") {
-        // Control frames from the server: pong refreshes the keepalive
-        // deadline; a canonical-mode frame unblocks the typed-cd tracker (a
-        // full-screen app restored the line discipline, so the shell is back
-        // at a prompt).
+        // Control frames from the server: "cwd" carries the kernel-reported
+        // working directory (authoritative and immune to a custom rc that
+        // rewrites PROMPT_COMMAND), "pong" refreshes the keepalive deadline.
         try {
-          const message = JSON.parse(event.data) as { type?: string; canonical?: boolean }
+          const message = JSON.parse(event.data) as { type?: string; cwd?: string }
           if (message.type === "pong") {
             lastPongRef.current = Date.now()
-          } else if (message.type === "mode" && message.canonical === true) {
-            typedCdRef.current?.clearBlocked()
+          } else if (message.type === "cwd" && typeof message.cwd === "string" && message.cwd !== "") {
+            if (message.cwd !== cwdRef.current) updateCwd(message.cwd)
           }
         } catch {
           // Ignore non-JSON frames.
@@ -378,8 +355,7 @@ export function TerminalPage({
         keepAliveRef.current = null
       }
       socketRef.current = null
-      pwdPendingRef.current = false
-      pwdBufferRef.current = ""
+      osc7Ref.current?.reset()
       // Refresh 2FA/session state: when the server revoked the session (2FA
       // window lapsed, logout-all, ...) the UI must switch back to the unlock
       // prompt instead of letting the user retry against stale state.
@@ -417,13 +393,7 @@ export function TerminalPage({
       onNotice("终端连接失败，请确认已登录并完成 2FA 解锁", "error")
     }
 
-    // Track typed `cd` commands from the INPUT stream. The tracker resolves
-    // plain `cd <target>` lines directly and asks the shell for its directory
-    // (pwd probe) when the directory may have changed.
-    const typedCd = createTypedCdTracker({
-      currentCwd: () => cwdRef.current,
-    })
-    typedCdRef.current = typedCd
+    osc7Ref.current = createOsc7Scanner()
     const inputDisposable = terminal.onData((data) => {
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
       // Collapse safe keystrokes into one frame (≤12ms) so weak round-trips do
@@ -435,16 +405,6 @@ export function TerminalPage({
       } else if (inputTimer === null) {
         inputTimer = window.setTimeout(flushInput, 12)
       }
-      const action = typedCd.feed(data)
-      if (action.type === "cd") {
-        // Optimistically follow the typed target, then let the shell confirm:
-        // the probe corrects symlinks, failed cds and every other case where
-        // the lexical resolve differs from the shell's real directory.
-        updateCwd(action.target)
-        reprobePwd()
-      } else if (action.type === "probe") {
-        reprobePwd()
-      }
     })
 
     inputDisposableRef.current = inputDisposable
@@ -452,6 +412,12 @@ export function TerminalPage({
   connectRef.current = connect
 
   // Navigate from the file panel: update the shared cwd and drive the shell.
+  //
+  // The command carries a leading space on purpose. The shell integration sets
+  // HISTCONTROL=ignorespace / HIST_IGNORE_SPACE, so panel navigation never
+  // reaches the shell history: the user only sees the directories they typed,
+  // exactly as if the panel were a native file browser. Bash and zsh both strip
+  // the leading whitespace before executing, so the command itself is unchanged.
   const handlePanelPath = useCallback((next: string) => {
     // Ignore duplicate navigations (e.g. the second click of a double-click);
     // the shell already is where the panel wants to go.
@@ -459,7 +425,7 @@ export function TerminalPage({
     updateCwd(next)
     const socket = socketRef.current
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "input", data: `cd ${quoteForShell(next)}\n` }))
+      socket.send(JSON.stringify({ type: "input", data: ` cd ${quoteForShell(next)}\n` }))
     }
   }, [updateCwd])
 

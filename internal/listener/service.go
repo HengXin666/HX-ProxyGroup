@@ -450,8 +450,18 @@ func supportedKind(kind string) bool {
 	}
 }
 
-func isAdvancedKind(kind string) bool {
+// IsAdvancedKind reports whether a listener kind speaks a proxy protocol over
+// WebSocket behind the reverse proxy instead of a directly dialable TCP port.
+//
+// Exported because the programmatic node listing derives "is this node
+// browser-dialable" from the same predicate the export path uses; a second copy
+// of this rule is exactly how the listing and the subscription would drift.
+func IsAdvancedKind(kind string) bool {
 	return kind == "vless" || kind == "vmess" || kind == "trojan"
+}
+
+func isAdvancedKind(kind string) bool {
+	return IsAdvancedKind(kind)
 }
 
 func normalizeEndpointConfig(advanced bool, transport Transport, endpoint PublicEndpoint, listenerPort int) (string, string, error) {

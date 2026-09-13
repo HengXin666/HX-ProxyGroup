@@ -41,3 +41,9 @@ jobs:
 
       - name: Agent Notes gates
         run: npx --yes tsx@4 .agents/skills/hx-agent-notes/scripts/verify-all.ts --base "$AGENT_NOTES_BASE_REF"
+
+      # The consumer contract is a promise only while its three sides agree: the
+      # renderer, the contract doc and the consumer skill must move together.
+      # See docs/CONSUMER_INTEGRATION_CONTRACT.md.
+      - name: Consumer contract gate
+        run: npx --yes tsx@4 scripts/verify-consumer-contract.ts

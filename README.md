@@ -469,6 +469,7 @@ npm run build
 | [流量统计](docs/TRAFFIC_STATS.md) | 聚合粒度、查询、保留策略和精度边界 |
 | [Cloudflare / 雷池](docs/CLOUDFLARE.md) | WebSocket 入口、反向代理和公网边界 |
 | [备份与导出](docs/BACKUP_EXPORT.md) | Artifact、Online Backup 与秘密处理 |
+| [程序内接入契约](docs/CONSUMER_INTEGRATION_CONTRACT.md) | 冻结的节点清单 JSON、字段/协议枚举/错误码与变更流程 |
 | [住宅代理 AI 对接指南](docs/RESIDENTIAL_AI_QUICKSTART.md) | 给 AI/自动化的极简订阅对接与每次先 next 的轮换要点 |
 | [住宅代理并发集成标准](docs/RESIDENTIAL_INTEGRATION_STANDARD.md) | 统一窗口模型、租约、版本护栏与多服务对接契约 |
 | [v2 能力](docs/V2.md) | 规则流水线、认证、告警、调度与浏览器终端 |

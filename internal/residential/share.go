@@ -16,6 +16,16 @@ func (s *Service) ExportByShareToken(
 	ctx context.Context,
 	token, requestHost string,
 ) (listener.ShareBundle, bool, error) {
+	return s.ShareBundleByShareToken(ctx, token, requestHost)
+}
+
+// ShareBundleByShareToken is ExportByShareToken under the name the programmatic
+// node listing uses. Both callers get the same bundle, so /sub/ and
+// GET /api/v1/nodes cannot disagree about which nodes a channel publishes.
+func (s *Service) ShareBundleByShareToken(
+	ctx context.Context,
+	token, requestHost string,
+) (listener.ShareBundle, bool, error) {
 	record, err := s.repository.GetListenerByShareToken(ctx, token)
 	if errors.Is(err, store.ErrNotFound) {
 		return listener.ShareBundle{}, false, nil
@@ -48,6 +58,25 @@ func (s *Service) ExportByShareToken(
 		return listener.ShareBundle{}, true, err
 	}
 	return listener.NewShareBundle(channel.Name, exports), true, nil
+}
+
+// ShareExportsByShareToken resolves a channel's published nodes from its share
+// token, in the shape the programmatic node listing renders
+// (docs/CONSUMER_INTEGRATION_CONTRACT.md). It doubles as the ownership test:
+// the boolean reports whether the token belongs to a residential channel at
+// all, so a plain listener token falls through to the listener export.
+//
+// It duplicates nothing: ShareBundleByShareToken is the same resolution with
+// the bundle wrapper applied, and both read channelShareExports.
+func (s *Service) ShareExportsByShareToken(
+	ctx context.Context,
+	token, requestHost string,
+) ([]listener.ShareExport, string, bool, error) {
+	bundle, matched, err := s.ShareBundleByShareToken(ctx, token, requestHost)
+	if err != nil || !matched {
+		return nil, "", matched, err
+	}
+	return bundle.Exports, bundle.Name, true, nil
 }
 
 func (s *Service) channelShareExports(

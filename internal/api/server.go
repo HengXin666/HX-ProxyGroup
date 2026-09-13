@@ -424,6 +424,11 @@ func (s *Server) Handler() http.Handler {
 		// Public token-addressed subscription export; the token itself is
 		// the credential, so the route stays outside /api/v1 auth.
 		mux.HandleFunc("/sub/", s.handleListenerShare)
+		// Programmatic node listing: the same share token as /sub/, rendered as
+		// stable JSON for consumers that dial nodes themselves instead of
+		// importing a subscription. It shares the token namespace with /sub/,
+		// never /api/v1/. See docs/CONSUMER_INTEGRATION_CONTRACT.md.
+		mux.HandleFunc(listener.ConsumerNodesPath, s.handleConsumerNodes)
 	}
 	if s.proxyServices != nil {
 		mux.HandleFunc("/api/v1/proxy-services", s.handleProxyServices)
@@ -788,9 +793,11 @@ func (s *Server) requestContext(next http.Handler) http.Handler {
 		startedAt := time.Now()
 		next.ServeHTTP(writer, request.WithContext(ctx))
 		loggedPath := request.URL.Path
-		if strings.HasPrefix(loggedPath, "/sub/") || strings.HasPrefix(loggedPath, "/rot/") || strings.HasPrefix(loggedPath, "/ctl/") {
-			loggedPath = strings.SplitN(loggedPath, "/", 3)[1] + "/[redacted]"
-			loggedPath = "/" + loggedPath
+		if strings.HasPrefix(loggedPath, "/sub/") || strings.HasPrefix(loggedPath, "/rot/") ||
+			strings.HasPrefix(loggedPath, "/ctl/") || strings.HasPrefix(loggedPath, listener.ConsumerNodesPath) {
+			// Every token-addressed route carries a credential in the path; the
+			// namespace is logged and the secret never is.
+			loggedPath = "/" + strings.SplitN(strings.TrimPrefix(loggedPath, "/"), "/", 2)[0] + "/[redacted]"
 		}
 		s.logger.InfoContext(ctx, "HTTP request", "method", request.Method, "path", loggedPath, "duration_ms", time.Since(startedAt).Milliseconds(), "request_id", requestID)
 	})

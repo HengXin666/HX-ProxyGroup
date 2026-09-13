@@ -163,6 +163,146 @@ func TestEnsureSharedInboundsRemovesEmptyAggregate(t *testing.T) {
 	_ = recreated
 }
 
+// TestEnsureSharedInboundsCarriesEveryStandardProtocolAsOneMixedEntry is the
+// regression test for the failure where an HTTP or SOCKS5 proxy service vanished
+// from the data plane.
+//
+// The family was keyed by the member's own protocol, so an http member produced
+// an aggregate row of kind "http" — and Mihomo has no aggregate HTTP listener, so
+// the service was published nowhere while its row still claimed a shared entry
+// point. Every standard protocol must converge on the single Mixed carrier.
+func TestEnsureSharedInboundsCarriesEveryStandardProtocolAsOneMixedEntry(t *testing.T) {
+	service, _, _ := newSharedInboundService(t)
+	createSharedMember(t, service, "service-http", "http")
+	createSharedMember(t, service, "service-socks", "socks")
+	createSharedMember(t, service, "service-mixed", "mixed")
+
+	aggregates, err := service.EnsureSharedInbounds(context.Background(), sharedSpec(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregates) != 1 {
+		t.Fatalf("aggregates = %d, want exactly one Mixed entry point: %+v", len(aggregates), aggregates)
+	}
+	if aggregates[0].Kind != "mixed" {
+		t.Fatalf("aggregate kind = %q, want %q", aggregates[0].Kind, "mixed")
+	}
+}
+
+// TestEnsureSharedInboundsRetiresPerProtocolAggregates covers an install that
+// already stored one aggregate row per protocol. The stale rows must be removed,
+// not left behind holding a port the family no longer uses.
+func TestEnsureSharedInboundsRetiresPerProtocolAggregates(t *testing.T) {
+	service, database, _ := newSharedInboundService(t)
+	createSharedMember(t, service, "service-http", "http")
+	if _, err := service.EnsureSharedInbounds(context.Background(), sharedSpec(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	records, err := database.ListListeners(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := 0
+	for _, record := range records {
+		if IsSharedInboundAggregate(record) {
+			before++
+		}
+	}
+	if before != 1 {
+		t.Fatalf("aggregate rows = %d, want 1", before)
+	}
+
+	// Simulate the older layout by relabelling the aggregate row as the
+	// family's per-protocol variant, then adding a mixed member.
+	stale := records[0]
+	for _, record := range records {
+		if IsSharedInboundAggregate(record) {
+			stale = record
+		}
+	}
+	stale.Kind = "http"
+	stale.Name = sharedAggregateName(SharedInboundStandardOwner, "http")
+	if _, err := database.UpdateListener(context.Background(), stale, stale.Version); err != nil {
+		t.Fatal(err)
+	}
+	createSharedMember(t, service, "service-mixed", "mixed")
+
+	aggregates, err := service.EnsureSharedInbounds(context.Background(), sharedSpec(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregates) != 1 || aggregates[0].Kind != "mixed" {
+		t.Fatalf("aggregates = %+v, want one Mixed entry point", aggregates)
+	}
+	after, err := database.ListListeners(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregateRows := 0
+	for _, record := range after {
+		if IsSharedInboundAggregate(record) {
+			aggregateRows++
+		}
+	}
+	if aggregateRows != 1 {
+		t.Fatalf("aggregate rows after repair = %d, want 1", aggregateRows)
+	}
+}
+
+func TestEnsureSharedInboundsKeepsOneListenerPerWebSocketProtocol(t *testing.T) {
+	service, _, _ := newSharedInboundService(t)
+	for _, kind := range []string{"vless", "vmess", "trojan"} {
+		created, err := service.Create(context.Background(), CreateRequest{
+			Name: "ws-" + kind, Kind: kind, BindAddress: "127.0.0.1", Port: 19999,
+			ProxyGroupID:  "group-a",
+			Auth:          &Auth{Username: "hx-user", Password: "11111111-1111-1111-1111-111111111111"},
+			SharedInbound: SharedInboundWebSocketOwner,
+			Transport:     Transport{Type: "ws", WSPath: SharedInboundRoutePath()},
+			// An advanced listener is only reachable through the edge relay, so
+			// the service requires the public host it is published behind.
+			PublicEndpoint: PublicEndpoint{Host: "proxy.example.com", Port: 443, TLS: true},
+		})
+		if err != nil {
+			t.Fatalf("create %s member: %v", kind, err)
+		}
+		_ = created
+	}
+	aggregates, err := service.EnsureSharedInbounds(context.Background(), sharedSpec(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregates) != 3 {
+		t.Fatalf("aggregates = %d, want one listener per WebSocket protocol (they share a port, not a listener)", len(aggregates))
+	}
+}
+
+// TestSharedInboundCarrierKind pins the family contract: the standard family is
+// always carried by a Mixed listener, whatever protocol its members use.
+func TestSharedInboundCarrierKind(t *testing.T) {
+	for _, kind := range SharedInboundMemberKinds(SharedInboundStandardOwner) {
+		if got := SharedInboundCarrierKind(SharedInboundStandardOwner, kind); got != "mixed" {
+			t.Fatalf("standard carrier for %q = %q, want mixed", kind, got)
+		}
+		if !IsSharedInboundMemberKind(SharedInboundStandardOwner, kind) {
+			t.Fatalf("%q is not recognised as a standard member kind", kind)
+		}
+	}
+	for _, kind := range SharedInboundMemberKinds(SharedInboundWebSocketOwner) {
+		if got := SharedInboundCarrierKind(SharedInboundWebSocketOwner, kind); got != kind {
+			t.Fatalf("websocket carrier for %q = %q, want %q", kind, got, kind)
+		}
+	}
+	if SharedInboundCarrierKind(SharedInboundStandardOwner, "vless") != "mixed" {
+		t.Fatal("an advanced kind must not be reported as a WebSocket carrier of the standard family")
+	}
+	if IsSharedInboundMemberKind(SharedInboundStandardOwner, "vless") {
+		t.Fatal("a VLESS listener is not a standard-family member")
+	}
+	if IsSharedInboundMemberKind(SharedInboundWebSocketOwner, "http") {
+		t.Fatal("an HTTP listener is not a WebSocket-family member")
+	}
+}
+
 func TestCreateRejectsUnknownSharedInboundOwner(t *testing.T) {
 	service, _, _ := newSharedInboundService(t)
 	_, err := service.Create(context.Background(), CreateRequest{

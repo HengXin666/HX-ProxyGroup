@@ -211,8 +211,24 @@ func run(logger *slog.Logger) error {
 	// A settings change must both move existing services onto the shared entry
 	// points and converge the aggregate rows inside the same atomic apply.
 	sharedInboundHook = func(ctx context.Context) error {
-		if _, err := sharedInboundMigrator.Reconcile(ctx); err != nil {
+		result, err := sharedInboundMigrator.Reconcile(ctx)
+		if err != nil {
 			return err
+		}
+		if result.Migrated > 0 {
+			logger.Info("proxy services moved onto the shared inbound",
+				"component", "sharedinbound", "migrated", result.Migrated)
+		}
+		// A service left on its own port is the reason it may be unreachable
+		// from a container: the shared entry point is selected by username, so
+		// a service without credentials cannot be carried by it. Reporting only
+		// the count would leave an operator to discover that by trial.
+		if len(result.SkippedWithoutCredentials) > 0 {
+			logger.Warn("proxy services stay on their own port because they have no credentials",
+				"component", "sharedinbound",
+				"count", len(result.SkippedWithoutCredentials),
+				"services", strings.Join(result.SkippedWithoutCredentials, ", "),
+				"hint", "enable username/password authentication to move them onto the shared inbound")
 		}
 		return proxyService.ConvergeSharedInbound(ctx)
 	}

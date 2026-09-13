@@ -46,6 +46,28 @@
 
 同一家族的 WebSocket 协议共用一个端口与一个 ws-path，因此**一条 URL 同时是
 VLESS / VMess / Trojan**：客户端按自己的协议解析，用户名决定落到哪个组。
+### 家族载体：一个家族一个监听器
+
+一个家族只对应**一个** Mihomo Listener，它的类型由家族决定，而不是由成员的协议决定：
+
+| 家族 | 成员协议 | 载体 Listener |
+| --- | --- | --- |
+| standard | http / socks / mixed | `mixed`（一个） |
+| websocket | vless / vmess / trojan | 每种协议各一个（共享端口与 ws-path） |
+
+Mihomo 的 Mixed Listener 在**同一个 socket** 上同时讲 HTTP 代理与 SOCKS5，这正是
+standard 入口承诺的协议集合。因此 `kind=http` 或 `kind=socks` 的代理服务不会
+再生成一个同类型的聚合 Listener，而是由那唯一的 Mixed Listener 承载，靠用户名分流。
+这由 `listener.SharedInboundCarrierKind` / `SharedInboundCarrierKey` 统一定义，
+控制面与编译器共用同一份规则。
+
+> **20260913 修复**：在此之前，聚合行按「成员协议」建索引，而编译器只接收
+> `kind=mixed` 成员。结果是一个 `kind=http` / `kind=socks` 的服务被迁移进共享
+> 家族后，行仍在、**数据面里却什么都没有**：既没有 Listener 也没有 `IN-USER` 规则，
+> 客户端按订阅里的 URL 连接时被拒（HTTP 代理返回 403）。同一个家族还会因为成员
+> 协议不同而生成多个聚合行。现在家族只认载体，一个家族永远只有一个 standard 聚合行；
+> 升级时旧的「每协议一行」聚合行会被自动回收（保留家族的 Mixed 行），不会留下占着
+> 端口的死行。
 
 ### 为什么用户名能区分服务
 
@@ -72,7 +94,8 @@ Mihomo 的 Listener 支持 `users` 列表，规则引擎提供 `IN-USER` 匹配�
   端口，并与聚合行收敛在同一次原子 Apply 中；失败会连同设置一起回滚。
 - **迁移跳过两类服务**：
   - 未启用用户名/密码认证的服务（共享入口靠用户名分流，无凭据会让聚合端口对所有
-    连接放行）；
+    连接放行）；被跳过的服务会以 `WARN` 日志列出名称与原因，不会被静默忽略——
+    否则操作者只能靠试错才能发现某个服务为什么没被迁移；
   - 住宅渠道托管的 WebSocket 入口（它们有自己的会话级 `IN-USER` 路由）。
 - **关闭共享入口**：聚合行被删除、端口释放，服务行保留（仍标记为成员，重新打开即
   恢复），不影响任何已有订阅以外的流量。
@@ -122,4 +145,10 @@ PATH=$PATH:/path/to/mihomo go test -run TestCompileSharedInboundPassesMihomoVali
 
 # 运行时证明：同一端口上两个用户名走到两个不同的组
 PATH=$PATH:/path/to/mihomo go test -run TestSharedInboundRoutesOnePortPerService ./internal/dataplane/mihomo/
+
+# 家族载体：http / socks / mixed 三个成员都必须由同一个 Mixed 入口真正代理
+PATH=$PATH:/path/to/mihomo go test -run TestSharedInboundCarriesEveryStandardProtocolAtRuntime ./internal/dataplane/mihomo/
+
+# 端到端：真实数据库 + 真实迁移 + 真实编译，HTTP 服务必须被承载
+go test -run TestSharedInboundMigrationCarriesAnHTTPServiceThroughToTheCompiledConfig ./internal/dataplane/mihomo/
 ```

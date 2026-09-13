@@ -292,6 +292,12 @@ Listener
 
 管理面中的“代理服务”不是新的数据库实体，而是 `ProxyGroup + Listener` 的应用层聚合视图。创建操作先保存用户的跨订阅选择规则，再创建绑定该组的入口；入口校验或应用失败时补偿删除刚创建的组。编辑同样作为原子复合更新执行：`PUT /api/v1/proxy-services/{group_id}` 在一次 application service 调用中同时更新 ProxyGroup 与绑定 Listener。Listener 领域服务在数据面应用失败时先将自身数据库记录恢复到上一版，代理服务再回滚 ProxyGroup，避免数据库与运行状态分叉或重试时撞上乐观锁；两层领域服务的版本号乐观锁继续生效。数据面应用失败通过 `dataplane_apply_failed`（502）返回具体原因，冲突仍沿用 `proxygroup`/`listener` 的 409 语义；Mihomo 可用性预检允许同端口绑定地址变更（如 127.0.0.1 -> 0.0.0.0），该变更由热重载原子释放旧地址。这样用户可以在一次操作中定义入口 IP、端口、账号和可代理节点范围，同时保持领域层与 Mihomo 编译器中的 Group / Listener 边界。新建代理服务入口默认绑定 `0.0.0.0` 并启用用户名/密码认证，供内网 / Docker 网络直接访问，公网暴露交由防火墙显式保护；非环回监听地址强制要求认证，高级协议入口（VLESS/VMess/Trojan）仍固定环回绑定。
 
+共享入口模式下，一个聚合家族只对应**一个** Mihomo Listener，其类型由家族而非成员协议
+决定（standard 家族的 http / socks / mixed 成员统一由唯一的 Mixed Listener 承载，靠
+`IN-USER` 分流；websocket 家族每个协议各有一个 Listener、共享端口与 ws-path）。
+家族与载体的映射由 `listener.SharedInboundCarrierKind` / `SharedInboundCarrierKey` 单点定义，
+控制面聚合行与数据面编译共用同一规则，避免两侧各自判断家族成员导致不一致。
+
 当前 `source_spec` 可同时保存固定 `node_ids` 与动态选择条件：`subscription_ids`、名称地区标签、协议、生命周期、最大延迟、排序字段和数量上限。数据库只保存用户意图；Mihomo 编译器每次从活动订阅快照与最新节点质量记录重新解析成员，并稳定排序输出。地区当前来自节点展示名称标签，后续结构化 Geo Enricher 上线后应替换为带采样时间的地区字段。
 
 ### 6.8 住宅声明节点、渠道订阅与控制 URL

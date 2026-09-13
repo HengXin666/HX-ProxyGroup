@@ -68,7 +68,11 @@ func (c *Compiler) compileSharedInbounds(
 		if !record.Enabled || listener.SharedInboundOwnerOf(record) == "" || !listener.IsSharedInboundAggregate(record) {
 			continue
 		}
-		aggregateRows[listener.SharedInboundOwnerOf(record)+"|"+record.Kind] = record
+		// Keyed by the published listener, exactly as membership is: the whole
+		// standard family shares one Mixed carrier, while each WebSocket
+		// protocol keeps its own.
+		owner := listener.SharedInboundOwnerOf(record)
+		aggregateRows[listener.SharedInboundCarrierKey(owner, record.Kind)] = record
 	}
 
 	for _, record := range listeners {
@@ -81,7 +85,15 @@ func (c *Compiler) compileSharedInbounds(
 			if !shared.AppliesToWebSocket() {
 				continue
 			}
-		} else if !shared.Enabled() || record.Kind != "mixed" {
+		} else if !shared.Enabled() {
+			continue
+		}
+		// The standard family is multiplexed by Mihomo's Mixed listener, which
+		// speaks HTTP proxy and SOCKS5 on the same socket, so an http or socks
+		// service needs no listener of its own kind. Dropping those members (as
+		// a per-protocol filter used to) removed the service from the data plane
+		// while its row still claimed to be published.
+		if !listener.IsSharedInboundMemberKind(owner, record.Kind) {
 			continue
 		}
 		group, exists := enabledGroups[record.ProxyGroupID]
@@ -94,25 +106,37 @@ func (c *Compiler) compileSharedInbounds(
 		if err != nil {
 			return nil, nil, err
 		}
-		key := owner + "|" + record.Kind
+		// Membership is keyed by the carrier that actually publishes the
+		// member, not by the member's own protocol: the whole standard family
+		// collapses onto one Mixed listener.
+		carrierKind := listener.SharedInboundCarrierKind(owner, record.Kind)
+		key := listener.SharedInboundCarrierKey(owner, record.Kind)
 		if seenMembers[key] == nil {
 			seenMembers[key] = make(map[string]struct{})
 		}
-		// Two services on one port must not share a username: the whole
-		// membership model rests on the username selecting exactly one group.
+		// Two services behind one entry point must not share a username: the
+		// whole membership model rests on the username selecting exactly one
+		// group.
 		if _, duplicate := seenMembers[key][member.username]; duplicate {
-			return nil, nil, fmt.Errorf("two shared-inbound services for %s use the same username %q", record.Kind, member.username)
+			return nil, nil, fmt.Errorf("two shared-inbound services for the %s family use the same username %q", owner, member.username)
 		}
 		seenMembers[key][member.username] = struct{}{}
 		entry, exists := aggregates[key]
 		if !exists {
 			// Prefer the aggregate row so the endpoint and edge-route checks
 			// run against the listener that actually binds the port.
+			// The synthesised fallback must describe the family's real
+			// endpoint, not the member's stored row: members share the carrier,
+			// so a member row still carrying an old dedicated port would
+			// otherwise be validated and published as if it were the entry
+			// point.
 			carrier := record
-			if row, ok := aggregateRows[key]; ok {
+			carrier.Kind = carrierKind
+			carrier.BindAddress, carrier.Port = sharedCarrierEndpoint(shared, owner)
+			if row, ok := aggregateRows[listener.SharedInboundCarrierKey(owner, record.Kind)]; ok {
 				carrier = row
 			}
-			entry = &aggregate{record: carrier, owner: owner, kind: record.Kind}
+			entry = &aggregate{record: carrier, owner: owner, kind: carrierKind}
 			aggregates[key] = entry
 			order = append(order, key)
 		}
@@ -148,6 +172,18 @@ func (c *Compiler) compileSharedInbounds(
 		rules = append(rules, memberRules...)
 	}
 	return compiled, rules, nil
+}
+
+// sharedCarrierEndpoint reports where the aggregate listener of a family binds.
+// The standard family is a Mixed listener reachable by a container or a LAN
+// client (its bind address is configurable and defaults to 0.0.0.0); the
+// WebSocket family stays on loopback because it is reached through the edge
+// relay.
+func sharedCarrierEndpoint(shared systemsettings.SharedInboundSettings, owner string) (string, int) {
+	if owner == listener.SharedInboundWebSocketOwner {
+		return "127.0.0.1", shared.WSPort
+	}
+	return shared.MixedBindAddress, shared.MixedPort
 }
 
 func (c *Compiler) sharedMemberFor(record store.ListenerRecord, group store.ProxyGroupRecord) (sharedMember, error) {

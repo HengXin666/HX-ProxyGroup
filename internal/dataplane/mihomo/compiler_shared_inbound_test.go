@@ -110,8 +110,15 @@ func compileShared(t *testing.T, repository sharedInboundRepository) map[string]
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	return decodeDocument(t, compiled.YAML)
+}
+
+// decodeDocument reads a compiled configuration back into the generic shape the
+// assertions inspect, so a test never depends on YAML key order.
+func decodeDocument(t *testing.T, config []byte) map[string]any {
+	t.Helper()
 	var document map[string]any
-	if err := yaml.Unmarshal(compiled.YAML, &document); err != nil {
+	if err := yaml.Unmarshal(config, &document); err != nil {
 		t.Fatal(err)
 	}
 	return document

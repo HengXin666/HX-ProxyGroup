@@ -42,6 +42,72 @@ func SharedInboundOwnerOf(record store.ListenerRecord) string {
 	return strings.TrimSpace(record.SharedInbound)
 }
 
+// SharedInboundCarrierKind is the Mihomo listener type that carries a member of
+// a shared-inbound family.
+//
+// The standard family has exactly one carrier: Mihomo's Mixed listener speaks
+// HTTP proxy and SOCKS5 on a single socket, which is the contract documented for
+// the 7890 entry point ("http / socks / mixed"). An HTTP or SOCKS5 service
+// therefore gets no listener of its own kind — it is carried by the Mixed
+// listener and selected by username.
+//
+// Deriving the carrier from the family rather than from the member's row is what
+// makes the family convergent. Keyed by member kind instead, the first HTTP
+// member would create an aggregate row of kind "http" that publishes no
+// listener, a later Mixed member would add a second aggregate row for the same
+// port, and the compiler — which can only carry a Mixed standard listener —
+// would silently drop the HTTP service from the data plane.
+//
+// The WebSocket family differs: each protocol is a genuinely distinct Mihomo
+// listener type, so it keeps one carrier per protocol even though they share a
+// port and a ws-path.
+func SharedInboundCarrierKind(owner, kind string) string {
+	switch strings.ToLower(strings.TrimSpace(owner)) {
+	case SharedInboundStandardOwner:
+		return "mixed"
+	case SharedInboundWebSocketOwner:
+		return strings.ToLower(strings.TrimSpace(kind))
+	default:
+		return ""
+	}
+}
+
+// SharedInboundCarrierKey identifies the published listener a member belongs to.
+// Members that share a carrier share a key, which is what makes the standard
+// family collapse to one aggregate listener.
+func SharedInboundCarrierKey(owner, kind string) string {
+	return strings.ToLower(strings.TrimSpace(owner)) + "|" + SharedInboundCarrierKind(owner, kind)
+}
+
+// IsSharedInboundMemberKind reports whether a listener of this protocol is
+// carried by the given aggregate family. HTTP, SOCKS5 and Mixed are all carried
+// by the standard Mixed listener.
+func IsSharedInboundMemberKind(owner, kind string) bool {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch strings.ToLower(strings.TrimSpace(owner)) {
+	case SharedInboundStandardOwner:
+		return kind == "http" || kind == "socks" || kind == "mixed"
+	case SharedInboundWebSocketOwner:
+		return kind == "vless" || kind == "vmess" || kind == "trojan"
+	default:
+		return false
+	}
+}
+
+// SharedInboundMemberKinds lists every protocol a family carries, in a stable
+// order. It is used by validation messages and by tests that need to pin the
+// family contract.
+func SharedInboundMemberKinds(owner string) []string {
+	switch strings.ToLower(strings.TrimSpace(owner)) {
+	case SharedInboundStandardOwner:
+		return []string{"http", "socks", "mixed"}
+	case SharedInboundWebSocketOwner:
+		return []string{"vless", "vmess", "trojan"}
+	default:
+		return nil
+	}
+}
+
 // IsSharedInboundOwner reports whether an owner marker is one of the two
 // aggregate families.
 func IsSharedInboundOwner(owner string) bool {
@@ -162,6 +228,7 @@ func (s *Service) EnsureSharedInbounds(
 		return nil, err
 	}
 	aggregates := make(map[string]store.ListenerRecord, 4)
+	staleAggregates := make([]store.ListenerRecord, 0, 2)
 	families := make(map[string]SharedInboundMember, 4)
 	familyOrder := make([]string, 0, 4)
 	for _, record := range records {
@@ -169,16 +236,43 @@ func (s *Service) EnsureSharedInbounds(
 		if owner == "" {
 			continue
 		}
-		key := aggregateKey(owner, record.Kind)
+		if !IsSharedInboundMemberKind(owner, record.Kind) {
+			// A row marked with a family that cannot carry its protocol is a
+			// stored inconsistency (an old per-protocol aggregate, or a row
+			// written by an older build). Refusing to guess keeps the aggregate
+			// from publishing a port nobody routes on.
+			return nil, fmt.Errorf(
+				"%w: listener %q is a %s member of the %s shared inbound, which carries %s",
+				ErrInvalid, record.Name, record.Kind, owner, strings.Join(SharedInboundMemberKinds(owner), " / "),
+			)
+		}
+		// Every member of a family converges on the family's single carrier, so
+		// the first member decides the family and later ones only add a username.
+		carrierKind := SharedInboundCarrierKind(owner, record.Kind)
+		key := SharedInboundCarrierKey(owner, record.Kind)
 		if isAggregateRecord(record) {
+			if existing, ok := aggregates[key]; ok {
+				carrierKind := SharedInboundCarrierKind(owner, record.Kind)
+				// A family keeps exactly one aggregate row. An install that ran
+				// the older per-protocol layout can hold several for the same
+				// family; keep the family's carrier and retire the rest so a
+				// stale row cannot keep a port reserved.
+				keep, drop := existing, record
+				if record.Kind == carrierKind {
+					keep, drop = record, existing
+				}
+				aggregates[key] = keep
+				staleAggregates = append(staleAggregates, drop)
+				continue
+			}
 			aggregates[key] = record
 			continue
 		}
 		if _, duplicate := families[key]; duplicate {
 			continue
 		}
-		bindAddress, port := aggregateEndpoint(spec, owner, record.Kind)
-		member := SharedInboundMember{Owner: owner, Kind: record.Kind, BindAddress: bindAddress, Port: port}
+		bindAddress, port := aggregateEndpoint(spec, owner, carrierKind)
+		member := SharedInboundMember{Owner: owner, Kind: carrierKind, BindAddress: bindAddress, Port: port}
 		if err := validateSharedMember(member, spec); err != nil {
 			return nil, err
 		}
@@ -205,6 +299,12 @@ func (s *Service) EnsureSharedInbounds(
 		delete(aggregates, key)
 		changed = true
 	}
+	for _, record := range staleAggregates {
+		if err := s.repository.DeleteListener(ctx, record.ID, record.Version); err != nil && err != store.ErrNotFound {
+			return nil, mapStoreError(err)
+		}
+		changed = true
+	}
 
 	for _, key := range familyOrder {
 		member := families[key]
@@ -216,12 +316,15 @@ func (s *Service) EnsureSharedInbounds(
 			changed = true
 			continue
 		}
-		if record.BindAddress == member.BindAddress && record.Port == member.Port && record.Enabled && record.ProxyGroupID == anchor {
+		if record.BindAddress == member.BindAddress && record.Port == member.Port && record.Enabled &&
+			record.ProxyGroupID == anchor && record.Kind == member.Kind && record.Name == sharedAggregateName(member.Owner, member.Kind) {
 			continue
 		}
 		record.BindAddress = member.BindAddress
 		record.Port = member.Port
 		record.ProxyGroupID = anchor
+		record.Kind = member.Kind
+		record.Name = sharedAggregateName(member.Owner, member.Kind)
 		record.Enabled = true
 		record.UpdatedAt = s.now().UTC()
 		if _, err := s.repository.UpdateListener(ctx, record, record.Version); err != nil {
@@ -363,15 +466,11 @@ func sharedAggregateEndpointConfig(kind string) (string, string, error) {
 	return string(encoded), "{}", nil
 }
 
-func aggregateKey(owner, kind string) string {
-	return strings.ToLower(strings.TrimSpace(owner)) + "|" + strings.ToLower(strings.TrimSpace(kind))
-}
-
 func validateSharedMember(member SharedInboundMember, spec SharedInboundSpec) error {
 	switch member.Owner {
 	case SharedInboundStandardOwner:
-		if isAdvancedKind(member.Kind) || member.Kind != "mixed" {
-			return fmt.Errorf("%w: a standard shared-inbound member must be a mixed listener", ErrInvalid)
+		if member.Kind != SharedInboundCarrierKind(SharedInboundStandardOwner, member.Kind) {
+			return fmt.Errorf("%w: the standard shared inbound is carried by the Mixed listener", ErrInvalid)
 		}
 		if !spec.Enabled {
 			return fmt.Errorf("%w: the shared inbound is disabled", ErrInvalid)

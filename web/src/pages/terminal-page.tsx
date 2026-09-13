@@ -542,7 +542,16 @@ export function TerminalPage({
                 </div>
               </header>
               <div className="relative min-h-0 flex-1 bg-background">
-                <div ref={containerRef} className="absolute inset-0 p-2" />
+                {/* The mount point must not carry padding. FitAddon derives the row
+                    count from this element's computed height and subtracts only the
+                    .xterm child's own padding — which xterm.css never sets. Tailwind
+                    preflight makes box-sizing border-box globally, so a padded
+                    container reports a height that already includes its padding and
+                    the subtraction is skipped: the grid renders one row taller than
+                    the space available and the last row is clipped by the card's
+                    overflow-hidden. Inset gives the same visual breathing room as
+                    padding without corrupting the measurement. */}
+                <div ref={containerRef} data-terminal-surface className="absolute inset-2" />
               </div>
             </section>
 
